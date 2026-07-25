@@ -24,24 +24,33 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.static(__dirname));
 
 // DeepSeek API 配置
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+global.DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+global.DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com';
+global.DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 
 // 检查 API key 是否配置
-if (!DEEPSEEK_API_KEY) {
+if (!global.DEEPSEEK_API_KEY) {
   console.warn('⚠️  警告: DEEPSEEK_API_KEY 未配置，AI 功能将不可用');
 }
 
 // 调用 DeepSeek API
 async function callDeepSeek(messages, options = {}) {
-  const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+  const apiKey = global.DEEPSEEK_API_KEY;
+  const baseUrl = global.DEEPSEEK_API_URL || 'https://api.deepseek.com';
+  const model = global.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+
+  if (!apiKey) {
+    throw new Error('DeepSeek API Key 未配置，请在设置中配置');
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: options.model || 'deepseek-v4-flash',
+      model: options.model || model,
       messages,
       temperature: options.temperature || 0.7,
       max_tokens: options.maxTokens || 2000,
@@ -1382,6 +1391,82 @@ app.post('/api/students/update-required-courses', (req, res) => {
       data: {
         updated: updatedCount,
         message: `已更新 ${updatedCount} 名学生的必修课`
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 获取设置
+app.get('/api/settings', (req, res) => {
+  try {
+    // 从环境变量或配置文件读取设置
+    const settings = {
+      apiKey: process.env.DEEPSEEK_API_KEY ? '***已配置***' : '',
+      apiUrl: process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com',
+      model: process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash'
+    };
+
+    res.json({ ok: true, data: settings });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 保存设置
+app.post('/api/settings', (req, res) => {
+  try {
+    const { apiKey, apiUrl, model } = req.body;
+
+    // 更新环境变量（重启后失效，需要持久化到文件）
+    if (apiKey) {
+      process.env.DEEPSEEK_API_KEY = apiKey;
+      // 同时更新全局变量
+      global.DEEPSEEK_API_KEY = apiKey;
+    }
+    if (apiUrl) {
+      process.env.DEEPSEEK_API_URL = apiUrl;
+      global.DEEPSEEK_API_URL = apiUrl;
+    }
+    if (model) {
+      process.env.DEEPSEEK_MODEL = model;
+      global.DEEPSEEK_MODEL = model;
+    }
+
+    // 保存到配置文件（持久化）
+    const configPath = resolve(__dirname, '.env.local');
+    let config = {};
+
+    try {
+      if (existsSync(configPath)) {
+        const content = readFileSync(configPath, 'utf-8');
+        content.split('\n').forEach(line => {
+          const [key, value] = line.split('=');
+          if (key && value) {
+            config[key.trim()] = value.trim();
+          }
+        });
+      }
+    } catch (e) {
+      // 忽略读取错误
+    }
+
+    // 更新配置
+    if (apiKey) config.DEEPSEEK_API_KEY = apiKey;
+    if (apiUrl) config.DEEPSEEK_API_URL = apiUrl;
+    if (model) config.DEEPSEEK_MODEL = model;
+
+    // 写入配置文件
+    const configContent = Object.entries(config)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+    writeFileSync(configPath, configContent, 'utf-8');
+
+    res.json({
+      ok: true,
+      data: {
+        message: '设置已保存，重启服务器后生效'
       }
     });
   } catch (error) {

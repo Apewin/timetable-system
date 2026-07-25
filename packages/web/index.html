@@ -55,6 +55,7 @@
           <ul>
             <li><a href="#" data-view="import">📥 数据导入</a></li>
             <li><a href="#" data-view="export">📤 导出课表</a></li>
+            <li><a href="#" data-view="settings">⚙️ 系统设置</a></li>
           </ul>
         </div>
       </nav>
@@ -469,6 +470,78 @@
             <button id="btn-validate-timetable" class="btn btn-secondary">校验排课结果</button>
           </div>
           <div id="validate-content" class="content">点击按钮开始校验</div>
+        </div>
+
+        <div id="view-settings" class="view">
+          <h2>⚙️ 系统设置</h2>
+          <div class="settings-container">
+            <div class="settings-section">
+              <h3>🤖 AI 模型配置</h3>
+              <p class="settings-hint">配置大模型的 API 密钥和接口地址，用于AI智能排课功能</p>
+              <div class="form-group">
+                <label>API 密钥</label>
+                <div class="input-group">
+                  <input type="password" id="settings-api-key" class="input" placeholder="输入 API Key">
+                  <button class="btn btn-secondary" onclick="toggleApiKeyVisibility()">👁️</button>
+                </div>
+                <small class="form-hint">从 DeepSeek 平台获取: <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a></small>
+              </div>
+              <div class="form-group">
+                <label>API 接口地址</label>
+                <input type="text" id="settings-api-url" class="input" placeholder="https://api.deepseek.com">
+                <small class="form-hint">默认: https://api.deepseek.com</small>
+              </div>
+              <div class="form-group">
+                <label>模型名称</label>
+                <select id="settings-model" class="select">
+                  <option value="deepseek-v4-flash">deepseek-v4-flash（快速）</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro（专业，支持思考模式）</option>
+                </select>
+                <small class="form-hint">选择要使用的 AI 模型</small>
+              </div>
+              <div class="settings-actions">
+                <button class="btn btn-primary" onclick="saveSettings()">💾 保存设置</button>
+                <button class="btn btn-secondary" onclick="testSettingsConnection()">🔗 测试连接</button>
+                <button class="btn btn-secondary" onclick="loadSettings()">🔄 重新加载</button>
+              </div>
+              <div id="settings-test-result" class="settings-test-result"></div>
+            </div>
+
+            <div class="settings-section">
+              <h3>📊 系统信息</h3>
+              <div class="system-info">
+                <div class="info-row">
+                  <span class="info-label">系统版本</span>
+                  <span class="info-value">v0.1.0</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">AI 模型状态</span>
+                  <span class="info-value" id="settings-ai-status">检查中...</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">学生数量</span>
+                  <span class="info-value" id="settings-student-count">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">教学任务</span>
+                  <span class="info-value" id="settings-task-count">-</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>💡 使用说明</h3>
+              <div class="settings-guide">
+                <p><strong>API 密钥：</strong>用于调用 DeepSeek AI 模型，实现智能排课功能</p>
+                <p><strong>接口地址：</strong>API 的访问地址，一般不需要修改</p>
+                <p><strong>模型选择：</strong></p>
+                <ul>
+                  <li><strong>deepseek-v4-flash：</strong>响应速度快，适合日常使用</li>
+                  <li><strong>deepseek-v4-pro：</strong>更智能，支持深度思考，适合复杂排课需求</li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div id="view-export" class="view">

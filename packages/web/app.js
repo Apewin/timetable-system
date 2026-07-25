@@ -131,6 +131,9 @@ async function loadViewData(viewName) {
     case 'temp-timetable':
       await loadTempTimetablePage();
       break;
+    case 'settings':
+      await loadSettingsPage();
+      break;
   }
 }
 
@@ -4373,3 +4376,152 @@ window.exportTempTimetable = function() {
 window.printTempTimetable = function() {
   window.print();
 };
+
+// ==================== 设置功能 ====================
+
+// 加载设置页面
+async function loadSettingsPage() {
+  try {
+    // 加载当前设置
+    await loadSettings();
+
+    // 加载系统信息
+    const [status, tasks] = await Promise.all([
+      api('/status'),
+      api('/teaching_tasks')
+    ]);
+
+    document.getElementById('settings-student-count').textContent = status.counts?.students || 0;
+    document.getElementById('settings-task-count').textContent = tasks.length || 0;
+
+    // 检查 AI 状态
+    checkAIStatus();
+  } catch (error) {
+    console.error('加载设置页面失败:', error);
+  }
+}
+
+// 加载设置
+async function loadSettings() {
+  try {
+    const response = await fetch('/api/settings');
+    const result = await response.json();
+
+    if (result.ok && result.data) {
+      document.getElementById('settings-api-key').value = result.data.apiKey || '';
+      document.getElementById('settings-api-url').value = result.data.apiUrl || 'https://api.deepseek.com';
+      document.getElementById('settings-model').value = result.data.model || 'deepseek-v4-flash';
+    }
+  } catch (error) {
+    console.error('加载设置失败:', error);
+  }
+}
+
+// 保存设置
+window.saveSettings = async function() {
+  const apiKey = document.getElementById('settings-api-key').value.trim();
+  const apiUrl = document.getElementById('settings-api-url').value.trim();
+  const model = document.getElementById('settings-model').value;
+
+  if (!apiKey) {
+    showToast('请输入 API 密钥', 'warning');
+    return;
+  }
+
+  try {
+    showToast('正在保存设置...', 'info');
+
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, apiUrl, model })
+    });
+
+    const result = await response.json();
+
+    if (result.ok) {
+      showToast('✅ 设置已保存', 'success');
+      checkAIStatus();
+    } else {
+      showToast('保存失败: ' + (result.errors?.[0]?.msg || '未知错误'), 'error');
+    }
+  } catch (error) {
+    showToast('保存失败: ' + error.message, 'error');
+  }
+}
+
+// 测试连接
+window.testSettingsConnection = async function() {
+  const resultDiv = document.getElementById('settings-test-result');
+  resultDiv.className = 'settings-test-result testing';
+  resultDiv.textContent = '🔄 正在测试连接...';
+
+  try {
+    const startTime = Date.now();
+
+    const response = await fetch('/api/ai/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '你好，请回复"连接成功"' })
+    });
+
+    const result = await response.json();
+    const endTime = Date.now();
+    const latency = endTime - startTime;
+
+    if (result.ok) {
+      resultDiv.className = 'settings-test-result success';
+      resultDiv.innerHTML = `✅ 连接成功！<br>响应时间: ${latency}ms<br>AI回复: ${result.data.response}`;
+      document.getElementById('settings-ai-status').textContent = '✅ 正常';
+      document.getElementById('settings-ai-status').style.color = '#2e7d32';
+    } else {
+      resultDiv.className = 'settings-test-result error';
+      resultDiv.textContent = `❌ 连接失败: ${result.errors?.[0]?.msg || '未知错误'}`;
+      document.getElementById('settings-ai-status').textContent = '❌ 异常';
+      document.getElementById('settings-ai-status').style.color = '#c62828';
+    }
+  } catch (error) {
+    resultDiv.className = 'settings-test-result error';
+    resultDiv.textContent = `❌ 连接失败: ${error.message}`;
+    document.getElementById('settings-ai-status').textContent = '❌ 异常';
+    document.getElementById('settings-ai-status').style.color = '#c62828';
+  }
+}
+
+// 检查 AI 状态
+async function checkAIStatus() {
+  const statusEl = document.getElementById('settings-ai-status');
+  statusEl.textContent = '检查中...';
+  statusEl.style.color = 'var(--gray-500)';
+
+  try {
+    const response = await fetch('/api/ai/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'test' })
+    });
+
+    const result = await response.json();
+
+    if (result.ok) {
+      statusEl.textContent = '✅ 正常';
+      statusEl.style.color = '#2e7d32';
+    } else {
+      statusEl.textContent = '❌ 异常';
+      statusEl.style.color = '#c62828';
+    }
+  } catch (error) {
+    statusEl.textContent = '❌ 未连接';
+    statusEl.style.color = '#c62828';
+  }
+}
+
+// 切换 API Key 可见性
+window.toggleApiKeyVisibility = function() {
+  const input = document.getElementById('settings-api-key');
+  if (input.type === 'password') {
+    input.type = 'text';
+  } else {
+    input.type = 'password';
+  }
+}
