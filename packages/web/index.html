@@ -113,10 +113,21 @@
         <div id="view-students" class="view">
           <h2>学生管理</h2>
           <div class="toolbar">
-            <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索学生姓名、ID、班级或选修课..." autofocus>
+            <div class="filter-group">
+              <select id="filter-student-grade" class="select">
+                <option value="">全部年级</option>
+                <option value="1">高一</option>
+                <option value="2">高二</option>
+                <option value="3">高三</option>
+              </select>
+              <select id="filter-student-class" class="select">
+                <option value="">全部班级</option>
+              </select>
+              <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索姓名、ID或选修课...">
+            </div>
             <button id="btn-add-student" class="btn btn-primary">添加学生</button>
           </div>
-          <div id="students-hint" class="search-hint">请输入关键词搜索学生（共 <span id="students-total">0</span> 名学生）</div>
+          <div id="students-hint" class="search-hint">请选择年级/班级或输入关键词搜索（共 <span id="students-total">0</span> 名学生）</div>
           <div id="students-list" class="content"></div>
         </div>
 

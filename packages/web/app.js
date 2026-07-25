@@ -313,10 +313,12 @@ function renderCoursesList(data) {
 
 // 加载学生列表
 async function loadStudents() {
-  const [students, selections, courses] = await Promise.all([
+  const [students, selections, courses, adminClasses, teachingClasses] = await Promise.all([
     api('/students'),
     api('/ap_selections'),
-    api('/courses')
+    api('/courses'),
+    api('/admin_classes'),
+    api('/teaching_classes')
   ]);
 
   // 合并选修课数据
@@ -334,6 +336,8 @@ async function loadStudents() {
   });
 
   window._studentsData = enhancedStudents;
+  window._adminClasses = adminClasses;
+  window._teachingClasses = teachingClasses;
 
   // 更新学生总数
   document.getElementById('students-total').textContent = enhancedStudents.length;
@@ -342,43 +346,108 @@ async function loadStudents() {
   const content = document.getElementById('students-list');
   content.innerHTML = '';
 
-  // 初始化搜索
-  initStudentSearch(enhancedStudents);
+  // 初始化筛选
+  initStudentFilters(enhancedStudents, adminClasses, teachingClasses);
 }
 
-function initStudentSearch(data) {
+function initStudentFilters(data, adminClasses, teachingClasses) {
+  const gradeFilter = document.getElementById('filter-student-grade');
+  const classFilter = document.getElementById('filter-student-class');
   const searchInput = document.getElementById('search-students');
-  const content = document.getElementById('students-list');
-  const hint = document.getElementById('students-hint');
 
-  searchInput.oninput = (e) => {
-    const keyword = e.target.value.toLowerCase().trim();
+  // 年级变化时更新班级选项
+  gradeFilter.onchange = () => {
+    const grade = gradeFilter.value;
 
-    if (!keyword) {
-      content.innerHTML = '';
-      hint.style.display = 'block';
-      return;
+    // 更新班级下拉框
+    let classOptions = '<option value="">全部班级</option>';
+
+    if (grade) {
+      // 筛选该年级的行政班
+      const gradeAdminClasses = adminClasses.filter(c => c.grade === parseInt(grade));
+      const gradeTeachingClasses = teachingClasses.filter(c => c.grade === parseInt(grade));
+
+      if (gradeAdminClasses.length > 0) {
+        classOptions += '<optgroup label="行政班">';
+        classOptions += gradeAdminClasses.map(c => `<option value="admin_${c.id}">${c.name}</option>`).join('');
+        classOptions += '</optgroup>';
+      }
+
+      if (gradeTeachingClasses.length > 0) {
+        classOptions += '<optgroup label="教学班">';
+        classOptions += gradeTeachingClasses.map(c => `<option value="teaching_${c.id}">${c.name}</option>`).join('');
+        classOptions += '</optgroup>';
+      }
+    } else {
+      // 显示所有班级
+      classOptions += '<optgroup label="行政班">';
+      classOptions += adminClasses.map(c => `<option value="admin_${c.id}">${c.name}</option>`).join('');
+      classOptions += '</optgroup>';
+      classOptions += '<optgroup label="教学班">';
+      classOptions += teachingClasses.map(c => `<option value="teaching_${c.id}">${c.name}</option>`).join('');
+      classOptions += '</optgroup>';
     }
 
-    hint.style.display = 'none';
+    classFilter.innerHTML = classOptions;
 
-    // 过滤匹配的学生
-    const filtered = data.filter(s => {
+    // 触发筛选
+    applyStudentFilters(data);
+  };
+
+  // 班级变化时触发筛选
+  classFilter.onchange = () => applyStudentFilters(data);
+
+  // 搜索框输入时触发筛选
+  searchInput.oninput = () => applyStudentFilters(data);
+}
+
+function applyStudentFilters(data) {
+  const gradeFilter = document.getElementById('filter-student-grade').value;
+  const classFilter = document.getElementById('filter-student-class').value;
+  const keyword = document.getElementById('search-students').value.toLowerCase().trim();
+  const hint = document.getElementById('students-hint');
+
+  let filtered = [...data];
+
+  // 按年级筛选
+  if (gradeFilter) {
+    filtered = filtered.filter(s => s.grade === parseInt(gradeFilter));
+  }
+
+  // 按班级筛选
+  if (classFilter) {
+    const [type, classId] = classFilter.split('_');
+    if (type === 'admin') {
+      filtered = filtered.filter(s => s.admin_class_id === classId);
+    } else if (type === 'teaching') {
+      filtered = filtered.filter(s => s.teaching_class_id === classId);
+    }
+  }
+
+  // 按关键词搜索
+  if (keyword) {
+    filtered = filtered.filter(s => {
       return s.id.toLowerCase().includes(keyword) ||
              s.name.toLowerCase().includes(keyword) ||
              s.admin_class_id.toLowerCase().includes(keyword) ||
              s.teaching_class_id.toLowerCase().includes(keyword) ||
              s.ap_selections.some(ap => ap.name.toLowerCase().includes(keyword) || ap.id.toLowerCase().includes(keyword));
     });
+  }
 
-    renderStudentsList(filtered, keyword);
-  };
+  // 判断是否有筛选条件
+  const hasFilter = gradeFilter || classFilter || keyword;
 
-  // 自动聚焦
-  searchInput.focus();
+  if (hasFilter) {
+    hint.style.display = 'none';
+    renderStudentsList(filtered, true);
+  } else {
+    hint.style.display = 'block';
+    document.getElementById('students-list').innerHTML = '';
+  }
 }
 
-function renderStudentsList(data, keyword = '') {
+function renderStudentsList(data, hasFilter = false) {
   const content = document.getElementById('students-list');
 
   if (data.length === 0) {
@@ -386,16 +455,30 @@ function renderStudentsList(data, keyword = '') {
     return;
   }
 
-  // 如果没有关键词，不显示列表（需要先搜索）
-  if (!keyword) {
+  // 如果没有筛选条件，不显示列表
+  if (!hasFilter) {
     content.innerHTML = '';
     return;
   }
 
+  // 统计选修课情况
+  const apStats = {};
+  data.forEach(s => {
+    s.ap_selections.forEach(ap => {
+      apStats[ap.name] = (apStats[ap.name] || 0) + 1;
+    });
+  });
+
   content.innerHTML = `
     <div class="table-container">
-      <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
-        找到 ${data.length} 名学生
+      <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px; display: flex; justify-content: space-between; align-items: center;">
+        <span>找到 ${data.length} 名学生</span>
+        ${Object.keys(apStats).length > 0 ? `
+          <span style="font-size: 12px;">
+            选课统计：
+            ${Object.entries(apStats).map(([name, count]) => `<strong>${name}</strong>(${count})`).join(' ')}
+          </span>
+        ` : ''}
       </div>
       <table>
         <thead>

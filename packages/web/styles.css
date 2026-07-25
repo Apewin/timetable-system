@@ -146,6 +146,23 @@ body {
   display: flex;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1;
+}
+
+.filter-group .select {
+  min-width: 120px;
+}
+
+.filter-group .search-input {
+  flex: 1;
+  min-width: 200px;
 }
 
 /* Buttons */
