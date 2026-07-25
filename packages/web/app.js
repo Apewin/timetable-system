@@ -2482,8 +2482,8 @@ function init() {
   // 初始化拖拽功能
   initDragAndDrop();
 
-  // 默认加载总课表视图
-  switchView('overview-timetable');
+  // 默认加载欢迎页面
+  switchView('welcome');
 }
 
 // 页面加载完成后初始化
