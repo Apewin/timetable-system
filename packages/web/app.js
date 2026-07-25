@@ -3032,12 +3032,16 @@ function generateClassCSV(data, days) {
 // 存储解析后的约束
 let formalConstraints = [];
 
+// 老师禁排时段数据（全局共享）
+window._teacherForbiddenSlots = {};
+
 // 加载正式课表页面
 async function loadFormalSolvePage() {
   try {
-    const [status, tasks] = await Promise.all([
+    const [status, tasks, teachers] = await Promise.all([
       api('/status'),
-      api('/teaching_tasks')
+      api('/teaching_tasks'),
+      api('/teachers')
     ]);
 
     // 更新状态显示
@@ -3054,6 +3058,17 @@ async function loadFormalSolvePage() {
       document.getElementById('formal-score').textContent = '-';
     }
 
+    // 加载老师列表到下拉框
+    const select = document.getElementById('formal-teacher-select');
+    select.innerHTML = '<option value="">选择老师</option>' +
+      teachers.map(t => `<option value="${t.id}">${t.name} (${t.id})</option>`).join('');
+
+    // 初始化课表网格
+    renderTeacherScheduleGrid('formal-teacher-schedule', 'formal');
+
+    // 更新统计
+    updateTeacherScheduleStats('formal');
+
     // 重置
     formalConstraints = [];
     document.getElementById('formal-parse-result').classList.add('hidden');
@@ -3062,6 +3077,218 @@ async function loadFormalSolvePage() {
     console.error('加载排课状态失败:', error);
   }
 }
+
+// 渲染老师课表网格
+function renderTeacherScheduleGrid(containerId, prefix) {
+  const container = document.getElementById(containerId);
+  const days = ['周一', '周二', '周三', '周四', '周五'];
+
+  let html = '<div class="header-cell">节次</div>';
+  days.forEach(d => html += `<div class="header-cell">${d}</div>`);
+
+  for (let period = 1; period <= 10; period++) {
+    const session = period <= 5 ? '上午' : '下午';
+    html += `<div class="time-cell"><div>第${period}节</div><div style="font-size:10px;color:var(--gray-400)">${session}</div></div>`;
+
+    for (let day = 1; day <= 5; day++) {
+      const slotId = `D${day}P${period}`;
+      html += `<div class="slot-cell" data-slot="${slotId}" onclick="toggleTeacherSlot('${slotId}', '${prefix}')"></div>`;
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+// 切换老师时段状态
+window.toggleTeacherSlot = function(slotId, prefix) {
+  const select = document.getElementById(`${prefix}-teacher-select`);
+  const teacherId = select.value;
+
+  if (!teacherId) {
+    showToast('请先选择老师', 'warning');
+    return;
+  }
+
+  // 初始化老师的禁排时段
+  if (!window._teacherForbiddenSlots[teacherId]) {
+    window._teacherForbiddenSlots[teacherId] = new Set();
+  }
+
+  const slots = window._teacherForbiddenSlots[teacherId];
+
+  // 切换状态
+  if (slots.has(slotId)) {
+    slots.delete(slotId);
+  } else {
+    slots.add(slotId);
+  }
+
+  // 更新UI
+  updateTeacherScheduleUI(teacherId, prefix);
+  updateTeacherScheduleStats(prefix);
+};
+
+// 更新老师课表UI
+function updateTeacherScheduleUI(teacherId, prefix) {
+  const container = document.getElementById(`${prefix}-teacher-schedule`);
+  const slots = window._teacherForbiddenSlots[teacherId] || new Set();
+
+  container.querySelectorAll('.slot-cell').forEach(cell => {
+    const slotId = cell.dataset.slot;
+    if (slots.has(slotId)) {
+      cell.classList.add('forbidden');
+    } else {
+      cell.classList.remove('forbidden');
+    }
+  });
+}
+
+// 加载老师的课表（切换老师时）
+window.loadTeacherSchedule = function() {
+  const select = document.getElementById('formal-teacher-select');
+  const teacherId = select.value;
+
+  if (!teacherId) {
+    // 清空显示
+    document.querySelectorAll('#formal-teacher-schedule .slot-cell').forEach(cell => {
+      cell.classList.remove('forbidden');
+    });
+    document.getElementById('formal-marked-count').textContent = '0';
+    return;
+  }
+
+  // 加载该老师的禁排时段
+  updateTeacherScheduleUI(teacherId, 'formal');
+  updateTeacherScheduleStats('formal');
+};
+
+// 清空选中老师的禁排时段
+window.clearTeacherSchedule = function() {
+  const select = document.getElementById('formal-teacher-select');
+  const teacherId = select.value;
+
+  if (!teacherId) {
+    showToast('请先选择老师', 'warning');
+    return;
+  }
+
+  if (confirm(`确定要清空 ${teacherId} 的所有禁排时段吗？`)) {
+    window._teacherForbiddenSlots[teacherId] = new Set();
+    updateTeacherScheduleUI(teacherId, 'formal');
+    updateTeacherScheduleStats('formal');
+    showToast('已清空', 'success');
+  }
+};
+
+// 清空所有老师的禁排时段
+window.clearAllTeacherSchedules = function() {
+  if (confirm('确定要清空所有老师的禁排时段吗？')) {
+    window._teacherForbiddenSlots = {};
+    document.querySelectorAll('#formal-teacher-schedule .slot-cell').forEach(cell => {
+      cell.classList.remove('forbidden');
+    });
+    updateTeacherScheduleStats('formal');
+    showToast('已清空所有', 'success');
+  }
+};
+
+// 更新统计
+function updateTeacherScheduleStats(prefix) {
+  const select = document.getElementById(`${prefix}-teacher-select`);
+  const teacherId = select.value;
+
+  // 当前老师的标记数
+  const currentSlots = teacherId ? (window._teacherForbiddenSlots[teacherId] || new Set()) : new Set();
+  document.getElementById(`${prefix}-marked-count`).textContent = currentSlots.size;
+
+  // 已保存的老师数
+  const savedCount = Object.keys(window._teacherForbiddenSlots).filter(k => window._teacherForbiddenSlots[k].size > 0).length;
+  document.getElementById(`${prefix}-saved-count`).textContent = savedCount;
+}
+
+// ==================== 临时课表的涂课功能 ====================
+
+// 加载临时课表页面
+async function loadTempTimetablePage() {
+  try {
+    const teachers = await api('/teachers');
+
+    // 加载老师列表到下拉框
+    const select = document.getElementById('temp-teacher-select');
+    select.innerHTML = '<option value="">选择老师</option>' +
+      teachers.map(t => `<option value="${t.id}">${t.name} (${t.id})</option>`).join('');
+
+    // 初始化课表网格
+    renderTeacherScheduleGrid('temp-teacher-schedule', 'temp');
+
+    // 更新统计
+    updateTeacherScheduleStats('temp');
+
+    // 设置默认日期
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const nextWeekStr = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    document.getElementById('temp-start-date').value = todayStr;
+    document.getElementById('temp-end-date').value = nextWeekStr;
+
+    // 清空之前的结果
+    document.getElementById('temp-parse-result').classList.add('hidden');
+    document.getElementById('temp-adjustments-section').classList.add('hidden');
+    document.getElementById('temp-result').classList.add('hidden');
+
+    tempAdjustments = [];
+  } catch (error) {
+    console.error('加载临时课表页面失败:', error);
+  }
+}
+
+// 加载老师的课表（临时课表）
+window.loadTeacherScheduleTemp = function() {
+  const select = document.getElementById('temp-teacher-select');
+  const teacherId = select.value;
+
+  if (!teacherId) {
+    document.querySelectorAll('#temp-teacher-schedule .slot-cell').forEach(cell => {
+      cell.classList.remove('forbidden');
+    });
+    document.getElementById('temp-marked-count').textContent = '0';
+    return;
+  }
+
+  updateTeacherScheduleUI(teacherId, 'temp');
+  updateTeacherScheduleStats('temp');
+};
+
+// 清空选中老师的禁排时段（临时课表）
+window.clearTeacherScheduleTemp = function() {
+  const select = document.getElementById('temp-teacher-select');
+  const teacherId = select.value;
+
+  if (!teacherId) {
+    showToast('请先选择老师', 'warning');
+    return;
+  }
+
+  if (confirm(`确定要清空 ${teacherId} 的所有禁排时段吗？`)) {
+    window._teacherForbiddenSlots[teacherId] = new Set();
+    updateTeacherScheduleUI(teacherId, 'temp');
+    updateTeacherScheduleStats('temp');
+    showToast('已清空', 'success');
+  }
+};
+
+// 清空所有老师的禁排时段（临时课表）
+window.clearAllTeacherSchedulesTemp = function() {
+  if (confirm('确定要清空所有老师的禁排时段吗？')) {
+    window._teacherForbiddenSlots = {};
+    document.querySelectorAll('#temp-teacher-schedule .slot-cell').forEach(cell => {
+      cell.classList.remove('forbidden');
+    });
+    updateTeacherScheduleStats('temp');
+    showToast('已清空所有', 'success');
+  }
+};
 
 // 解析自然语言排课需求
 window.parseFormalDescription = async function() {
@@ -3565,28 +3792,6 @@ window.resetFormalSolve = async function() {
 
 // 临时课表数据
 let tempAdjustments = [];
-
-// 加载临时课表页面
-async function loadTempTimetablePage() {
-  try {
-    // 设置默认日期
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-    const nextWeekStr = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-    document.getElementById('temp-start-date').value = todayStr;
-    document.getElementById('temp-end-date').value = nextWeekStr;
-
-    // 清空之前的结果
-    document.getElementById('temp-parse-result').classList.add('hidden');
-    document.getElementById('temp-adjustments-section').classList.add('hidden');
-    document.getElementById('temp-result').classList.add('hidden');
-
-    tempAdjustments = [];
-  } catch (error) {
-    console.error('加载临时课表页面失败:', error);
-  }
-}
 
 // AI 解析临时调课描述
 window.parseTempDescription = async function() {

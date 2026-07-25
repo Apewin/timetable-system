@@ -510,6 +510,83 @@ tr:hover {
   color: var(--gray-600);
 }
 
+/* Teacher Paint Schedule */
+.teacher-paint-controls {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.teacher-paint-controls .select {
+  min-width: 200px;
+}
+
+.teacher-schedule-grid {
+  display: grid;
+  grid-template-columns: 60px repeat(5, 1fr);
+  gap: 2px;
+  background-color: var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.teacher-schedule-grid .header-cell {
+  background-color: var(--gray-100);
+  padding: 10px 8px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--gray-700);
+}
+
+.teacher-schedule-grid .time-cell {
+  background-color: var(--gray-100);
+  padding: 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--gray-600);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.teacher-schedule-grid .slot-cell {
+  background-color: var(--white);
+  padding: 12px 8px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  min-height: 45px;
+}
+
+.teacher-schedule-grid .slot-cell:hover {
+  background-color: #ffcdd2;
+}
+
+.teacher-schedule-grid .slot-cell.forbidden {
+  background-color: #f44336;
+  color: white;
+  font-weight: 600;
+}
+
+.teacher-schedule-grid .slot-cell.forbidden::after {
+  content: '✕';
+  font-size: 14px;
+}
+
+.teacher-schedule-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--gray-500);
+}
+
+.teacher-schedule-stats strong {
+  color: var(--primary);
+}
+
 /* Temp Timetable */
 .temp-info {
   display: grid;

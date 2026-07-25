@@ -86,6 +86,24 @@
             </div>
 
             <div class="solve-section">
+              <h3>🚫 老师禁排时段（涂课）</h3>
+              <p class="ai-hint">选择老师，然后点击课表格子标记不可排课的时段（红色=禁排）</p>
+              <div class="teacher-paint-controls">
+                <select id="formal-teacher-select" class="select" onchange="loadTeacherSchedule()">
+                  <option value="">选择老师</option>
+                </select>
+                <button class="btn btn-secondary" onclick="clearTeacherSchedule()">清空选中老师</button>
+                <button class="btn btn-secondary" onclick="clearAllTeacherSchedules()">清空所有</button>
+              </div>
+              <div id="formal-teacher-schedule" class="teacher-schedule-grid"></div>
+              <div class="teacher-schedule-stats">
+                <span>已标记: <strong id="formal-marked-count">0</strong> 个时段</span>
+                <span>|</span>
+                <span>已保存: <strong id="formal-saved-count">0</strong> 个老师的禁排时段</span>
+              </div>
+            </div>
+
+            <div class="solve-section">
               <h3>🤖 AI 智能排课</h3>
               <p class="ai-hint">用自然语言描述你的排课偏好，AI 会理解并生成多个最优解供你选择</p>
               <div class="ai-input-group">
@@ -160,6 +178,24 @@
         <div id="view-temp-timetable" class="view">
           <h2>📙 临时课表</h2>
           <div class="solve-container">
+            <div class="solve-section">
+              <h3>🚫 老师禁排时段（涂课）</h3>
+              <p class="ai-hint">选择老师，然后点击课表格子标记不可排课的时段（红色=禁排）</p>
+              <div class="teacher-paint-controls">
+                <select id="temp-teacher-select" class="select" onchange="loadTeacherScheduleTemp()">
+                  <option value="">选择老师</option>
+                </select>
+                <button class="btn btn-secondary" onclick="clearTeacherScheduleTemp()">清空选中老师</button>
+                <button class="btn btn-secondary" onclick="clearAllTeacherSchedulesTemp()">清空所有</button>
+              </div>
+              <div id="temp-teacher-schedule" class="teacher-schedule-grid"></div>
+              <div class="teacher-schedule-stats">
+                <span>已标记: <strong id="temp-marked-count">0</strong> 个时段</span>
+                <span>|</span>
+                <span>已保存: <strong id="temp-saved-count">0</strong> 个老师的禁排时段</span>
+              </div>
+            </div>
+
             <div class="solve-section">
               <h3>📅 临时课表时间</h3>
               <div class="temp-info">
