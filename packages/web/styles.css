@@ -999,6 +999,36 @@ tr:hover {
   color: var(--secondary);
 }
 
+/* Search Hint */
+.search-hint {
+  text-align: center;
+  padding: 20px;
+  color: var(--gray-500);
+  font-size: 14px;
+}
+
+.search-hint span {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* Student AP Tags */
+.ap-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ap-tag {
+  display: inline-block;
+  background-color: #f3e5f5;
+  color: #7b1fa2;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .ai-stats {
   display: flex;
   gap: 16px;

@@ -113,10 +113,11 @@
         <div id="view-students" class="view">
           <h2>学生管理</h2>
           <div class="toolbar">
-            <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索学生姓名、ID、班级...">
+            <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索学生姓名、ID、班级或选修课..." autofocus>
             <button id="btn-add-student" class="btn btn-primary">添加学生</button>
           </div>
-          <div id="students-list" class="content">加载中...</div>
+          <div id="students-hint" class="search-hint">请输入关键词搜索学生（共 <span id="students-total">0</span> 名学生）</div>
+          <div id="students-list" class="content"></div>
         </div>
 
         <div id="view-classes" class="view">

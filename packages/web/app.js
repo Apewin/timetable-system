@@ -313,25 +313,90 @@ function renderCoursesList(data) {
 
 // 加载学生列表
 async function loadStudents() {
-  const data = await api('/students');
-  window._studentsData = data;
-  renderStudentsList(data);
-  initEntitySearch('search-students', data, renderStudentsList, (item, keyword) => {
-    return item.id.toLowerCase().includes(keyword) ||
-           item.name.toLowerCase().includes(keyword) ||
-           item.admin_class_id.toLowerCase().includes(keyword) ||
-           item.teaching_class_id.toLowerCase().includes(keyword);
+  const [students, selections, courses] = await Promise.all([
+    api('/students'),
+    api('/ap_selections'),
+    api('/courses')
+  ]);
+
+  // 合并选修课数据
+  const enhancedStudents = students.map(s => {
+    const selection = selections.find(sel => sel.student_id === s.id);
+    const apCourses = selection ? selection.course_ids.map(cid => {
+      const course = courses.find(c => c.id === cid);
+      return { id: cid, name: course?.name || cid };
+    }) : [];
+
+    return {
+      ...s,
+      ap_selections: apCourses
+    };
   });
+
+  window._studentsData = enhancedStudents;
+
+  // 更新学生总数
+  document.getElementById('students-total').textContent = enhancedStudents.length;
+
+  // 清空列表，显示提示
+  const content = document.getElementById('students-list');
+  content.innerHTML = '';
+
+  // 初始化搜索
+  initStudentSearch(enhancedStudents);
 }
 
-function renderStudentsList(data) {
+function initStudentSearch(data) {
+  const searchInput = document.getElementById('search-students');
   const content = document.getElementById('students-list');
+  const hint = document.getElementById('students-hint');
+
+  searchInput.oninput = (e) => {
+    const keyword = e.target.value.toLowerCase().trim();
+
+    if (!keyword) {
+      content.innerHTML = '';
+      hint.style.display = 'block';
+      return;
+    }
+
+    hint.style.display = 'none';
+
+    // 过滤匹配的学生
+    const filtered = data.filter(s => {
+      return s.id.toLowerCase().includes(keyword) ||
+             s.name.toLowerCase().includes(keyword) ||
+             s.admin_class_id.toLowerCase().includes(keyword) ||
+             s.teaching_class_id.toLowerCase().includes(keyword) ||
+             s.ap_selections.some(ap => ap.name.toLowerCase().includes(keyword) || ap.id.toLowerCase().includes(keyword));
+    });
+
+    renderStudentsList(filtered, keyword);
+  };
+
+  // 自动聚焦
+  searchInput.focus();
+}
+
+function renderStudentsList(data, keyword = '') {
+  const content = document.getElementById('students-list');
+
   if (data.length === 0) {
-    content.innerHTML = '<div class="empty-state"><p>暂无学生数据</p></div>';
+    content.innerHTML = '<div class="empty-state"><p>未找到匹配的学生</p></div>';
     return;
   }
+
+  // 如果没有关键词，不显示列表（需要先搜索）
+  if (!keyword) {
+    content.innerHTML = '';
+    return;
+  }
+
   content.innerHTML = `
     <div class="table-container">
+      <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
+        找到 ${data.length} 名学生
+      </div>
       <table>
         <thead>
           <tr>
@@ -340,6 +405,7 @@ function renderStudentsList(data) {
             <th>年级</th>
             <th>行政班</th>
             <th>教学班</th>
+            <th>选修课</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -351,6 +417,12 @@ function renderStudentsList(data) {
               <td>${s.grade}</td>
               <td>${s.admin_class_id}</td>
               <td>${s.teaching_class_id}</td>
+              <td>
+                ${s.ap_selections.length > 0
+                  ? `<div class="ap-tags">${s.ap_selections.map(ap => `<span class="ap-tag">${ap.name}</span>`).join('')}</div>`
+                  : '<span style="color: var(--gray-400);">无</span>'
+                }
+              </td>
               <td>
                 <button class="btn btn-primary btn-sm" onclick="editEntity('students', '${s.id}')">编辑</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteEntity('students', '${s.id}')">删除</button>
