@@ -328,6 +328,119 @@ tr:hover {
   color: var(--gray-500);
 }
 
+/* Welcome Page */
+.welcome-container {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.welcome-header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.welcome-header h1 {
+  font-size: 36px;
+  color: var(--gray-800);
+  margin: 0 0 8px 0;
+}
+
+.welcome-subtitle {
+  font-size: 18px;
+  color: var(--gray-500);
+}
+
+.welcome-content {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 24px;
+}
+
+.welcome-card {
+  background-color: var(--white);
+  border-radius: var(--radius);
+  padding: 24px;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.welcome-card-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.welcome-card h3 {
+  margin: 0 0 8px 0;
+  color: var(--gray-800);
+}
+
+.welcome-card-desc {
+  font-size: 14px;
+  color: var(--gray-500);
+  margin-bottom: 16px;
+}
+
+.datetime-display {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--primary);
+  margin: 16px 0;
+}
+
+.datetime-display .date {
+  font-size: 16px;
+  color: var(--gray-600);
+  margin-top: 4px;
+}
+
+.ai-test-result {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  min-height: 20px;
+}
+
+.ai-test-result.success {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #a5d6a7;
+}
+
+.ai-test-result.error {
+  background-color: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+}
+
+.ai-test-result.testing {
+  background-color: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #90caf9;
+}
+
+.quick-links {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.quick-links a {
+  display: block;
+  padding: 12px 16px;
+  background-color: var(--gray-100);
+  border-radius: var(--radius);
+  color: var(--gray-700);
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.quick-links a:hover {
+  background-color: var(--primary);
+  color: var(--white);
+}
+
 /* Navigation Primary Section */
 .nav-section-primary {
   background: linear-gradient(135deg, #e3f2fd, #bbdefb);

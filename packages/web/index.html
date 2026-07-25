@@ -21,7 +21,8 @@
         <div class="nav-section nav-section-primary">
           <h3>🎯 排课表</h3>
           <ul>
-            <li><a href="#" data-view="formal-timetable" class="active">📘 正式课表</a></li>
+            <li><a href="#" data-view="welcome" class="active">🏠 首页</a></li>
+            <li><a href="#" data-view="formal-timetable">📘 正式课表</a></li>
             <li><a href="#" data-view="temp-timetable">📙 临时课表</a></li>
             <li><a href="#" data-view="validate">✅ 数据校验</a></li>
           </ul>
@@ -59,6 +60,45 @@
       </nav>
 
       <main class="main">
+        <!-- 欢迎页面 -->
+        <div id="view-welcome" class="view active">
+          <div class="welcome-container">
+            <div class="welcome-header">
+              <h1>📚 排课系统</h1>
+              <p class="welcome-subtitle">AP课程选科走班排课系统</p>
+            </div>
+
+            <div class="welcome-content">
+              <div class="welcome-card">
+                <div class="welcome-card-icon">🕐</div>
+                <h3>当前时间</h3>
+                <div id="current-datetime" class="datetime-display">
+                  加载中...
+                </div>
+              </div>
+
+              <div class="welcome-card">
+                <div class="welcome-card-icon">🤖</div>
+                <h3>AI API 连接测试</h3>
+                <p class="welcome-card-desc">测试 DeepSeek API 是否正常连接</p>
+                <button class="btn btn-primary" onclick="testAIConnection()">🔗 测试连接</button>
+                <div id="ai-test-result" class="ai-test-result"></div>
+              </div>
+
+              <div class="welcome-card">
+                <div class="welcome-card-icon">📊</div>
+                <h3>快速开始</h3>
+                <div class="quick-links">
+                  <a href="#" onclick="switchView('formal-timetable')">📘 正式课表</a>
+                  <a href="#" onclick="switchView('temp-timetable')">📙 临时课表</a>
+                  <a href="#" onclick="switchView('students')">👨‍🎓 学生管理</a>
+                  <a href="#" onclick="switchView('import')">📥 数据导入</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 正式课表 -->
         <div id="view-formal-timetable" class="view">
           <h2>📘 正式课表</h2>

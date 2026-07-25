@@ -74,6 +74,9 @@ function switchView(viewName) {
 // 加载视图数据
 async function loadViewData(viewName) {
   switch (viewName) {
+    case 'welcome':
+      loadWelcomePage();
+      break;
     case 'status':
       await loadStatus();
       break;
@@ -130,6 +133,72 @@ async function loadViewData(viewName) {
       break;
   }
 }
+
+// 加载欢迎页面
+function loadWelcomePage() {
+  // 更新时间
+  updateDateTime();
+  // 每秒更新时间
+  if (window._dateTimeInterval) {
+    clearInterval(window._dateTimeInterval);
+  }
+  window._dateTimeInterval = setInterval(updateDateTime, 1000);
+}
+
+// 更新时间显示
+function updateDateTime() {
+  const now = new Date();
+  const options = {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  };
+
+  const dateTimeStr = now.toLocaleString('zh-CN', options);
+  const [dateStr, timeStr] = dateTimeStr.split(' ');
+
+  document.getElementById('current-datetime').innerHTML = `
+    <div>${timeStr}</div>
+    <div class="date">${dateStr}</div>
+  `;
+}
+
+// 测试 AI 连接
+window.testAIConnection = async function() {
+  const resultDiv = document.getElementById('ai-test-result');
+  resultDiv.className = 'ai-test-result testing';
+  resultDiv.textContent = '🔄 正在测试连接...';
+
+  try {
+    const startTime = Date.now();
+
+    const response = await fetch('/api/ai/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '你好，请回复"连接成功"' })
+    });
+
+    const result = await response.json();
+    const endTime = Date.now();
+    const latency = endTime - startTime;
+
+    if (result.ok) {
+      resultDiv.className = 'ai-test-result success';
+      resultDiv.innerHTML = `✅ 连接成功！<br>响应时间: ${latency}ms<br>AI回复: ${result.data.response}`;
+    } else {
+      resultDiv.className = 'ai-test-result error';
+      resultDiv.textContent = `❌ 连接失败: ${result.errors?.[0]?.msg || '未知错误'}`;
+    }
+  } catch (error) {
+    resultDiv.className = 'ai-test-result error';
+    resultDiv.textContent = `❌ 连接失败: ${error.message}`;
+  }
+};
 
 // 加载状态
 async function loadStatus() {

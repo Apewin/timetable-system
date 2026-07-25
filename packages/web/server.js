@@ -1332,6 +1332,44 @@ function evaluateSolution(state, assignments, tasks, constraints) {
   };
 }
 
+// API: 测试 AI 连接
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    if (!DEEPSEEK_API_KEY) {
+      return res.json({
+        ok: false,
+        errors: [{ code: 'NO_API_KEY', msg: 'DeepSeek API Key 未配置' }]
+      });
+    }
+
+    const startTime = Date.now();
+
+    const response = await callDeepSeek([
+      { role: 'system', content: '你是一个测试助手。用户会发送测试消息，你需要简短回复。' },
+      { role: 'user', content: message || '你好，请回复"连接成功"' }
+    ], { temperature: 0.3, maxTokens: 100 });
+
+    const endTime = Date.now();
+
+    res.json({
+      ok: true,
+      data: {
+        response: response.trim(),
+        latency: endTime - startTime,
+        model: 'deepseek-v4-flash'
+      }
+    });
+  } catch (error) {
+    console.error('AI 连接测试失败:', error);
+    res.json({
+      ok: false,
+      errors: [{ code: 'CONNECTION_ERROR', msg: error.message }]
+    });
+  }
+});
+
 // API: 解析临时调课描述
 app.post('/api/ai/parse-temp-timetable', async (req, res) => {
   try {
