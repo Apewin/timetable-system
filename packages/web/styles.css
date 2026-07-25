@@ -608,11 +608,23 @@ tr:hover {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.ap-course-header:hover {
+  background: linear-gradient(135deg, #6a1b9a, #8e24aa);
 }
 
 .ap-course-header h4 {
   margin: 0;
   font-size: 16px;
+}
+
+.ap-course-header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .ap-course-header .student-count {
@@ -622,10 +634,19 @@ tr:hover {
   font-size: 14px;
 }
 
+.ap-course-header .expand-icon {
+  font-size: 12px;
+  transition: transform 0.2s;
+}
+
 .ap-course-body {
   padding: 16px;
-  max-height: 300px;
+  max-height: 400px;
   overflow-y: auto;
+}
+
+.ap-course-body.hidden {
+  display: none;
 }
 
 .student-list {

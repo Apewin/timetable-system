@@ -742,12 +742,15 @@ function renderSelectionsList(data) {
   content.innerHTML = `
     <div class="ap-courses-grid">
       ${data.map(course => `
-        <div class="ap-course-card">
-          <div class="ap-course-header">
+        <div class="ap-course-card" id="course-card-${course.course_id}">
+          <div class="ap-course-header" onclick="toggleCourseExpand('${course.course_id}')">
             <h4>${course.course_name}</h4>
-            <span class="student-count">${course.students.length} 人</span>
+            <div class="header-right">
+              <span class="student-count">${course.students.length} 人</span>
+              <span class="expand-icon" id="expand-icon-${course.course_id}">▶</span>
+            </div>
           </div>
-          <div class="ap-course-body">
+          <div class="ap-course-body hidden" id="course-body-${course.course_id}">
             ${course.students.length === 0 ? `
               <div class="empty-state" style="padding: 12px;">
                 <p>暂无学生选课</p>
@@ -763,15 +766,29 @@ function renderSelectionsList(data) {
                 `).join('')}
               </div>
             `}
-          </div>
-          <div class="ap-course-footer">
-            <button class="btn btn-primary btn-sm" onclick="addStudentToCourse('${course.course_id}')">+ 添加学生</button>
+            <div class="ap-course-footer">
+              <button class="btn btn-primary btn-sm" onclick="addStudentToCourse('${course.course_id}')">+ 添加学生</button>
+            </div>
           </div>
         </div>
       `).join('')}
     </div>
   `;
 }
+
+// 切换课程展开/折叠
+window.toggleCourseExpand = function(courseId) {
+  const body = document.getElementById(`course-body-${courseId}`);
+  const icon = document.getElementById(`expand-icon-${courseId}`);
+
+  if (body.classList.contains('hidden')) {
+    body.classList.remove('hidden');
+    icon.textContent = '▼';
+  } else {
+    body.classList.add('hidden');
+    icon.textContent = '▶';
+  }
+};
 
 // 从课程中移除学生
 window.removeStudentFromCourse = async function(studentId, courseId) {
