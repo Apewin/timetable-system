@@ -2614,7 +2614,46 @@ window.previewExport = async function() {
   try {
     showToast('正在生成预览...', 'info');
 
-    // 获取课表数据
+    const days = ['周一', '周二', '周三', '周四', '周五'];
+    const periods = ['第1节', '第2节', '第3节', '第4节', '第5节', '第6节', '第7节', '第8节', '第9节', '第10节'];
+
+    // 如果是全部课表，按班级分组显示
+    if (dimension === 'all') {
+      const [adminClasses, teachingClasses] = await Promise.all([
+        api('/admin_classes'),
+        api('/teaching_classes')
+      ]);
+
+      let html = `
+        <div style="margin-bottom: 12px; color: var(--gray-600);">
+          全部课表预览 | 共 ${adminClasses.length + teachingClasses.length} 个班级
+        </div>
+      `;
+
+      // 行政班预览
+      for (const cls of adminClasses) {
+        const classData = await api(`/timetable/class/${cls.id}`);
+        if (classData.rows && classData.rows.length > 0) {
+          html += generateClassPreview(cls.name, '行政班', classData, days, periods);
+        }
+      }
+
+      // 教学班预览
+      for (const cls of teachingClasses) {
+        const classData = await api(`/timetable/class/${cls.id}`);
+        if (classData.rows && classData.rows.length > 0) {
+          html += generateClassPreview(cls.name, '教学班', classData, days, periods);
+        }
+      }
+
+      contentDiv.innerHTML = html;
+      previewDiv.classList.remove('hidden');
+      previewDiv.scrollIntoView({ behavior: 'smooth' });
+      showToast('预览生成成功', 'success');
+      return;
+    }
+
+    // 单个课表预览
     const data = await api(`/timetable/${dimension}/${target || 'all'}`);
 
     if (!data || !data.rows || data.rows.length === 0) {
@@ -2622,10 +2661,6 @@ window.previewExport = async function() {
       previewDiv.classList.remove('hidden');
       return;
     }
-
-    // 生成预览表格
-    const days = ['周一', '周二', '周三', '周四', '周五'];
-    const periods = ['第1节', '第2节', '第3节', '第4节', '第5节', '第6节', '第7节', '第8节', '第9节', '第10节'];
 
     let html = `
       <div style="margin-bottom: 12px; color: var(--gray-600);">
@@ -2672,6 +2707,48 @@ window.previewExport = async function() {
     showToast(error.message, 'error');
   }
 };
+
+// 生成班级预览 HTML
+function generateClassPreview(className, classType, data, days, periods) {
+  let html = `
+    <div style="margin-top: 24px; margin-bottom: 8px;">
+      <h4 style="color: #1976D2; border-bottom: 2px solid #1976D2; padding-bottom: 4px;">
+        ${className} (${classType})
+      </h4>
+    </div>
+    <div class="export-preview-content">
+      <table>
+        <thead>
+          <tr>
+            <th>节次</th>
+            ${days.map(d => `<th>${d}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+  `;
+
+  data.rows.forEach((row, index) => {
+    html += `<tr><td><strong>${periods[index] || `第${index + 1}节`}</strong></td>`;
+
+    for (let i = 1; i <= 5; i++) {
+      const slot = row[i];
+      if (slot) {
+        html += `<td class="has-class">
+          <div><strong>${slot.course}</strong></div>
+          <div style="font-size: 12px; color: var(--gray-600);">${slot.teacher}</div>
+          <div style="font-size: 11px; color: var(--gray-500);">${slot.room}</div>
+        </td>`;
+      } else {
+        html += `<td class="empty-slot">-</td>`;
+      }
+    }
+
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  return html;
+}
 
 // 导出课表
 window.exportTimetable = async function() {
