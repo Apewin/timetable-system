@@ -3284,30 +3284,79 @@ window.requestAISuggestions = async function() {
       })
     });
 
+    // 显示分析
+    let html = '';
+
+    if (result.analysis) {
+      html += `
+        <div style="background-color: #e3f2fd; border-radius: var(--radius); padding: 16px; margin-bottom: 20px;">
+          <h4 style="margin: 0 0 8px 0; color: #1565c0;">🔍 问题分析</h4>
+          <p style="margin: 0; color: var(--gray-700); line-height: 1.6;">${result.analysis}</p>
+        </div>
+      `;
+    }
+
     // 显示建议
     if (result.suggestions && result.suggestions.length > 0) {
-      let html = `
+      html += `
         <div style="margin-bottom: 16px; color: var(--gray-600);">
           AI 生成了 ${result.suggestions.length} 条优化建议，选择接受或拒绝：
         </div>
       `;
 
       result.suggestions.forEach((suggestion, index) => {
-        const typeClass = suggestion.type;
-        const typeLabel = suggestion.type === 'room' ? '教室' :
-                         suggestion.type === 'teacher' ? '教师' : '时段';
-
         html += `
           <div class="suggestion-item" id="suggestion-${index}">
             <div class="suggestion-header">
-              <h4>${suggestion.title}</h4>
-              <span class="badge ${typeClass}">${typeLabel}</span>
+              <h4>${suggestion.title || `方案 ${index + 1}`}</h4>
+              <span class="badge" style="background-color: #f3e5f5; color: #7b1fa2;">${suggestion.type || '优化方案'}</span>
             </div>
             <div class="suggestion-body">
-              ${suggestion.description}
+              <p style="margin: 0 0 12px 0;">${suggestion.description || ''}</p>
+
+              ${suggestion.steps && suggestion.steps.length > 0 ? `
+                <div style="margin-bottom: 12px;">
+                  <strong style="font-size: 13px;">实施步骤：</strong>
+                  <ol style="margin: 8px 0 0 0; padding-left: 20px; font-size: 13px;">
+                    ${suggestion.steps.map(step => `<li>${step}</li>`).join('')}
+                  </ol>
+                </div>
+              ` : ''}
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
+                ${suggestion.pros && suggestion.pros.length > 0 ? `
+                  <div>
+                    <strong style="color: #2e7d32;">✅ 优点：</strong>
+                    <ul style="margin: 4px 0 0 0; padding-left: 16px;">
+                      ${suggestion.pros.map(pro => `<li>${pro}</li>`).join('')}
+                    </ul>
+                  </div>
+                ` : ''}
+
+                ${suggestion.cons && suggestion.cons.length > 0 ? `
+                  <div>
+                    <strong style="color: #c62828;">⚠️ 缺点：</strong>
+                    <ul style="margin: 4px 0 0 0; padding-left: 16px;">
+                      ${suggestion.cons.map(con => `<li>${con}</li>`).join('')}
+                    </ul>
+                  </div>
+                ` : ''}
+              </div>
+
+              ${suggestion.impact ? `
+                <div style="margin-top: 12px; padding: 8px 12px; background-color: #fff3e0; border-radius: 4px; font-size: 13px;">
+                  <strong>💡 连锁影响：</strong> ${suggestion.impact}
+                </div>
+              ` : ''}
+
+              ${suggestion.confidence ? `
+                <div style="margin-top: 8px; font-size: 12px; color: var(--gray-500);">
+                  AI 置信度：${Math.round(suggestion.confidence * 100)}%
+                </div>
+              ` : ''}
             </div>
             <div class="suggestion-actions">
-              <button class="btn btn-primary btn-sm" onclick="acceptSuggestion(${index})">✅ 接受</button>
+              <button class="btn btn-primary btn-sm" onclick="acceptSuggestion(${index})">✅ 接受此方案</button>
               <button class="btn btn-secondary btn-sm" onclick="rejectSuggestion(${index})">❌ 拒绝</button>
             </div>
           </div>
