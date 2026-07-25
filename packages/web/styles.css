@@ -587,6 +587,78 @@ tr:hover {
   color: var(--primary);
 }
 
+/* AP Courses Grid */
+.ap-courses-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px;
+}
+
+.ap-course-card {
+  background-color: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ap-course-header {
+  background: linear-gradient(135deg, #7b1fa2, #9c27b0);
+  color: white;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ap-course-header h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.ap-course-header .student-count {
+  background-color: rgba(255, 255, 255, 0.2);
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.ap-course-body {
+  padding: 16px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.student-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.student-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background-color: var(--gray-100);
+  border-radius: var(--radius);
+}
+
+.student-item .student-name {
+  font-weight: 500;
+  color: var(--gray-800);
+}
+
+.student-item .student-info {
+  font-size: 12px;
+  color: var(--gray-500);
+}
+
+.ap-course-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--gray-200);
+  background-color: var(--gray-100);
+}
+
 /* Temp Timetable */
 .temp-info {
   display: grid;

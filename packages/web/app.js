@@ -683,58 +683,202 @@ function renderAssignmentsList(data) {
   `;
 }
 
-// 加载AP选课列表
+// 加载AP选课列表（以课程为主）
 async function loadSelections() {
-  const data = await api('/ap_selections');
-  const students = await api('/students');
+  const [selections, students, courses] = await Promise.all([
+    api('/ap_selections'),
+    api('/students'),
+    api('/courses')
+  ]);
 
-  // 增强数据，添加学生名称
-  const enhancedData = data.map(s => ({
-    ...s,
-    student_name: students.find(st => st.id === s.student_id)?.name || s.student_id
-  }));
+  // 按课程分组
+  const courseGroups = {};
 
-  window._selectionsData = enhancedData;
-  renderSelectionsList(enhancedData);
+  // 初始化所有AP课程
+  courses.filter(c => c.type === 'ap').forEach(course => {
+    courseGroups[course.id] = {
+      course_id: course.id,
+      course_name: course.name,
+      students: []
+    };
+  });
 
-  initEntitySearch('search-selections', enhancedData, renderSelectionsList, (item, keyword) => {
-    return item.student_id.toLowerCase().includes(keyword) ||
-           item.student_name.toLowerCase().includes(keyword) ||
-           item.course_ids.some(c => c.toLowerCase().includes(keyword));
+  // 填充学生数据
+  selections.forEach(sel => {
+    const student = students.find(s => s.id === sel.student_id);
+    sel.course_ids.forEach(courseId => {
+      if (courseGroups[courseId]) {
+        courseGroups[courseId].students.push({
+          student_id: sel.student_id,
+          student_name: student?.name || sel.student_id,
+          grade: student?.grade || '-',
+          admin_class: student?.admin_class_id || '-'
+        });
+      }
+    });
+  });
+
+  const data = Object.values(courseGroups);
+  window._selectionsData = data;
+  renderSelectionsList(data);
+
+  initEntitySearch('search-selections', data, renderSelectionsList, (item, keyword) => {
+    return item.course_id.toLowerCase().includes(keyword) ||
+           item.course_name.toLowerCase().includes(keyword) ||
+           item.students.some(s =>
+             s.student_id.toLowerCase().includes(keyword) ||
+             s.student_name.toLowerCase().includes(keyword)
+           );
   });
 }
 
 function renderSelectionsList(data) {
   const content = document.getElementById('selections-list');
   if (data.length === 0) {
-    content.innerHTML = '<div class="empty-state"><p>暂无AP选课数据</p></div>';
+    content.innerHTML = '<div class="empty-state"><p>暂无AP课程数据</p></div>';
     return;
   }
+
   content.innerHTML = `
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>学生</th>
-            <th>选修课程</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${data.map(s => `
-            <tr>
-              <td>${s.student_name}</td>
-              <td>${s.course_ids.join(', ')}</td>
-              <td>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('ap_selections', '${s.student_id}')">删除</button>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+    <div class="ap-courses-grid">
+      ${data.map(course => `
+        <div class="ap-course-card">
+          <div class="ap-course-header">
+            <h4>${course.course_name}</h4>
+            <span class="student-count">${course.students.length} 人</span>
+          </div>
+          <div class="ap-course-body">
+            ${course.students.length === 0 ? `
+              <div class="empty-state" style="padding: 12px;">
+                <p>暂无学生选课</p>
+              </div>
+            ` : `
+              <div class="student-list">
+                ${course.students.map(s => `
+                  <div class="student-item">
+                    <span class="student-name">${s.student_name}</span>
+                    <span class="student-info">高${s.grade} | ${s.admin_class}</span>
+                    <button class="btn btn-danger btn-sm" onclick="removeStudentFromCourse('${s.student_id}', '${course.course_id}')">移除</button>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+          <div class="ap-course-footer">
+            <button class="btn btn-primary btn-sm" onclick="addStudentToCourse('${course.course_id}')">+ 添加学生</button>
+          </div>
+        </div>
+      `).join('')}
     </div>
   `;
 }
+
+// 从课程中移除学生
+window.removeStudentFromCourse = async function(studentId, courseId) {
+  if (!confirm(`确定要将学生 ${studentId} 从课程 ${courseId} 中移除吗？`)) {
+    return;
+  }
+
+  try {
+    // 获取当前选课数据
+    const selections = await api('/ap_selections');
+    const selection = selections.find(s => s.student_id === studentId);
+
+    if (selection) {
+      // 移除课程
+      selection.course_ids = selection.course_ids.filter(c => c !== courseId);
+
+      if (selection.course_ids.length === 0) {
+        // 如果没有课程了，删除整个选课记录
+        await api(`/ap_selections/${studentId}`, { method: 'DELETE' });
+      } else {
+        // 更新选课记录
+        await api(`/ap_selections/${studentId}`, {
+          method: 'PUT',
+          body: JSON.stringify(selection)
+        });
+      }
+
+      showToast('已移除', 'success');
+      loadSelections();
+    }
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 向课程添加学生
+window.addStudentToCourse = async function(courseId) {
+  try {
+    const [students, selections] = await Promise.all([
+      api('/students'),
+      api('/ap_selections')
+    ]);
+
+    // 找出没有选这门课的学生
+    const availableStudents = students.filter(s => {
+      const selection = selections.find(sel => sel.student_id === s.id);
+      return !selection || !selection.course_ids.includes(courseId);
+    });
+
+    if (availableStudents.length === 0) {
+      showToast('所有学生都已选了这门课', 'info');
+      return;
+    }
+
+    // 显示选择学生的模态框
+    showModal('添加学生到 ' + courseId, `
+      <form id="form-add-student-to-course">
+        <div class="form-group">
+          <label>选择学生</label>
+          <select name="student_id" class="select" required>
+            <option value="">选择学生</option>
+            ${availableStudents.map(s => `<option value="${s.id}">${s.name} (${s.id}) - 高${s.grade}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+          <button type="submit" class="btn btn-primary">添加</button>
+        </div>
+      </form>
+    `);
+
+    document.getElementById('form-add-student-to-course').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const studentId = formData.get('student_id');
+
+      // 检查是否已有选课记录
+      const existingSelection = selections.find(s => s.student_id === studentId);
+
+      if (existingSelection) {
+        // 添加课程到现有记录
+        if (!existingSelection.course_ids.includes(courseId)) {
+          existingSelection.course_ids.push(courseId);
+          await api(`/ap_selections/${studentId}`, {
+            method: 'PUT',
+            body: JSON.stringify(existingSelection)
+          });
+        }
+      } else {
+        // 创建新的选课记录
+        await api('/ap_selections', {
+          method: 'POST',
+          body: JSON.stringify({
+            student_id: studentId,
+            course_ids: [courseId]
+          })
+        });
+      }
+
+      hideModal();
+      showToast('已添加', 'success');
+      loadSelections();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
 
 // 加载约束列表
 async function loadConstraints() {
