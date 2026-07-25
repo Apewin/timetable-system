@@ -412,7 +412,7 @@ async function loadStudents() {
     api('/teaching_classes')
   ]);
 
-  // 合并选修课数据
+  // 合并选修课数据（只显示选修课，不显示必修课）
   const enhancedStudents = students.map(s => {
     const selection = selections.find(sel => sel.student_id === s.id);
     const apCourses = selection ? selection.course_ids.map(cid => {
@@ -420,9 +420,16 @@ async function loadStudents() {
       return { id: cid, name: course?.name || cid };
     }) : [];
 
+    // 必修课（用于内部逻辑，不在UI显示）
+    const requiredCourses = (s.required_courses || []).map(cid => {
+      const course = courses.find(c => c.id === cid);
+      return { id: cid, name: course?.name || cid };
+    });
+
     return {
       ...s,
-      ap_selections: apCourses
+      ap_selections: apCourses,        // 选修课（显示）
+      required_courses_data: requiredCourses  // 必修课（不显示，用于内部）
     };
   });
 
@@ -599,7 +606,7 @@ function renderStudentsList(data, hasFilter = false) {
               <td>
                 ${s.ap_selections.length > 0
                   ? `<div class="ap-tags">${s.ap_selections.map(ap => `<span class="ap-tag">${ap.name}</span>`).join('')}</div>`
-                  : '<span style="color: var(--gray-400);">无</span>'
+                  : '<span style="color: var(--gray-400);">无选修课</span>'
                 }
               </td>
               <td>

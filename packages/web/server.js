@@ -597,6 +597,7 @@ app.post('/api/:entity', (req, res) => {
       teaching_classes: 'teaching_classes',
       teaching_assignments: 'teaching_assignments',
       constraints: 'constraints',
+      ap_selections: 'ap_selections',
     };
 
     const key = entityMap[entity];
@@ -611,6 +612,13 @@ app.post('/api/:entity', (req, res) => {
       return res.json({ ok: true, data: body });
     }
 
+    // 特殊处理学生：自动添加必修课
+    if (entity === 'students') {
+      // 根据行政班和教学班获取必修课
+      const requiredCourses = getRequiredCoursesForStudent(state, body);
+      body.required_courses = requiredCourses;
+    }
+
     // 检查ID是否重复
     if (state[key].some(item => item.id === body.id)) {
       return res.status(400).json({ ok: false, errors: [{ code: 'DUPLICATE', msg: `ID ${body.id} 已存在` }] });
@@ -623,6 +631,29 @@ app.post('/api/:entity', (req, res) => {
     res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
   }
 });
+
+// 获取学生的必修课
+function getRequiredCoursesForStudent(state, student) {
+  const requiredCourses = new Set();
+
+  // 从行政班获取必修课
+  if (student.admin_class_id) {
+    const adminAssignments = state.teaching_assignments.filter(
+      a => a.class_id === student.admin_class_id && a.class_type === 'admin'
+    );
+    adminAssignments.forEach(a => requiredCourses.add(a.course_id));
+  }
+
+  // 从教学班获取必修课
+  if (student.teaching_class_id) {
+    const teachingAssignments = state.teaching_assignments.filter(
+      a => a.class_id === student.teaching_class_id && a.class_type === 'teaching'
+    );
+    teachingAssignments.forEach(a => requiredCourses.add(a.course_id));
+  }
+
+  return Array.from(requiredCourses);
+}
 
 // API: 更新实体
 app.put('/api/:entity/:id', (req, res) => {
@@ -1331,6 +1362,32 @@ function evaluateSolution(state, assignments, tasks, constraints) {
     constraint_satisfaction
   };
 }
+
+// API: 批量更新学生的必修课
+app.post('/api/students/update-required-courses', (req, res) => {
+  try {
+    const state = readState();
+    let updatedCount = 0;
+
+    state.students.forEach(student => {
+      const requiredCourses = getRequiredCoursesForStudent(state, student);
+      student.required_courses = requiredCourses;
+      updatedCount++;
+    });
+
+    writeState(state);
+
+    res.json({
+      ok: true,
+      data: {
+        updated: updatedCount,
+        message: `已更新 ${updatedCount} 名学生的必修课`
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
 
 // API: 测试 AI 连接
 app.post('/api/ai/test', async (req, res) => {
