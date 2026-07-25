@@ -761,6 +761,41 @@ tr:hover {
   margin-top: 4px;
 }
 
+.ap-section-title {
+  margin-bottom: 16px;
+  padding: 12px 0;
+  border-bottom: 2px solid var(--gray-200);
+}
+
+.ap-section-title h3 {
+  margin: 0 0 4px 0;
+  color: var(--gray-800);
+}
+
+.ap-section-title p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gray-500);
+}
+
+.source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.source-badge.required {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+.source-badge.elective {
+  background-color: #f3e5f5;
+  color: #7b1fa2;
+}
+
 .ap-course-body {
   padding: 16px;
   max-height: 400px;

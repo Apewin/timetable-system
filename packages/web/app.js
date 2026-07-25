@@ -822,46 +822,88 @@ async function loadSelections() {
     });
   });
 
-  // 添加AP类型的必修课（从学生的required_courses中提取）
-  const apRequiredCourses = new Set();
+  // 分析每门AP课程，判断是选修还是必修
+  const apCourseIds = courses.filter(c => c.type === 'ap').map(c => c.id);
+
+  // 统计每门AP课程的学生来源
+  const courseStudentSources = {};
+  apCourseIds.forEach(courseId => {
+    courseStudentSources[courseId] = {
+      from_required: [],  // 从必修课来的学生
+      from_selection: []  // 从选修课来的学生
+    };
+  });
+
+  // 检查学生的必修课
   students.forEach(student => {
     (student.required_courses || []).forEach(courseId => {
-      const course = courses.find(c => c.id === courseId);
-      if (course && course.type === 'ap') {
-        apRequiredCourses.add(courseId);
+      if (courseStudentSources[courseId]) {
+        courseStudentSources[courseId].from_required.push(student);
       }
     });
   });
 
-  // 为AP类型的必修课创建分组（如果不存在）
-  apRequiredCourses.forEach(courseId => {
-    if (!courseGroups[courseId]) {
-      const course = courses.find(c => c.id === courseId);
-      courseGroups[courseId] = {
-        course_id: courseId,
-        course_name: course?.name || courseId,
-        course_type: 'required_ap',  // AP类型的必修课
-        students: []
-      };
+  // 检查学生的选修课
+  selections.forEach(sel => {
+    const student = students.find(s => s.id === sel.student_id);
+    if (student) {
+      sel.course_ids.forEach(courseId => {
+        if (courseStudentSources[courseId]) {
+          courseStudentSources[courseId].from_selection.push(student);
+        }
+      });
     }
   });
 
-  // 填充AP类型必修课的学生数据
-  students.forEach(student => {
-    (student.required_courses || []).forEach(courseId => {
-      if (courseGroups[courseId] && courseGroups[courseId].course_type === 'required_ap') {
-        // 检查是否已经在列表中
-        const alreadyAdded = courseGroups[courseId].students.some(s => s.student_id === student.id);
-        if (!alreadyAdded) {
-          courseGroups[courseId].students.push({
-            student_id: student.id,
-            student_name: student.name,
-            grade: student.grade || '-',
-            admin_class: student.admin_class_id || '-'
+  // 根据学生来源确定课程类型
+  Object.entries(courseStudentSources).forEach(([courseId, sources]) => {
+    const course = courses.find(c => c.id === courseId);
+    const hasRequiredStudents = sources.from_required.length > 0;
+    const hasSelectionStudents = sources.from_selection.length > 0;
+
+    // 确定课程类型
+    let courseType;
+    if (hasRequiredStudents && !hasSelectionStudents) {
+      courseType = 'required_ap';  // 纯必修
+    } else if (!hasRequiredStudents && hasSelectionStudents) {
+      courseType = 'ap';  // 纯选修
+    } else if (hasRequiredStudents && hasSelectionStudents) {
+      courseType = 'mixed';  // 混合（既有必修也有选修）
+    } else {
+      courseType = 'ap';  // 默认选修
+    }
+
+    // 更新课程分组
+    if (courseGroups[courseId]) {
+      courseGroups[courseId].course_type = courseType;
+
+      // 合并学生列表（去重）
+      const allStudents = new Map();
+
+      sources.from_required.forEach(s => {
+        allStudents.set(s.id, {
+          student_id: s.id,
+          student_name: s.name,
+          grade: s.grade || '-',
+          admin_class: s.admin_class_id || '-',
+          source: 'required'
+        });
+      });
+
+      sources.from_selection.forEach(s => {
+        if (!allStudents.has(s.id)) {
+          allStudents.set(s.id, {
+            student_id: s.id,
+            student_name: s.name,
+            grade: s.grade || '-',
+            admin_class: s.admin_class_id || '-',
+            source: 'selection'
           });
         }
-      }
-    });
+      });
+
+      courseGroups[courseId].students = Array.from(allStudents.values());
+    }
   });
 
   const data = Object.values(courseGroups);
@@ -885,52 +927,103 @@ function renderSelectionsList(data) {
     return;
   }
 
-  content.innerHTML = `
-    <div class="ap-courses-grid">
-      ${data.map(course => {
-        const isRequiredAP = course.course_type === 'required_ap';
-        const headerStyle = isRequiredAP
-          ? 'background: linear-gradient(135deg, #1565c0, #1976D2);'
-          : 'background: linear-gradient(135deg, #7b1fa2, #9c27b0);';
-        const typeLabel = isRequiredAP ? 'AP必修' : '选修';
+  // 按类型分组
+  const requiredCourses = data.filter(c => c.course_type === 'required_ap');
+  const mixedCourses = data.filter(c => c.course_type === 'mixed');
+  const electiveCourses = data.filter(c => c.course_type === 'ap');
 
-        return `
-          <div class="ap-course-card" id="course-card-${course.course_id}">
-            <div class="ap-course-header" onclick="toggleCourseExpand('${course.course_id}')" style="${headerStyle}">
-              <div>
-                <h4>${course.course_name}</h4>
-                <span class="course-type-badge">${typeLabel}</span>
-              </div>
-              <div class="header-right">
-                <span class="student-count">${course.students.length} 人</span>
-                <span class="expand-icon" id="expand-icon-${course.course_id}">▶</span>
-              </div>
-            </div>
-            <div class="ap-course-body hidden" id="course-body-${course.course_id}">
-              ${course.students.length === 0 ? `
-                <div class="empty-state" style="padding: 12px;">
-                  <p>暂无学生</p>
-                </div>
-              ` : `
-                <div class="student-list">
-                  ${course.students.map(s => `
-                    <div class="student-item">
-                      <span class="student-name">${s.student_name}</span>
-                      <span class="student-info">高${s.grade} | ${s.admin_class}</span>
-                      ${isRequiredAP ? '' : `<button class="btn btn-danger btn-sm" onclick="removeStudentFromCourse('${s.student_id}', '${course.course_id}')">移除</button>`}
-                    </div>
-                  `).join('')}
-                </div>
-              `}
-              ${isRequiredAP ? '' : `
-                <div class="ap-course-footer">
-                  <button class="btn btn-primary btn-sm" onclick="addStudentToCourse('${course.course_id}')">+ 添加学生</button>
-                </div>
-              `}
-            </div>
+  let html = '';
+
+  // 显示必修AP课程
+  if (requiredCourses.length > 0) {
+    html += `
+      <div class="ap-section-title">
+        <h3>📘 AP必修课程</h3>
+        <p>这些课程是学生所在班级的必修课，系统自动分配</p>
+      </div>
+      <div class="ap-courses-grid">
+        ${requiredCourses.map(course => renderAPCourseCard(course, true)).join('')}
+      </div>
+    `;
+  }
+
+  // 显示混合类型课程（既有必修也有选修）
+  if (mixedCourses.length > 0) {
+    html += `
+      <div class="ap-section-title">
+        <h3>📙 AP混合课程</h3>
+        <p>这些课程既有必修学生也有选修学生</p>
+      </div>
+      <div class="ap-courses-grid">
+        ${mixedCourses.map(course => renderAPCourseCard(course, false)).join('')}
+      </div>
+    `;
+  }
+
+  // 显示选修AP课程
+  if (electiveCourses.length > 0) {
+    html += `
+      <div class="ap-section-title">
+        <h3>📗 AP选修课程</h3>
+        <p>这些课程是学生自主选择的选修课</p>
+      </div>
+      <div class="ap-courses-grid">
+        ${electiveCourses.map(course => renderAPCourseCard(course, false)).join('')}
+      </div>
+    `;
+  }
+
+  content.innerHTML = html;
+}
+
+// 渲染AP课程卡片
+function renderAPCourseCard(course, isRequired) {
+  const headerStyle = isRequired
+    ? 'background: linear-gradient(135deg, #1565c0, #1976D2);'
+    : course.course_type === 'mixed'
+      ? 'background: linear-gradient(135deg, #e65100, #f57c00);'
+      : 'background: linear-gradient(135deg, #7b1fa2, #9c27b0);';
+
+  const typeLabel = isRequired ? 'AP必修' : course.course_type === 'mixed' ? '混合' : '选修';
+
+  return `
+    <div class="ap-course-card" id="course-card-${course.course_id}">
+      <div class="ap-course-header" onclick="toggleCourseExpand('${course.course_id}')" style="${headerStyle}">
+        <div>
+          <h4>${course.course_name}</h4>
+          <span class="course-type-badge">${typeLabel}</span>
+        </div>
+        <div class="header-right">
+          <span class="student-count">${course.students.length} 人</span>
+          <span class="expand-icon" id="expand-icon-${course.course_id}">▶</span>
+        </div>
+      </div>
+      <div class="ap-course-body hidden" id="course-body-${course.course_id}">
+        ${course.students.length === 0 ? `
+          <div class="empty-state" style="padding: 12px;">
+            <p>暂无学生</p>
           </div>
-        `;
-      }).join('')}
+        ` : `
+          <div class="student-list">
+            ${course.students.map(s => `
+              <div class="student-item">
+                <span class="student-name">${s.student_name}</span>
+                <span class="student-info">高${s.grade} | ${s.admin_class}</span>
+                ${s.source === 'required'
+                  ? '<span class="source-badge required">必修</span>'
+                  : '<span class="source-badge elective">选修</span>'
+                }
+                ${isRequired ? '' : `<button class="btn btn-danger btn-sm" onclick="removeStudentFromCourse('${s.student_id}', '${course.course_id}')">移除</button>`}
+              </div>
+            `).join('')}
+          </div>
+        `}
+        ${isRequired ? '' : `
+          <div class="ap-course-footer">
+            <button class="btn btn-primary btn-sm" onclick="addStudentToCourse('${course.course_id}')">+ 添加学生</button>
+          </div>
+        `}
+      </div>
     </div>
   `;
 }
