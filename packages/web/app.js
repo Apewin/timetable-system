@@ -155,6 +155,16 @@ async function loadStatus() {
 // 加载教师列表
 async function loadTeachers() {
   const data = await api('/teachers');
+  window._teachersData = data; // 缓存数据
+  renderTeachersList(data);
+  initEntitySearch('search-teachers', data, renderTeachersList, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.name.toLowerCase().includes(keyword) ||
+           item.can_teach.some(c => c.toLowerCase().includes(keyword));
+  });
+}
+
+function renderTeachersList(data) {
   const content = document.getElementById('teachers-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无教师数据</p></div>';
@@ -198,6 +208,16 @@ async function loadTeachers() {
 // 加载教室列表
 async function loadRooms() {
   const data = await api('/rooms');
+  window._roomsData = data;
+  renderRoomsList(data);
+  initEntitySearch('search-rooms', data, renderRoomsList, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.name.toLowerCase().includes(keyword) ||
+           item.type.toLowerCase().includes(keyword);
+  });
+}
+
+function renderRoomsList(data) {
   const content = document.getElementById('rooms-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无教室数据</p></div>';
@@ -239,6 +259,16 @@ async function loadRooms() {
 // 加载课程列表
 async function loadCourses() {
   const data = await api('/courses');
+  window._coursesData = data;
+  renderCoursesList(data);
+  initEntitySearch('search-courses', data, renderCoursesList, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.name.toLowerCase().includes(keyword) ||
+           item.type.toLowerCase().includes(keyword);
+  });
+}
+
+function renderCoursesList(data) {
   const content = document.getElementById('courses-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无课程数据</p></div>';
@@ -284,6 +314,17 @@ async function loadCourses() {
 // 加载学生列表
 async function loadStudents() {
   const data = await api('/students');
+  window._studentsData = data;
+  renderStudentsList(data);
+  initEntitySearch('search-students', data, renderStudentsList, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.name.toLowerCase().includes(keyword) ||
+           item.admin_class_id.toLowerCase().includes(keyword) ||
+           item.teaching_class_id.toLowerCase().includes(keyword);
+  });
+}
+
+function renderStudentsList(data) {
   const content = document.getElementById('students-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无学生数据</p></div>';
@@ -328,6 +369,27 @@ async function loadClasses() {
     api('/admin_classes'),
     api('/teaching_classes'),
   ]);
+
+  const allClasses = [
+    ...adminClasses.map(c => ({ ...c, classType: 'admin' })),
+    ...teachingClasses.map(c => ({ ...c, classType: 'teaching' }))
+  ];
+  window._classesData = allClasses;
+
+  renderClassesList(adminClasses, teachingClasses);
+
+  initEntitySearch('search-classes', allClasses, (filtered) => {
+    const filteredAdmin = filtered.filter(c => c.classType === 'admin');
+    const filteredTeaching = filtered.filter(c => c.classType === 'teaching');
+    renderClassesList(filteredAdmin, filteredTeaching);
+  }, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.name.toLowerCase().includes(keyword) ||
+           item.grade.toString().includes(keyword);
+  });
+}
+
+function renderClassesList(adminClasses, teachingClasses) {
   const content = document.getElementById('classes-list');
   content.innerHTML = `
     <h3>行政班</h3>
@@ -400,6 +462,30 @@ async function loadClasses() {
 // 加载教师分工列表
 async function loadAssignments() {
   const data = await api('/teaching_assignments');
+  const teachers = await api('/teachers');
+  const courses = await api('/courses');
+
+  // 增强数据，添加教师和课程名称
+  const enhancedData = data.map(a => ({
+    ...a,
+    teacher_name: teachers.find(t => t.id === a.teacher_id)?.name || a.teacher_id,
+    course_name: courses.find(c => c.id === a.course_id)?.name || a.course_id
+  }));
+
+  window._assignmentsData = enhancedData;
+  renderAssignmentsList(enhancedData);
+
+  initEntitySearch('search-assignments', enhancedData, renderAssignmentsList, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.teacher_id.toLowerCase().includes(keyword) ||
+           item.teacher_name.toLowerCase().includes(keyword) ||
+           item.course_id.toLowerCase().includes(keyword) ||
+           item.course_name.toLowerCase().includes(keyword) ||
+           item.class_id.toLowerCase().includes(keyword);
+  });
+}
+
+function renderAssignmentsList(data) {
   const content = document.getElementById('assignments-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无教师分工数据</p></div>';
@@ -423,8 +509,8 @@ async function loadAssignments() {
           ${data.map(a => `
             <tr>
               <td>${a.id}</td>
-              <td>${a.teacher_id}</td>
-              <td>${a.course_id}</td>
+              <td>${a.teacher_name}</td>
+              <td>${a.course_name}</td>
               <td>${a.class_id}</td>
               <td>${a.class_type === 'admin' ? '行政班' : '教学班'}</td>
               <td>${a.weekly_hours}</td>
@@ -442,6 +528,25 @@ async function loadAssignments() {
 // 加载AP选课列表
 async function loadSelections() {
   const data = await api('/ap_selections');
+  const students = await api('/students');
+
+  // 增强数据，添加学生名称
+  const enhancedData = data.map(s => ({
+    ...s,
+    student_name: students.find(st => st.id === s.student_id)?.name || s.student_id
+  }));
+
+  window._selectionsData = enhancedData;
+  renderSelectionsList(enhancedData);
+
+  initEntitySearch('search-selections', enhancedData, renderSelectionsList, (item, keyword) => {
+    return item.student_id.toLowerCase().includes(keyword) ||
+           item.student_name.toLowerCase().includes(keyword) ||
+           item.course_ids.some(c => c.toLowerCase().includes(keyword));
+  });
+}
+
+function renderSelectionsList(data) {
   const content = document.getElementById('selections-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无AP选课数据</p></div>';
@@ -452,7 +557,7 @@ async function loadSelections() {
       <table>
         <thead>
           <tr>
-            <th>学生ID</th>
+            <th>学生</th>
             <th>选修课程</th>
             <th>操作</th>
           </tr>
@@ -460,7 +565,7 @@ async function loadSelections() {
         <tbody>
           ${data.map(s => `
             <tr>
-              <td>${s.student_id}</td>
+              <td>${s.student_name}</td>
               <td>${s.course_ids.join(', ')}</td>
               <td>
                 <button class="btn btn-danger btn-sm" onclick="deleteEntity('ap_selections', '${s.student_id}')">删除</button>
@@ -476,6 +581,18 @@ async function loadSelections() {
 // 加载约束列表
 async function loadConstraints() {
   const data = await api('/constraints');
+  window._constraintsData = data;
+  renderConstraintsList(data);
+
+  initEntitySearch('search-constraints', data, renderConstraintsList, (item, keyword) => {
+    return item.id.toLowerCase().includes(keyword) ||
+           item.type.toLowerCase().includes(keyword) ||
+           item.scope.toLowerCase().includes(keyword) ||
+           (item.target_id && item.target_id.toLowerCase().includes(keyword));
+  });
+}
+
+function renderConstraintsList(data) {
   const content = document.getElementById('constraints-list');
   if (data.length === 0) {
     content.innerHTML = '<div class="empty-state"><p>暂无约束数据</p></div>';
@@ -628,6 +745,29 @@ function initSearchFilter(searchId, selectId, data, getSearchText) {
         searchInput.value = '';
       }
     }
+  });
+}
+
+// 通用实体搜索初始化函数
+function initEntitySearch(searchId, data, renderFn, matchFn) {
+  const searchInput = document.getElementById(searchId);
+  if (!searchInput) return;
+
+  // 移除旧的事件监听器
+  searchInput.oninput = null;
+
+  // 添加新的事件监听器
+  searchInput.addEventListener('input', (e) => {
+    const keyword = e.target.value.toLowerCase().trim();
+
+    if (!keyword) {
+      renderFn(data);
+      return;
+    }
+
+    // 过滤匹配的数据
+    const filtered = data.filter(item => matchFn(item, keyword));
+    renderFn(filtered);
   });
 }
 
