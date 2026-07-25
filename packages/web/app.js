@@ -2489,11 +2489,6 @@ function init() {
     });
   });
 
-  // AI 助手按钮事件
-  document.getElementById('btn-ai-solve').addEventListener('click', aiSolve);
-  document.getElementById('btn-parse-preference').addEventListener('click', parsePreference);
-  document.getElementById('btn-get-suggestions').addEventListener('click', getAISuggestions);
-
   // 初始化导入功能
   initImportHandlers();
 
