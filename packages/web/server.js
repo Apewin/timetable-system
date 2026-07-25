@@ -561,6 +561,10 @@ app.get('/api/timetable/:by/:id', (req, res) => {
         );
         title = `教室 ${id} 的课表`;
         break;
+      case 'all':
+        relatedTasks = tasks;
+        title = `${state.meta?.school || '学校'}全部课表`;
+        break;
       default:
         return res.status(400).json({ ok: false, errors: [{ code: 'INVALID', msg: '无效的维度' }] });
     }
