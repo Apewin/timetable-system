@@ -2702,7 +2702,7 @@ window.exportTimetable = async function() {
 
     switch (format) {
       case 'html':
-        content = generateHTML(data);
+        content = await generateHTML(data);
         filename += '.html';
         mimeType = 'text/html';
         break;
@@ -2738,9 +2738,69 @@ window.exportTimetable = async function() {
 };
 
 // 生成 HTML 格式
-function generateHTML(data) {
+async function generateHTML(data) {
   const days = ['周一', '周二', '周三', '周四', '周五'];
 
+  // 如果是全部课表，按班级分组显示
+  if (data.title.includes('全部课表')) {
+    // 获取所有班级
+    const [adminClasses, teachingClasses] = await Promise.all([
+      api('/admin_classes'),
+      api('/teaching_classes')
+    ]);
+
+    let classSections = '';
+
+    // 生成行政班课表
+    for (const cls of adminClasses) {
+      const classData = await api(`/timetable/class/${cls.id}`);
+      if (classData.rows && classData.rows.length > 0) {
+        classSections += generateClassTableHTML(cls.name, '行政班', classData, days);
+      }
+    }
+
+    // 生成教学班课表
+    for (const cls of teachingClasses) {
+      const classData = await api(`/timetable/class/${cls.id}`);
+      if (classData.rows && classData.rows.length > 0) {
+        classSections += generateClassTableHTML(cls.name, '教学班', classData, days);
+      }
+    }
+
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>${data.title}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; }
+    h1 { color: #333; text-align: center; }
+    .class-section { margin-bottom: 40px; page-break-inside: avoid; }
+    h2 { color: #1976D2; border-bottom: 2px solid #1976D2; padding-bottom: 8px; margin-top: 30px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background-color: #f5f5f5; font-weight: 600; font-size: 13px; }
+    .has-class { background-color: #e8f5e9; }
+    .course { font-weight: 600; color: #2e7d32; font-size: 13px; }
+    .teacher { font-size: 12px; color: #666; }
+    .room { font-size: 11px; color: #999; }
+    @media print {
+      .class-section { page-break-after: always; }
+      .class-section:last-child { page-break-after: auto; }
+    }
+  </style>
+</head>
+<body>
+  <h1>${data.title}</h1>
+  ${classSections}
+  <p style="margin-top: 30px; color: #999; font-size: 12px; text-align: center;">
+    导出时间: ${new Date().toLocaleString('zh-CN')} | 共 ${adminClasses.length + teachingClasses.length} 个班级
+  </p>
+</body>
+</html>`;
+  }
+
+  // 单个课表的 HTML
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2790,6 +2850,40 @@ function generateHTML(data) {
   </p>
 </body>
 </html>`;
+}
+
+// 生成单个班级的课表 HTML
+function generateClassTableHTML(className, classType, data, days) {
+  return `
+    <div class="class-section">
+      <h2>${className} (${classType})</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>节次</th>
+            ${days.map(d => `<th>${d}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${data.rows.map((row, index) => `
+            <tr>
+              <td><strong>第${index + 1}节</strong></td>
+              ${[1, 2, 3, 4, 5].map(i => {
+                const slot = row[i];
+                return slot ?
+                  `<td class="has-class">
+                    <div class="course">${slot.course}</div>
+                    <div class="teacher">${slot.teacher}</div>
+                    <div class="room">${slot.room}</div>
+                  </td>` :
+                  '<td>-</td>';
+              }).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 // 生成 CSV 格式
