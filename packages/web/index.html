@@ -21,7 +21,8 @@
         <div class="nav-section nav-section-primary">
           <h3>🎯 排课表</h3>
           <ul>
-            <li><a href="#" data-view="solve" class="active">🚀 求解课表</a></li>
+            <li><a href="#" data-view="formal-timetable" class="active">📘 正式课表</a></li>
+            <li><a href="#" data-view="temp-timetable">📙 临时课表</a></li>
           </ul>
         </div>
         <div class="nav-section">
@@ -59,27 +60,28 @@
       </nav>
 
       <main class="main">
-        <div id="view-solve" class="view">
-          <h2>🚀 排课表</h2>
+        <!-- 正式课表 -->
+        <div id="view-formal-timetable" class="view">
+          <h2>📘 正式课表</h2>
           <div class="solve-container">
             <div class="solve-section">
               <h3>📊 当前状态</h3>
-              <div id="solve-status" class="status-grid">
+              <div id="formal-status" class="status-grid">
                 <div class="status-card">
                   <h4>教学任务</h4>
-                  <div class="value" id="solve-tasks-count">-</div>
+                  <div class="value" id="formal-tasks-count">-</div>
                 </div>
                 <div class="status-card">
                   <h4>已排课程</h4>
-                  <div class="value" id="solve-assignments-count">-</div>
+                  <div class="value" id="formal-assignments-count">-</div>
                 </div>
                 <div class="status-card">
                   <h4>硬约束违规</h4>
-                  <div class="value" id="solve-violations-count">-</div>
+                  <div class="value" id="formal-violations-count">-</div>
                 </div>
                 <div class="status-card">
                   <h4>软约束得分</h4>
-                  <div class="value" id="solve-score">-</div>
+                  <div class="value" id="formal-score">-</div>
                 </div>
               </div>
             </div>
@@ -89,7 +91,7 @@
               <div class="solve-options">
                 <div class="form-group">
                   <label>求解模式</label>
-                  <select id="solve-mode" class="select">
+                  <select id="formal-mode" class="select">
                     <option value="all">完整求解（分班+排课）</option>
                     <option value="sections">仅分班</option>
                     <option value="timetable">仅排课</option>
@@ -97,28 +99,28 @@
                 </div>
                 <div class="form-group">
                   <label>随机种子（可选，用于复现结果）</label>
-                  <input type="number" id="solve-seed" class="input" placeholder="留空使用随机种子">
+                  <input type="number" id="formal-seed" class="input" placeholder="留空使用随机种子">
                 </div>
                 <div class="form-group">
                   <label>超时时间（秒）</label>
-                  <input type="number" id="solve-timeout" class="input" value="10" min="1" max="60">
+                  <input type="number" id="formal-timeout" class="input" value="10" min="1" max="60">
                 </div>
                 <div class="form-group">
                   <label>
-                    <input type="checkbox" id="solve-keep" checked>
+                    <input type="checkbox" id="formal-keep" checked>
                     保留已锁定的课程
                   </label>
                 </div>
               </div>
               <div class="solve-actions">
-                <button class="btn btn-primary btn-lg" onclick="startSolve()">🚀 开始求解</button>
-                <button class="btn btn-secondary" onclick="resetSolve()">🔄 重置</button>
+                <button class="btn btn-primary btn-lg" onclick="startFormalSolve()">📘 生成正式课表</button>
+                <button class="btn btn-secondary" onclick="resetFormalSolve()">🔄 重置</button>
               </div>
             </div>
 
-            <div id="solve-result" class="solve-section hidden">
+            <div id="formal-result" class="solve-section hidden">
               <h3>✅ 求解结果</h3>
-              <div id="solve-result-content"></div>
+              <div id="formal-result-content"></div>
             </div>
 
             <div class="solve-section">
@@ -129,6 +131,66 @@
                 <p><strong>仅排课：</strong>在现有教学任务基础上排课，适合手动调整后重新排课</p>
                 <p><strong>随机种子：</strong>相同种子会生成相同结果，用于复现排课方案</p>
                 <p><strong>保留锁定：</strong>勾选后，已锁定的课程不会被重新排课</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 临时课表 -->
+        <div id="view-temp-timetable" class="view">
+          <h2>📙 临时课表</h2>
+          <div class="solve-container">
+            <div class="solve-section">
+              <h3>📅 临时课表信息</h3>
+              <div class="temp-info">
+                <div class="form-group">
+                  <label>生效日期</label>
+                  <input type="date" id="temp-date" class="input">
+                </div>
+                <div class="form-group">
+                  <label>原因说明</label>
+                  <input type="text" id="temp-reason" class="input" placeholder="例如：期中考试、运动会、家长会...">
+                </div>
+              </div>
+            </div>
+
+            <div class="solve-section">
+              <h3>📝 需要调整的课程</h3>
+              <p class="ai-hint">选择需要调整的课程，系统会生成临时课表，只显示变化的部分</p>
+              <div id="temp-adjustments">
+                <div class="temp-adjustment-item">
+                  <select class="select temp-task-select">
+                    <option value="">选择课程</option>
+                  </select>
+                  <select class="select temp-action-select">
+                    <option value="cancel">取消</option>
+                    <option value="move">移动到</option>
+                    <option value="swap">与...交换</option>
+                  </select>
+                  <input type="text" class="input temp-target-input" placeholder="目标时段（如 D3P6）">
+                  <button class="btn btn-danger btn-sm" onclick="removeTempAdjustment(this)">✕</button>
+                </div>
+              </div>
+              <button class="btn btn-secondary" onclick="addTempAdjustment()">+ 添加调整</button>
+            </div>
+
+            <div class="solve-actions">
+              <button class="btn btn-primary btn-lg" onclick="generateTempTimetable()">📙 生成临时课表</button>
+            </div>
+
+            <div id="temp-result" class="solve-section hidden">
+              <h3>📋 临时课表（变化部分）</h3>
+              <div id="temp-result-content"></div>
+            </div>
+
+            <div class="solve-section">
+              <h3>💡 使用说明</h3>
+              <div class="solve-guide">
+                <p><strong>临时课表：</strong>用于特殊情况（活动、考试等），只调整部分课程</p>
+                <p><strong>取消：</strong>该时段的课程取消</p>
+                <p><strong>移动：</strong>将课程移动到指定时段</p>
+                <p><strong>交换：</strong>两个课程交换时段</p>
+                <p><strong>输出：</strong>只显示变化的部分，方便通知相关师生</p>
               </div>
             </div>
           </div>

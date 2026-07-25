@@ -125,8 +125,11 @@ async function loadViewData(viewName) {
     case 'export':
       await loadExportPage();
       break;
-    case 'solve':
-      await loadSolvePage();
+    case 'formal-timetable':
+      await loadFormalSolvePage();
+      break;
+    case 'temp-timetable':
+      await loadTempTimetablePage();
       break;
   }
 }
@@ -3029,8 +3032,8 @@ function generateClassCSV(data, days) {
 
 // ==================== 排课表功能 ====================
 
-// 加载排课表页面
-async function loadSolvePage() {
+// 加载正式课表页面
+async function loadFormalSolvePage() {
   try {
     const [status, tasks] = await Promise.all([
       api('/status'),
@@ -3038,35 +3041,35 @@ async function loadSolvePage() {
     ]);
 
     // 更新状态显示
-    document.getElementById('solve-tasks-count').textContent = tasks.length;
-    document.getElementById('solve-assignments-count').textContent = status.last_stage === 'timetable' ? '已排课' : '未排课';
+    document.getElementById('formal-tasks-count').textContent = tasks.length;
+    document.getElementById('formal-assignments-count').textContent = status.last_stage === 'timetable' ? '已排课' : '未排课';
 
     // 检查是否有排课结果
     if (status.last_stage === 'timetable') {
       const violations = await api('/validate');
-      document.getElementById('solve-violations-count').textContent = violations.hard_violations || 0;
-      document.getElementById('solve-score').textContent = violations.soft_score || 0;
+      document.getElementById('formal-violations-count').textContent = violations.hard_violations || 0;
+      document.getElementById('formal-score').textContent = violations.soft_score || 0;
     } else {
-      document.getElementById('solve-violations-count').textContent = '-';
-      document.getElementById('solve-score').textContent = '-';
+      document.getElementById('formal-violations-count').textContent = '-';
+      document.getElementById('formal-score').textContent = '-';
     }
   } catch (error) {
     console.error('加载排课状态失败:', error);
   }
 }
 
-// 开始求解
-window.startSolve = async function() {
-  const mode = document.getElementById('solve-mode').value;
-  const seed = document.getElementById('solve-seed').value;
-  const timeout = document.getElementById('solve-timeout').value;
-  const keep = document.getElementById('solve-keep').checked;
+// 开始正式排课
+window.startFormalSolve = async function() {
+  const mode = document.getElementById('formal-mode').value;
+  const seed = document.getElementById('formal-seed').value;
+  const timeout = document.getElementById('formal-timeout').value;
+  const keep = document.getElementById('formal-keep').checked;
 
   // 确认操作
   let confirmMsg = '';
   switch (mode) {
     case 'all':
-      confirmMsg = '确定要执行完整求解吗？这将生成教学任务并排课。';
+      confirmMsg = '确定要生成正式课表吗？这将生成完整的教学任务并排课。';
       break;
     case 'sections':
       confirmMsg = '确定要执行分班吗？这将生成教学任务。';
@@ -3081,10 +3084,10 @@ window.startSolve = async function() {
   }
 
   try {
-    showToast('正在求解，请稍候...', 'info');
+    showToast('正在生成正式课表，请稍候...', 'info');
 
-    const resultDiv = document.getElementById('solve-result');
-    const contentDiv = document.getElementById('solve-result-content');
+    const resultDiv = document.getElementById('formal-result');
+    const contentDiv = document.getElementById('formal-result-content');
 
     let result;
 
@@ -3133,7 +3136,7 @@ window.startSolve = async function() {
         <div class="validation-result ${hasViolations ? 'warning' : 'success'}">
           ${hasViolations
             ? `⚠️ 排课完成，但有 ${result.hard_violations.length} 个硬约束违规`
-            : '✅ 排课完成！所有硬约束满足'
+            : '✅ 正式课表生成成功！所有硬约束满足'
           }
         </div>
         <div style="margin-top: 12px;">
@@ -3148,24 +3151,296 @@ window.startSolve = async function() {
     }
 
     // 更新状态
-    await loadSolvePage();
+    await loadFormalSolvePage();
 
-    showToast('求解完成！', 'success');
+    showToast('正式课表生成完成！', 'success');
   } catch (error) {
     showToast(error.message, 'error');
   }
 };
 
-// 重置排课
-window.resetSolve = async function() {
-  if (!confirm('确定要重置排课结果吗？这将清除所有已排课程。')) {
+// 重置正式排课
+window.resetFormalSolve = async function() {
+  if (!confirm('确定要重置正式课表吗？这将清除所有已排课程。')) {
     return;
   }
 
   try {
-    // 这里可以添加重置逻辑
     showToast('重置功能待实现', 'info');
   } catch (error) {
     showToast(error.message, 'error');
   }
+};
+
+// ==================== 临时课表功能 ====================
+
+// 加载临时课表页面
+async function loadTempTimetablePage() {
+  try {
+    const tasks = await api('/teaching_tasks');
+    const courses = await api('/courses');
+    const teachers = await api('/teachers');
+
+    // 更新课程选择框
+    const selectOptions = tasks.map(t => {
+      const course = courses.find(c => c.id === t.course_id);
+      const teacher = teachers.find(te => te.id === t.teacher_id);
+      return `<option value="${t.id}">${course?.name || t.course_id} - ${teacher?.name || t.teacher_id}</option>`;
+    }).join('');
+
+    document.querySelectorAll('.temp-task-select').forEach(select => {
+      select.innerHTML = '<option value="">选择课程</option>' + selectOptions;
+    });
+
+    // 设置默认日期为今天
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('temp-date').value = today;
+
+  } catch (error) {
+    console.error('加载临时课表页面失败:', error);
+  }
+}
+
+// 添加调整项
+window.addTempAdjustment = function() {
+  const container = document.getElementById('temp-adjustments');
+  const newItem = document.createElement('div');
+  newItem.className = 'temp-adjustment-item';
+  newItem.innerHTML = `
+    <select class="select temp-task-select">
+      <option value="">选择课程</option>
+    </select>
+    <select class="select temp-action-select">
+      <option value="cancel">取消</option>
+      <option value="move">移动到</option>
+      <option value="swap">与...交换</option>
+    </select>
+    <input type="text" class="input temp-target-input" placeholder="目标时段（如 D3P6）">
+    <button class="btn btn-danger btn-sm" onclick="removeTempAdjustment(this)">✕</button>
+  `;
+  container.appendChild(newItem);
+
+  // 更新新添加的选择框
+  loadTempTimetablePage();
+};
+
+// 删除调整项
+window.removeTempAdjustment = function(button) {
+  const item = button.parentElement;
+  const container = document.getElementById('temp-adjustments');
+  if (container.children.length > 1) {
+    item.remove();
+  } else {
+    showToast('至少需要一个调整项', 'warning');
+  }
+};
+
+// 生成临时课表
+window.generateTempTimetable = async function() {
+  const date = document.getElementById('temp-date').value;
+  const reason = document.getElementById('temp-reason').value;
+
+  if (!date) {
+    showToast('请选择生效日期', 'warning');
+    return;
+  }
+
+  if (!reason) {
+    showToast('请填写原因说明', 'warning');
+    return;
+  }
+
+  // 收集调整项
+  const adjustments = [];
+  document.querySelectorAll('.temp-adjustment-item').forEach(item => {
+    const taskId = item.querySelector('.temp-task-select').value;
+    const action = item.querySelector('.temp-action-select').value;
+    const target = item.querySelector('.temp-target-input').value;
+
+    if (taskId) {
+      adjustments.push({ taskId, action, target });
+    }
+  });
+
+  if (adjustments.length === 0) {
+    showToast('请至少添加一个调整项', 'warning');
+    return;
+  }
+
+  try {
+    showToast('正在生成临时课表...', 'info');
+
+    // 获取当前课表
+    const currentAssignments = await api('/assignments') || [];
+
+    // 处理调整
+    const changes = [];
+    const tasks = await api('/teaching_tasks');
+    const courses = await api('/courses');
+    const teachers = await api('/teachers');
+
+    adjustments.forEach(adj => {
+      const task = tasks.find(t => t.id === adj.taskId);
+      const course = courses.find(c => c.id === task?.course_id);
+      const teacher = teachers.find(t => t.id === task?.teacher_id);
+
+      const taskAssignments = currentAssignments.filter(a => a.task_id === adj.taskId);
+
+      switch (adj.action) {
+        case 'cancel':
+          taskAssignments.forEach(a => {
+            changes.push({
+              type: 'cancel',
+              task_id: adj.taskId,
+              course_name: course?.name || adj.taskId,
+              teacher_name: teacher?.name || '-',
+              original_slot: a.slot_id,
+              original_room: a.room_id
+            });
+          });
+          break;
+
+        case 'move':
+          if (adj.target && taskAssignments.length > 0) {
+            changes.push({
+              type: 'move',
+              task_id: adj.taskId,
+              course_name: course?.name || adj.taskId,
+              teacher_name: teacher?.name || '-',
+              original_slot: taskAssignments[0].slot_id,
+              original_room: taskAssignments[0].room_id,
+              new_slot: adj.target
+            });
+          }
+          break;
+
+        case 'swap':
+          if (adj.target) {
+            const targetTask = tasks.find(t => t.id === adj.target);
+            const targetCourse = courses.find(c => c.id === targetTask?.course_id);
+            changes.push({
+              type: 'swap',
+              task_id: adj.taskId,
+              course_name: course?.name || adj.taskId,
+              teacher_name: teacher?.name || '-',
+              target_task_id: adj.target,
+              target_course_name: targetCourse?.name || adj.target
+            });
+          }
+          break;
+      }
+    });
+
+    // 显示结果
+    const resultDiv = document.getElementById('temp-result');
+    const contentDiv = document.getElementById('temp-result-content');
+
+    resultDiv.classList.remove('hidden');
+
+    let html = `
+      <div style="margin-bottom: 16px;">
+        <p><strong>生效日期：</strong>${date}</p>
+        <p><strong>原因说明：</strong>${reason}</p>
+        <p><strong>调整数量：</strong>${changes.length} 项</p>
+      </div>
+      <div class="temp-changes">
+    `;
+
+    changes.forEach(change => {
+      const typeClass = change.type;
+      const typeLabel = change.type === 'cancel' ? '取消' : change.type === 'move' ? '移动' : '交换';
+
+      html += `
+        <div class="temp-change-item ${typeClass}">
+          <div class="change-type">【${typeLabel}】${change.course_name}</div>
+          <div class="change-detail">
+      `;
+
+      if (change.type === 'cancel') {
+        html += `教师：${change.teacher_name} | 原时段：${change.original_slot} | 原教室：${change.original_room}`;
+      } else if (change.type === 'move') {
+        html += `教师：${change.teacher_name} | ${change.original_slot} → ${change.new_slot}`;
+      } else if (change.type === 'swap') {
+        html += `与 ${change.target_course_name} 交换时段`;
+      }
+
+      html += `
+          </div>
+        </div>
+      `;
+    });
+
+    html += '</div>';
+
+    // 添加导出按钮
+    html += `
+      <div class="export-temp-section">
+        <button class="btn btn-primary" onclick="exportTempTimetable()">📤 导出临时课表</button>
+        <button class="btn btn-secondary" onclick="printTempTimetable()">🖨️ 打印</button>
+      </div>
+    `;
+
+    contentDiv.innerHTML = html;
+
+    showToast('临时课表生成成功！', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 导出临时课表
+window.exportTempTimetable = function() {
+  const date = document.getElementById('temp-date').value;
+  const reason = document.getElementById('temp-reason').value;
+
+  // 获取变化内容
+  const changesHtml = document.querySelector('.temp-changes')?.innerHTML || '';
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>临时课表 - ${date}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; }
+    h1 { color: #333; text-align: center; }
+    .info { margin: 20px 0; padding: 15px; background-color: #f5f5f5; border-radius: 8px; }
+    .info p { margin: 5px 0; }
+    .change-item { padding: 12px; margin: 10px 0; border-radius: 8px; border: 1px solid #ddd; }
+    .change-item.cancel { background-color: #ffebee; border-color: #ef9a9a; }
+    .change-item.move { background-color: #e3f2fd; border-color: #90caf9; }
+    .change-item.swap { background-color: #e8f5e9; border-color: #a5d6a7; }
+    .change-type { font-weight: bold; margin-bottom: 5px; }
+    .change-detail { font-size: 14px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>📙 临时课表</h1>
+  <div class="info">
+    <p><strong>生效日期：</strong>${date}</p>
+    <p><strong>原因说明：</strong>${reason}</p>
+  </div>
+  <div class="changes">
+    ${changesHtml}
+  </div>
+  <p style="margin-top: 30px; color: #999; font-size: 12px; text-align: center;">
+    生成时间: ${new Date().toLocaleString('zh-CN')}
+  </p>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `临时课表_${date}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+// 打印临时课表
+window.printTempTimetable = function() {
+  window.print();
 };

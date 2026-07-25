@@ -419,6 +419,74 @@ tr:hover {
   color: var(--gray-800);
 }
 
+/* Temp Timetable */
+.temp-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.temp-adjustment-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 12px;
+  background-color: var(--gray-100);
+  border-radius: var(--radius);
+}
+
+.temp-adjustment-item .select,
+.temp-adjustment-item .input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.temp-changes {
+  margin-top: 16px;
+}
+
+.temp-change-item {
+  background-color: #fff3e0;
+  border: 1px solid #ffcc80;
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.temp-change-item.cancel {
+  background-color: #ffebee;
+  border-color: #ef9a9a;
+}
+
+.temp-change-item.move {
+  background-color: #e3f2fd;
+  border-color: #90caf9;
+}
+
+.temp-change-item.swap {
+  background-color: #e8f5e9;
+  border-color: #a5d6a7;
+}
+
+.temp-change-item .change-type {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.temp-change-item .change-detail {
+  font-size: 13px;
+  color: var(--gray-600);
+}
+
+/* Export Temp */
+.export-temp-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 2px solid var(--gray-200);
+}
+
 /* Status */
 .status-grid {
   display: grid;
