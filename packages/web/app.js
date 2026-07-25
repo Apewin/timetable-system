@@ -136,37 +136,55 @@ async function loadViewData(viewName) {
 
 // 加载欢迎页面
 function loadWelcomePage() {
-  // 立即更新时间
-  updateDateTime();
-  // 每秒更新时间
+  console.log('加载欢迎页面');
+
+  // 清除旧的定时器
   if (window._dateTimeInterval) {
     clearInterval(window._dateTimeInterval);
+    window._dateTimeInterval = null;
   }
+
+  // 立即更新时间
+  updateDateTime();
+
+  // 每秒更新时间
   window._dateTimeInterval = setInterval(updateDateTime, 1000);
 }
 
 // 更新时间显示（使用浏览器本地时间）
 function updateDateTime() {
-  const now = new Date();
+  const datetimeEl = document.getElementById('current-datetime');
 
-  // 格式化时间
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  const seconds = String(now.getSeconds()).padStart(2, '0');
-  const timeStr = `${hours}:${minutes}:${seconds}`;
+  if (!datetimeEl) {
+    console.warn('current-datetime 元素不存在');
+    return;
+  }
 
-  // 格式化日期
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
-  const day = now.getDate();
-  const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-  const weekday = weekdays[now.getDay()];
-  const dateStr = `${year}年${month}月${day}日 ${weekday}`;
+  try {
+    const now = new Date();
 
-  document.getElementById('current-datetime').innerHTML = `
-    <div>${timeStr}</div>
-    <div class="date">${dateStr}</div>
-  `;
+    // 格式化时间
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const timeStr = `${hours}:${minutes}:${seconds}`;
+
+    // 格式化日期
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+    const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+    const weekday = weekdays[now.getDay()];
+    const dateStr = `${year}年${month}月${day}日 ${weekday}`;
+
+    datetimeEl.innerHTML = `
+      <div>${timeStr}</div>
+      <div class="date">${dateStr}</div>
+    `;
+  } catch (error) {
+    console.error('更新时间失败:', error);
+    datetimeEl.textContent = '时间加载失败';
+  }
 }
 
 // 测试 AI 连接
