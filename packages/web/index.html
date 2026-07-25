@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>排课系统</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>排课系统</h1>
+      <div class="header-actions">
+        <button id="btn-status" class="btn btn-secondary">查看状态</button>
+        <button id="btn-solve" class="btn btn-primary">求解课表</button>
+      </div>
+    </header>
+
+    <div class="container">
+      <nav class="sidebar">
+        <div class="nav-section">
+          <h3>数据管理</h3>
+          <ul>
+            <li><a href="#" data-view="teachers">教师管理</a></li>
+            <li><a href="#" data-view="rooms">教室管理</a></li>
+            <li><a href="#" data-view="courses">课程管理</a></li>
+            <li><a href="#" data-view="students">学生管理</a></li>
+            <li><a href="#" data-view="classes">班级管理</a></li>
+            <li><a href="#" data-view="assignments">教师分工</a></li>
+            <li><a href="#" data-view="selections">AP选课</a></li>
+            <li><a href="#" data-view="constraints">约束管理</a></li>
+          </ul>
+        </div>
+        <div class="nav-section">
+          <h3>课表查看</h3>
+          <ul>
+            <li><a href="#" data-view="overview-timetable" class="active">📊 总课表</a></li>
+            <li><a href="#" data-view="class-timetable">🏫 按班级</a></li>
+            <li><a href="#" data-view="teacher-timetable">👨‍🏫 按教师</a></li>
+            <li><a href="#" data-view="student-timetable">👨‍🎓 按学生</a></li>
+            <li><a href="#" data-view="room-timetable">🚪 按教室</a></li>
+          </ul>
+        </div>
+        <div class="nav-section">
+          <h3>工具</h3>
+          <ul>
+            <li><a href="#" data-view="import">📥 数据导入</a></li>
+            <li><a href="#" data-view="ai-assistant">🤖 AI助手</a></li>
+            <li><a href="#" data-view="validate">数据校验</a></li>
+            <li><a href="#" data-view="export">导出课表</a></li>
+          </ul>
+        </div>
+      </nav>
+
+      <main class="main">
+        <div id="view-overview-timetable" class="view">
+          <h2>📊 总课表概览</h2>
+          <div class="timetable-controls">
+            <div class="control-group">
+              <label>选择年级：</label>
+              <select id="select-grade" class="select">
+                <option value="all">全部年级</option>
+                <option value="1">高一</option>
+                <option value="2">高二</option>
+                <option value="3">高三</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <label>选择视图：</label>
+              <select id="select-view-type" class="select">
+                <option value="class">按班级</option>
+                <option value="teacher">按教师</option>
+              </select>
+            </div>
+          </div>
+          <div id="overview-timetable-content" class="content">
+            <div class="loading">加载中...</div>
+          </div>
+        </div>
+
+        <div id="view-status" class="view">
+          <h2>项目状态</h2>
+          <div id="status-content" class="content">加载中...</div>
+        </div>
+
+        <div id="view-teachers" class="view">
+          <h2>教师管理</h2>
+          <div class="toolbar">
+            <button id="btn-add-teacher" class="btn btn-primary">添加教师</button>
+          </div>
+          <div id="teachers-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-rooms" class="view">
+          <h2>教室管理</h2>
+          <div class="toolbar">
+            <button id="btn-add-room" class="btn btn-primary">添加教室</button>
+          </div>
+          <div id="rooms-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-courses" class="view">
+          <h2>课程管理</h2>
+          <div class="toolbar">
+            <button id="btn-add-course" class="btn btn-primary">添加课程</button>
+          </div>
+          <div id="courses-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-students" class="view">
+          <h2>学生管理</h2>
+          <div class="toolbar">
+            <button id="btn-add-student" class="btn btn-primary">添加学生</button>
+          </div>
+          <div id="students-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-classes" class="view">
+          <h2>班级管理</h2>
+          <div class="toolbar">
+            <button id="btn-add-admin-class" class="btn btn-primary">添加行政班</button>
+            <button id="btn-add-teaching-class" class="btn btn-secondary">添加教学班</button>
+          </div>
+          <div id="classes-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-assignments" class="view">
+          <h2>教师分工</h2>
+          <div class="toolbar">
+            <button id="btn-add-assignment" class="btn btn-primary">添加分工</button>
+            <button id="btn-build-tasks" class="btn btn-secondary">生成教学任务</button>
+          </div>
+          <div id="assignments-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-selections" class="view">
+          <h2>AP选课</h2>
+          <div class="toolbar">
+            <button id="btn-add-selection" class="btn btn-primary">添加选课</button>
+          </div>
+          <div id="selections-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-constraints" class="view">
+          <h2>约束管理</h2>
+          <div class="toolbar">
+            <button id="btn-add-constraint" class="btn btn-primary">添加约束</button>
+          </div>
+          <div id="constraints-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-student-timetable" class="view">
+          <h2>学生课表</h2>
+          <div class="toolbar">
+            <div class="search-select-group">
+              <input type="text" id="search-student" class="search-input" placeholder="🔍 搜索学生姓名或ID...">
+              <select id="select-student" class="select">
+                <option value="">选择学生</option>
+              </select>
+            </div>
+          </div>
+          <div id="student-timetable-content" class="content">请选择学生</div>
+        </div>
+
+        <div id="view-teacher-timetable" class="view">
+          <h2>教师课表</h2>
+          <div class="toolbar">
+            <div class="search-select-group">
+              <input type="text" id="search-teacher" class="search-input" placeholder="🔍 搜索教师姓名或ID...">
+              <select id="select-teacher" class="select">
+                <option value="">选择教师</option>
+              </select>
+            </div>
+          </div>
+          <div id="teacher-timetable-content" class="content">请选择教师</div>
+        </div>
+
+        <div id="view-class-timetable" class="view">
+          <h2>班级课表</h2>
+          <div class="toolbar">
+            <div class="search-select-group">
+              <input type="text" id="search-class" class="search-input" placeholder="🔍 搜索班级名称或ID...">
+              <select id="select-class" class="select">
+                <option value="">选择班级</option>
+              </select>
+            </div>
+          </div>
+          <div id="class-timetable-content" class="content">请选择班级</div>
+        </div>
+
+        <div id="view-room-timetable" class="view">
+          <h2>教室课表</h2>
+          <div class="toolbar">
+            <div class="search-select-group">
+              <input type="text" id="search-room" class="search-input" placeholder="🔍 搜索教室名称或ID...">
+              <select id="select-room" class="select">
+                <option value="">选择教室</option>
+              </select>
+            </div>
+          </div>
+          <div id="room-timetable-content" class="content">请选择教室</div>
+        </div>
+
+        <div id="view-validate" class="view">
+          <h2>数据校验</h2>
+          <div class="toolbar">
+            <button id="btn-validate-input" class="btn btn-primary">校验输入数据</button>
+            <button id="btn-validate-timetable" class="btn btn-secondary">校验排课结果</button>
+          </div>
+          <div id="validate-content" class="content">点击按钮开始校验</div>
+        </div>
+
+        <div id="view-export" class="view">
+          <h2>📤 导出课表</h2>
+          <div class="export-container">
+            <div class="export-section">
+              <h3>选择导出内容</h3>
+              <div class="export-options">
+                <div class="form-group">
+                  <label>导出维度</label>
+                  <select id="export-dimension" class="select">
+                    <option value="class">按班级</option>
+                    <option value="teacher">按教师</option>
+                    <option value="student">按学生</option>
+                    <option value="room">按教室</option>
+                    <option value="all">全部课表</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>选择对象</label>
+                  <select id="export-target" class="select">
+                    <option value="">请先选择维度</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>导出格式</label>
+                  <select id="export-format" class="select">
+                    <option value="html">HTML 网页</option>
+                    <option value="csv">CSV 表格</option>
+                    <option value="json">JSON 数据</option>
+                  </select>
+                </div>
+              </div>
+              <div class="export-actions">
+                <button class="btn btn-secondary" onclick="previewExport()">👁️ 预览</button>
+                <button class="btn btn-primary" onclick="exportTimetable()">📥 导出</button>
+              </div>
+            </div>
+
+            <div id="export-preview" class="export-preview hidden">
+              <h3>📋 导出预览</h3>
+              <div id="export-preview-content"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-import" class="view">
+          <h2>📥 数据导入</h2>
+          <div class="import-container">
+            <div class="import-section">
+              <h3>上传 Excel 文件</h3>
+              <p class="import-hint">支持 .xlsx、.xls、.csv 格式，可同时拖入多个文件</p>
+
+              <div class="import-upload-area" id="upload-area">
+                <div class="upload-icon">📁</div>
+                <p>拖拽多个文件到此处，或点击选择文件</p>
+                <input type="file" id="file-input" accept=".xlsx,.xls,.csv" multiple style="display: none;">
+                <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">选择文件（可多选）</button>
+              </div>
+            </div>
+
+            <div id="import-files-list" class="import-files-list hidden">
+              <h3>📋 待导入文件</h3>
+              <div id="files-container"></div>
+              <div class="import-actions">
+                <button class="btn btn-secondary" onclick="cancelAllImports()">清空全部</button>
+                <button class="btn btn-primary" onclick="confirmAllImports()">全部导入</button>
+              </div>
+            </div>
+
+            <div class="import-section">
+              <h3>📝 Excel 格式说明</h3>
+              <div class="format-guide">
+                <h4>学生名单格式</h4>
+                <table class="format-table">
+                  <thead>
+                    <tr>
+                      <th>学号</th>
+                      <th>姓名</th>
+                      <th>年级</th>
+                      <th>行政班</th>
+                      <th>教学班</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>S001</td>
+                      <td>张三</td>
+                      <td>1</td>
+                      <td>AC_G1_1</td>
+                      <td>TC_G1_1</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <h4>教师名单格式</h4>
+                <table class="format-table">
+                  <thead>
+                    <tr>
+                      <th>工号</th>
+                      <th>姓名</th>
+                      <th>可教课程</th>
+                      <th>每日上限</th>
+                      <th>每周上限</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>T001</td>
+                      <td>李老师</td>
+                      <td>数学,物理</td>
+                      <td>6</td>
+                      <td>25</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-ai-assistant" class="view">
+          <h2>🤖 AI智能排课</h2>
+          <div class="ai-container">
+            <div class="ai-section">
+              <h3>📝 输入排课需求（自然语言）</h3>
+              <p class="ai-hint">用自然语言描述你的排课需求，AI会理解并生成多个最优解</p>
+              <div class="ai-input-group">
+                <textarea id="ai-preference-input" placeholder="例如：&#10;- 数学课分散在一周，每天最多1节&#10;- 物理课安排在上午&#10;- 周五下午不排课&#10;- AP课程优先走班时段&#10;- 张老师周二有事不排课"></textarea>
+                <button id="btn-ai-solve" class="btn btn-primary">🤖 AI求解</button>
+              </div>
+              <div id="ai-parse-result" class="ai-result hidden"></div>
+            </div>
+
+            <div id="ai-solutions-section" class="ai-section hidden">
+              <h3>🎯 多个最优解（请选择）</h3>
+              <p class="ai-hint">AI生成了多个满足条件的最优解，请选择你最满意的一个</p>
+              <div id="ai-solutions-list" class="solutions-grid"></div>
+              <div class="ai-actions">
+                <button class="btn btn-secondary" onclick="regenerateSolutions()">🔄 重新生成</button>
+                <button class="btn btn-primary" onclick="applySelectedSolution()">✅ 应用选中方案</button>
+              </div>
+            </div>
+
+            <div class="ai-section">
+              <h3>💡 使用示例</h3>
+              <div class="examples-list">
+                <div class="example-item" onclick="useExample(this)">
+                  <strong>分散排课：</strong>数学课分散在一周，每天最多1节
+                </div>
+                <div class="example-item" onclick="useExample(this)">
+                  <strong>上午优先：</strong>物理课、化学课安排在上午
+                </div>
+                <div class="example-item" onclick="useExample(this)">
+                  <strong>禁排时段：</strong>周五下午不排课
+                </div>
+                <div class="example-item" onclick="useExample(this)">
+                  <strong>教师偏好：</strong>张老师周二有事，不排课
+                </div>
+                <div class="example-item" onclick="useExample(this)">
+                  <strong>走班优先：</strong>AP课程优先安排在走班时段
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="modal-title">标题</h3>
+          <button id="btn-close-modal" class="btn-close">&times;</button>
+        </div>
+        <div id="modal-body" class="modal-body">内容</div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

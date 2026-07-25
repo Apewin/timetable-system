@@ -1,0 +1,24 @@
+{
+  "name": "@timetable/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "tt": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@timetable/core": "workspace:*",
+    "citty": "^0.1.4",
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test data
+/tmp/
+
+# State files (contains school data, not for version control)
+timetable.json
+*.json
+!package.json
+!tsconfig.json
+!pnpm-lock.yaml
+!packages/web/package.json
