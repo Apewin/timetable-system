@@ -18,10 +18,16 @@
 
     <div class="container">
       <nav class="sidebar">
-        <div class="nav-section">
-          <h3>课表查看</h3>
+        <div class="nav-section nav-section-primary">
+          <h3>🎯 排课表</h3>
           <ul>
-            <li><a href="#" data-view="overview-timetable" class="active">📊 总课表</a></li>
+            <li><a href="#" data-view="solve" class="active">🚀 求解课表</a></li>
+          </ul>
+        </div>
+        <div class="nav-section">
+          <h3>📊 课表查看</h3>
+          <ul>
+            <li><a href="#" data-view="overview-timetable">总课表概览</a></li>
             <li><a href="#" data-view="class-timetable">🏫 按班级</a></li>
             <li><a href="#" data-view="teacher-timetable">👨‍🏫 按教师</a></li>
             <li><a href="#" data-view="student-timetable">👨‍🎓 按学生</a></li>
@@ -29,7 +35,7 @@
           </ul>
         </div>
         <div class="nav-section">
-          <h3>数据管理</h3>
+          <h3>📋 数据管理</h3>
           <ul>
             <li><a href="#" data-view="students">学生管理</a></li>
             <li><a href="#" data-view="teachers">教师管理</a></li>
@@ -42,10 +48,10 @@
           </ul>
         </div>
         <div class="nav-section">
-          <h3>工具</h3>
+          <h3>🔧 工具</h3>
           <ul>
             <li><a href="#" data-view="import">📥 数据导入</a></li>
-            <li><a href="#" data-view="ai-assistant">🤖 AI助手</a></li>
+            <li><a href="#" data-view="ai-assistant">🤖 AI智能排课</a></li>
             <li><a href="#" data-view="validate">数据校验</a></li>
             <li><a href="#" data-view="export">导出课表</a></li>
           </ul>
@@ -53,6 +59,81 @@
       </nav>
 
       <main class="main">
+        <div id="view-solve" class="view">
+          <h2>🚀 排课表</h2>
+          <div class="solve-container">
+            <div class="solve-section">
+              <h3>📊 当前状态</h3>
+              <div id="solve-status" class="status-grid">
+                <div class="status-card">
+                  <h4>教学任务</h4>
+                  <div class="value" id="solve-tasks-count">-</div>
+                </div>
+                <div class="status-card">
+                  <h4>已排课程</h4>
+                  <div class="value" id="solve-assignments-count">-</div>
+                </div>
+                <div class="status-card">
+                  <h4>硬约束违规</h4>
+                  <div class="value" id="solve-violations-count">-</div>
+                </div>
+                <div class="status-card">
+                  <h4>软约束得分</h4>
+                  <div class="value" id="solve-score">-</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="solve-section">
+              <h3>⚙️ 求解选项</h3>
+              <div class="solve-options">
+                <div class="form-group">
+                  <label>求解模式</label>
+                  <select id="solve-mode" class="select">
+                    <option value="all">完整求解（分班+排课）</option>
+                    <option value="sections">仅分班</option>
+                    <option value="timetable">仅排课</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>随机种子（可选，用于复现结果）</label>
+                  <input type="number" id="solve-seed" class="input" placeholder="留空使用随机种子">
+                </div>
+                <div class="form-group">
+                  <label>超时时间（秒）</label>
+                  <input type="number" id="solve-timeout" class="input" value="10" min="1" max="60">
+                </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="solve-keep" checked>
+                    保留已锁定的课程
+                  </label>
+                </div>
+              </div>
+              <div class="solve-actions">
+                <button class="btn btn-primary btn-lg" onclick="startSolve()">🚀 开始求解</button>
+                <button class="btn btn-secondary" onclick="resetSolve()">🔄 重置</button>
+              </div>
+            </div>
+
+            <div id="solve-result" class="solve-section hidden">
+              <h3>✅ 求解结果</h3>
+              <div id="solve-result-content"></div>
+            </div>
+
+            <div class="solve-section">
+              <h3>💡 使用说明</h3>
+              <div class="solve-guide">
+                <p><strong>完整求解：</strong>自动执行分班和排课两阶段，生成完整课表</p>
+                <p><strong>仅分班：</strong>只执行AP分班，生成教学任务，不排课</p>
+                <p><strong>仅排课：</strong>在现有教学任务基础上排课，适合手动调整后重新排课</p>
+                <p><strong>随机种子：</strong>相同种子会生成相同结果，用于复现排课方案</p>
+                <p><strong>保留锁定：</strong>勾选后，已锁定的课程不会被重新排课</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div id="view-overview-timetable" class="view">
           <h2>📊 总课表概览</h2>
           <div class="timetable-controls">

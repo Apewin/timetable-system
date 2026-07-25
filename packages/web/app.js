@@ -125,6 +125,9 @@ async function loadViewData(viewName) {
     case 'export':
       await loadExportPage();
       break;
+    case 'solve':
+      await loadSolvePage();
+      break;
   }
 }
 
@@ -3023,3 +3026,146 @@ function generateClassCSV(data, days) {
   });
   return csv;
 }
+
+// ==================== 排课表功能 ====================
+
+// 加载排课表页面
+async function loadSolvePage() {
+  try {
+    const [status, tasks] = await Promise.all([
+      api('/status'),
+      api('/teaching_tasks')
+    ]);
+
+    // 更新状态显示
+    document.getElementById('solve-tasks-count').textContent = tasks.length;
+    document.getElementById('solve-assignments-count').textContent = status.last_stage === 'timetable' ? '已排课' : '未排课';
+
+    // 检查是否有排课结果
+    if (status.last_stage === 'timetable') {
+      const violations = await api('/validate');
+      document.getElementById('solve-violations-count').textContent = violations.hard_violations || 0;
+      document.getElementById('solve-score').textContent = violations.soft_score || 0;
+    } else {
+      document.getElementById('solve-violations-count').textContent = '-';
+      document.getElementById('solve-score').textContent = '-';
+    }
+  } catch (error) {
+    console.error('加载排课状态失败:', error);
+  }
+}
+
+// 开始求解
+window.startSolve = async function() {
+  const mode = document.getElementById('solve-mode').value;
+  const seed = document.getElementById('solve-seed').value;
+  const timeout = document.getElementById('solve-timeout').value;
+  const keep = document.getElementById('solve-keep').checked;
+
+  // 确认操作
+  let confirmMsg = '';
+  switch (mode) {
+    case 'all':
+      confirmMsg = '确定要执行完整求解吗？这将生成教学任务并排课。';
+      break;
+    case 'sections':
+      confirmMsg = '确定要执行分班吗？这将生成教学任务。';
+      break;
+    case 'timetable':
+      confirmMsg = '确定要执行排课吗？这将在现有教学任务基础上排课。';
+      break;
+  }
+
+  if (!confirm(confirmMsg)) {
+    return;
+  }
+
+  try {
+    showToast('正在求解，请稍候...', 'info');
+
+    const resultDiv = document.getElementById('solve-result');
+    const contentDiv = document.getElementById('solve-result-content');
+
+    let result;
+
+    if (mode === 'all') {
+      // 完整求解：先生成任务，再排课
+      await api('/build-tasks', { method: 'POST' });
+      result = await api('/solve', {
+        method: 'POST',
+        body: JSON.stringify({
+          seed: seed ? parseInt(seed) : undefined,
+          timeout: parseInt(timeout) * 1000,
+          keep
+        })
+      });
+    } else if (mode === 'sections') {
+      // 仅分班
+      result = await api('/build-tasks', { method: 'POST' });
+    } else {
+      // 仅排课
+      result = await api('/solve', {
+        method: 'POST',
+        body: JSON.stringify({
+          seed: seed ? parseInt(seed) : undefined,
+          timeout: parseInt(timeout) * 1000,
+          keep
+        })
+      });
+    }
+
+    // 显示结果
+    resultDiv.classList.remove('hidden');
+
+    if (mode === 'sections') {
+      contentDiv.innerHTML = `
+        <div class="validation-result success">
+          ✅ 分班完成！已生成 ${result.tasks_generated} 个教学任务
+        </div>
+        <div style="margin-top: 12px;">
+          <button class="btn btn-primary" onclick="switchView('class-timetable')">查看班级课表</button>
+          <button class="btn btn-secondary" onclick="switchView('overview-timetable')">查看总课表</button>
+        </div>
+      `;
+    } else {
+      const hasViolations = result.hard_violations && result.hard_violations.length > 0;
+      contentDiv.innerHTML = `
+        <div class="validation-result ${hasViolations ? 'warning' : 'success'}">
+          ${hasViolations
+            ? `⚠️ 排课完成，但有 ${result.hard_violations.length} 个硬约束违规`
+            : '✅ 排课完成！所有硬约束满足'
+          }
+        </div>
+        <div style="margin-top: 12px;">
+          <p>软约束得分: <strong>${result.soft_score || 0}</strong></p>
+          <p>排课数量: <strong>${result.assignments?.length || 0}</strong> 节</p>
+        </div>
+        <div style="margin-top: 16px;">
+          <button class="btn btn-primary" onclick="switchView('overview-timetable')">查看总课表</button>
+          <button class="btn btn-secondary" onclick="switchView('export')">导出课表</button>
+        </div>
+      `;
+    }
+
+    // 更新状态
+    await loadSolvePage();
+
+    showToast('求解完成！', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 重置排课
+window.resetSolve = async function() {
+  if (!confirm('确定要重置排课结果吗？这将清除所有已排课程。')) {
+    return;
+  }
+
+  try {
+    // 这里可以添加重置逻辑
+    showToast('重置功能待实现', 'info');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};

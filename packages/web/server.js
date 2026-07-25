@@ -223,6 +223,116 @@ app.post('/api/build-tasks', (req, res) => {
   }
 });
 
+// API: 排课求解（需要在通用路由之前）
+app.post('/api/solve', (req, res) => {
+  try {
+    const state = readState();
+    const { seed, timeout, keep } = req.body;
+
+    if (!state.teaching_tasks || state.teaching_tasks.length === 0) {
+      return res.status(400).json({ ok: false, errors: [{ code: 'NO_TASKS', msg: '没有教学任务，请先生成教学任务' }] });
+    }
+
+    // 简化的排课算法（实际应用中应该使用更复杂的算法）
+    const tasks = state.teaching_tasks;
+    const assignments = [];
+    const slots = [];
+
+    // 生成时段列表
+    for (let day = 1; day <= 5; day++) {
+      for (let period = 1; period <= 10; period++) {
+        slots.push(`D${day}P${period}`);
+      }
+    }
+
+    // 为每个任务分配时段
+    tasks.forEach(task => {
+      let assigned = 0;
+      const course = state.courses.find(c => c.id === task.course_id);
+
+      for (let i = 0; i < task.weekly_hours && assigned < task.weekly_hours; i++) {
+        // 找一个可用的时段
+        const availableSlot = slots.find(slot => {
+          // 检查教师冲突
+          const teacherConflict = assignments.some(a => {
+            const otherTask = tasks.find(t => t.id === a.task_id);
+            return otherTask?.teacher_id === task.teacher_id && a.slot_id === slot;
+          });
+          if (teacherConflict) return false;
+
+          // 检查学生冲突
+          const studentConflict = task.student_ids?.some(studentId =>
+            assignments.some(a => {
+              const otherTask = tasks.find(t => t.id === a.task_id);
+              return otherTask?.student_ids?.includes(studentId) && a.slot_id === slot;
+            })
+          );
+          if (studentConflict) return false;
+
+          return true;
+        });
+
+        if (availableSlot) {
+          // 找可用教室
+          const room = state.rooms.find(r => {
+            if (task.room_policy === 'assign' && course?.required_room_type && r.type !== course.required_room_type) {
+              return false;
+            }
+            return !assignments.some(a => a.slot_id === availableSlot && a.room_id === r.id);
+          });
+
+          assignments.push({
+            task_id: task.id,
+            slot_id: availableSlot,
+            room_id: room?.id || 'UNKNOWN'
+          });
+          assigned++;
+        }
+      }
+    });
+
+    // 计算违规和得分
+    const hardViolations = [];
+    let softScore = 0;
+
+    // 检查是否所有任务都排满
+    tasks.forEach(task => {
+      const taskAssignments = assignments.filter(a => a.task_id === task.id);
+      if (taskAssignments.length !== task.weekly_hours) {
+        hardViolations.push({
+          constraint_id: 'H5',
+          task_ids: [task.id],
+          reason: `任务 ${task.id} 应排 ${task.weekly_hours} 节，实际排了 ${taskAssignments.length} 节`
+        });
+      }
+    });
+
+    // 更新状态
+    state.assignments = assignments;
+    state.last_solve = {
+      timestamp: new Date().toISOString(),
+      seed: seed || Date.now(),
+      assignments_count: assignments.length,
+      hard_violations: hardViolations.length,
+      soft_score: softScore
+    };
+
+    writeState(state);
+
+    res.json({
+      ok: true,
+      data: {
+        assignments,
+        hard_violations: hardViolations,
+        soft_score: softScore,
+        ok: hardViolations.length === 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
 // API: 拖拽调课 - 移动任务到新时段（需要在通用路由之前）
 app.post('/api/swap', (req, res) => {
   try {
@@ -514,6 +624,112 @@ app.get('/api/validate-input', (req, res) => {
     });
 
     res.json({ ok: errors.length === 0, data: { ok: errors.length === 0, errors } });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 验证排课结果
+app.get('/api/validate', (req, res) => {
+  try {
+    const state = readState();
+    const tasks = state.teaching_tasks || [];
+    const assignments = state.assignments || [];
+
+    const hardViolations = [];
+    let softScore = 0;
+
+    // 检查硬约束
+    // H1: 老师不重叠
+    const teacherSlotMap = new Map();
+    assignments.forEach(a => {
+      const task = tasks.find(t => t.id === a.task_id);
+      if (!task) return;
+
+      const key = `${task.teacher_id}:${a.slot_id}`;
+      if (teacherSlotMap.has(key)) {
+        hardViolations.push({
+          constraint_id: 'H1',
+          task_ids: [teacherSlotMap.get(key), a.task_id],
+          slot: a.slot_id,
+          reason: `教师 ${task.teacher_id} 在时段 ${a.slot_id} 有冲突`
+        });
+      } else {
+        teacherSlotMap.set(key, a.task_id);
+      }
+    });
+
+    // H2: 学生不重叠
+    const studentSlotMap = new Map();
+    assignments.forEach(a => {
+      const task = tasks.find(t => t.id === a.task_id);
+      if (!task) return;
+
+      task.student_ids?.forEach(studentId => {
+        const key = `${studentId}:${a.slot_id}`;
+        if (studentSlotMap.has(key)) {
+          hardViolations.push({
+            constraint_id: 'H2',
+            task_ids: [studentSlotMap.get(key), a.task_id],
+            slot: a.slot_id,
+            reason: `学生 ${studentId} 在时段 ${a.slot_id} 有冲突`
+          });
+        } else {
+          studentSlotMap.set(key, a.task_id);
+        }
+      });
+    });
+
+    // H5: 课时排满
+    tasks.forEach(task => {
+      const taskAssignments = assignments.filter(a => a.task_id === task.id);
+      if (taskAssignments.length !== task.weekly_hours) {
+        hardViolations.push({
+          constraint_id: 'H5',
+          task_ids: [task.id],
+          reason: `任务 ${task.id} 应排 ${task.weekly_hours} 节，实际排了 ${taskAssignments.length} 节`
+        });
+      }
+    });
+
+    // 计算软约束得分
+    // S1: 优先上午
+    const morningCourses = state.courses.filter(c => c.prefer_morning);
+    morningCourses.forEach(course => {
+      const courseTasks = tasks.filter(t => t.course_id === course.id);
+      courseTasks.forEach(task => {
+        const taskAssignments = assignments.filter(a => a.task_id === task.id);
+        taskAssignments.forEach(a => {
+          const period = parseInt(a.slot_id.substring(3));
+          if (period <= 5) {
+            softScore += 5;
+          }
+        });
+      });
+    });
+
+    // S3: AP落走班时段
+    const walkBlocks = state.config?.walk_blocks || [];
+    tasks.filter(t => t.source === 'ap').forEach(task => {
+      const taskAssignments = assignments.filter(a => a.task_id === task.id);
+      taskAssignments.forEach(a => {
+        if (walkBlocks.includes(a.slot_id)) {
+          softScore += 10;
+        }
+      });
+    });
+
+    res.json({
+      ok: true,
+      data: {
+        ok: hardViolations.length === 0,
+        hard_violations: hardViolations.length,
+        hard_violations_details: hardViolations,
+        soft_score: softScore,
+        assignments_count: assignments.length,
+        tasks_count: tasks.length
+      }
+    });
   } catch (error) {
     res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
   }
