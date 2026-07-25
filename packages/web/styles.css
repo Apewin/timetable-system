@@ -487,6 +487,80 @@ tr:hover {
   border-top: 2px solid var(--gray-200);
 }
 
+/* Temp Actions */
+.temp-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.temp-adjustment-card {
+  background-color: var(--gray-100);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.temp-adjustment-card.cancel {
+  border-left: 4px solid #f44336;
+}
+
+.temp-adjustment-card.move {
+  border-left: 4px solid #2196F3;
+}
+
+.temp-adjustment-card.swap {
+  border-left: 4px solid #4CAF50;
+}
+
+.temp-adjustment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.temp-adjustment-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.temp-adjustment-header .badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.temp-adjustment-header .badge.cancel {
+  background-color: #ffebee;
+  color: #c62828;
+}
+
+.temp-adjustment-header .badge.move {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+.temp-adjustment-header .badge.swap {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.temp-adjustment-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  font-size: 13px;
+  color: var(--gray-600);
+}
+
+.temp-adjustment-body .label {
+  font-weight: 500;
+  color: var(--gray-700);
+}
+
 /* Status */
 .status-grid {
   display: grid;

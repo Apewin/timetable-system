@@ -1332,6 +1332,112 @@ function evaluateSolution(state, assignments, tasks, constraints) {
   };
 }
 
+// API: 解析临时调课描述
+app.post('/api/ai/parse-temp-timetable', async (req, res) => {
+  try {
+    const state = readState();
+    const { description } = req.body;
+
+    if (!description) {
+      return res.status(400).json({ ok: false, errors: [{ code: 'INVALID', msg: '请输入描述' }] });
+    }
+
+    // 获取课程和教师信息
+    const tasks = state.teaching_tasks || [];
+    const courses = state.courses || [];
+    const teachers = state.teachers || [];
+    const assignments = state.assignments || [];
+
+    // 构建课程信息字符串
+    const taskInfo = tasks.map(t => {
+      const course = courses.find(c => c.id === t.course_id);
+      const teacher = teachers.find(te => te.id === t.teacher_id);
+      const taskAssignments = assignments.filter(a => a.task_id === t.id);
+      const slots = taskAssignments.map(a => a.slot_id).join(', ');
+      return `- ${t.id}: ${course?.name || t.course_id} (${teacher?.name || t.teacher_id}) 时段: ${slots || '未排'}`;
+    }).join('\n');
+
+    // 使用 DeepSeek 解析
+    const systemPrompt = `你是一个排课系统的临时调课解析器。用户会用自然语言描述临时调课需求，你需要解析成结构化的调整方案。
+
+当前课程安排：
+${taskInfo}
+
+时段格式说明：
+- D1P1 = 周一第1节
+- D2P6 = 周二第6节
+- 上午：P1-P5
+- 下午：P6-P10
+
+支持的操作：
+1. cancel - 取消课程
+2. move - 移动课程到新时段
+3. swap - 两个课程交换时段
+
+输出JSON格式：
+{
+  "summary": "对用户描述的理解总结",
+  "adjustments": [
+    {
+      "task_id": "任务ID",
+      "course_name": "课程名称",
+      "teacher_name": "教师姓名",
+      "action": "cancel|move|swap",
+      "original_slot": "原时段",
+      "new_slot": "新时段（move/swap时）",
+      "target_task_id": "交换对象ID（swap时）",
+      "target_course_name": "交换对象课程名（swap时）",
+      "reason": "原因"
+    }
+  ]
+}
+
+注意：
+- 如果用户提到教师姓名，找到对应的课程
+- 如果用户提到"所有AP课"，列出所有AP课程
+- 如果用户提到时间段（周三到周五），为该时间段的课程生成调整
+- 只输出JSON，不要有其他内容`;
+
+    const response = await callDeepSeek([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: description }
+    ], { temperature: 0.3 });
+
+    // 解析响应
+    let result;
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      result = jsonMatch ? JSON.parse(jsonMatch[0]) : { summary: '解析失败', adjustments: [] };
+    } catch (e) {
+      console.error('JSON解析失败:', response);
+      result = { summary: '解析失败', adjustments: [] };
+    }
+
+    // 补充缺失的信息
+    result.adjustments = (result.adjustments || []).map(adj => {
+      const task = tasks.find(t => t.id === adj.task_id);
+      const course = courses.find(c => c.id === task?.course_id);
+      const teacher = teachers.find(t => t.id === task?.teacher_id);
+      const taskAssignments = assignments.filter(a => a.task_id === adj.task_id);
+
+      return {
+        ...adj,
+        course_name: adj.course_name || course?.name || adj.task_id,
+        teacher_name: adj.teacher_name || teacher?.name || '-',
+        original_slot: adj.original_slot || taskAssignments[0]?.slot_id || '-'
+      };
+    });
+
+    res.json({
+      ok: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('解析临时调课失败:', error);
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
 // API: 应用选中的方案
 app.post('/api/ai/apply-solution', async (req, res) => {
   try {

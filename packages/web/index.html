@@ -141,41 +141,39 @@
           <h2>📙 临时课表</h2>
           <div class="solve-container">
             <div class="solve-section">
-              <h3>📅 临时课表信息</h3>
+              <h3>📅 临时课表时间</h3>
               <div class="temp-info">
                 <div class="form-group">
                   <label>生效日期</label>
-                  <input type="date" id="temp-date" class="input">
+                  <input type="date" id="temp-start-date" class="input">
                 </div>
                 <div class="form-group">
-                  <label>原因说明</label>
-                  <input type="text" id="temp-reason" class="input" placeholder="例如：期中考试、运动会、家长会...">
+                  <label>截止日期</label>
+                  <input type="date" id="temp-end-date" class="input">
                 </div>
               </div>
             </div>
 
             <div class="solve-section">
-              <h3>📝 需要调整的课程</h3>
-              <p class="ai-hint">选择需要调整的课程，系统会生成临时课表，只显示变化的部分</p>
-              <div id="temp-adjustments">
-                <div class="temp-adjustment-item">
-                  <select class="select temp-task-select">
-                    <option value="">选择课程</option>
-                  </select>
-                  <select class="select temp-action-select">
-                    <option value="cancel">取消</option>
-                    <option value="move">移动到</option>
-                    <option value="swap">与...交换</option>
-                  </select>
-                  <input type="text" class="input temp-target-input" placeholder="目标时段（如 D3P6）">
-                  <button class="btn btn-danger btn-sm" onclick="removeTempAdjustment(this)">✕</button>
-                </div>
+              <h3>🤖 AI 智能解析</h3>
+              <p class="ai-hint">用自然语言描述临时调课需求，AI 会自动理解并生成调整方案</p>
+              <div class="ai-input-group">
+                <textarea id="temp-description" placeholder="例如：&#10;- 下周三到周五期中考试，所有AP课取消&#10;- 周四下午的课调到周五上午&#10;- 张老师周二有事，他的课调到周三&#10;- 运动会期间（周三到周五）所有课取消"></textarea>
               </div>
-              <button class="btn btn-secondary" onclick="addTempAdjustment()">+ 添加调整</button>
+              <div class="temp-actions">
+                <button class="btn btn-primary" onclick="parseTempDescription()">🤖 AI 解析</button>
+                <button class="btn btn-secondary" onclick="clearTempDescription()">清空</button>
+              </div>
+              <div id="temp-parse-result" class="ai-result hidden"></div>
             </div>
 
-            <div class="solve-actions">
-              <button class="btn btn-primary btn-lg" onclick="generateTempTimetable()">📙 生成临时课表</button>
+            <div id="temp-adjustments-section" class="solve-section hidden">
+              <h3>📝 解析结果（可手动调整）</h3>
+              <div id="temp-adjustments"></div>
+              <div class="temp-actions">
+                <button class="btn btn-secondary" onclick="addTempAdjustment()">+ 手动添加</button>
+                <button class="btn btn-primary btn-lg" onclick="generateTempTimetable()">📙 生成临时课表</button>
+              </div>
             </div>
 
             <div id="temp-result" class="solve-section hidden">
@@ -187,10 +185,14 @@
               <h3>💡 使用说明</h3>
               <div class="solve-guide">
                 <p><strong>临时课表：</strong>用于特殊情况（活动、考试等），只调整部分课程</p>
-                <p><strong>取消：</strong>该时段的课程取消</p>
-                <p><strong>移动：</strong>将课程移动到指定时段</p>
-                <p><strong>交换：</strong>两个课程交换时段</p>
-                <p><strong>输出：</strong>只显示变化的部分，方便通知相关师生</p>
+                <p><strong>AI 解析：</strong>用自然语言描述需求，AI 自动理解并生成调整方案</p>
+                <p><strong>支持的描述：</strong></p>
+                <ul style="margin-left: 20px; margin-top: 8px;">
+                  <li>时间范围：周三到周五、下周、明天</li>
+                  <li>课程操作：取消、调到、换到、移动</li>
+                  <li>教师/班级：张老师的课、高一的课</li>
+                  <li>原因说明：运动会、考试、家长会</li>
+                </ul>
               </div>
             </div>
           </div>
