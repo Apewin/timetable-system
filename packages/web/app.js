@@ -116,9 +116,6 @@ async function loadViewData(viewName) {
     case 'overview-timetable':
       await loadOverviewTimetable();
       break;
-    case 'ai-solve':
-      await loadAIAssistant();
-      break;
     case 'import':
       initImportPage();
       break;
@@ -3112,6 +3109,149 @@ window.parseFormalDescription = async function() {
     resultDiv.innerHTML = html;
 
     showToast('✅ 需求解析完成', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 生成多个方案
+window.generateMultipleSolutions = async function() {
+  const description = document.getElementById('formal-description').value.trim();
+
+  if (!description) {
+    showToast('请先输入排课需求', 'warning');
+    return;
+  }
+
+  try {
+    showToast('🤖 AI 正在生成多个方案...', 'info');
+
+    const solutionsDiv = document.getElementById('formal-solutions');
+    solutionsDiv.classList.remove('hidden');
+    solutionsDiv.innerHTML = '<div class="loading">AI 正在分析需求并生成多个最优解...</div>';
+
+    // 调用 AI 求解
+    const result = await api('/ai/solve', {
+      method: 'POST',
+      body: JSON.stringify({ text: description })
+    });
+
+    if (!result.ok) {
+      throw new Error(result.errors?.[0]?.msg || '求解失败');
+    }
+
+    const solutions = result.data.solutions || [];
+
+    if (solutions.length === 0) {
+      solutionsDiv.innerHTML = '<div class="empty-state"><p>未能生成有效方案，请调整需求</p></div>';
+      return;
+    }
+
+    // 显示方案列表
+    let html = `
+      <div style="margin-bottom: 16px;">
+        <strong>🎯 AI 生成了 ${solutions.length} 个方案，请选择：</strong>
+      </div>
+    `;
+
+    solutions.forEach((solution, index) => {
+      html += `
+        <div class="solution-card" id="solution-${index}" onclick="selectFormalSolution(${index})">
+          <div class="solution-header">
+            <h4>方案 ${index + 1}</h4>
+            <span class="score">得分: ${solution.score || 0}</span>
+          </div>
+          <div class="solution-details">
+            <div>📊 排课数量: ${solution.assignments?.length || 0} 节</div>
+            <div>✅ 硬约束违规: ${solution.details?.hard_violations || 0} 个</div>
+            <div>⭐ 约束满足度: ${solution.details?.constraint_satisfaction || 0} 分</div>
+          </div>
+        </div>
+      `;
+    });
+
+    html += `
+      <div style="margin-top: 16px;">
+        <button class="btn btn-primary" onclick="applySelectedFormalSolution()">✅ 应用选中方案</button>
+        <button class="btn btn-secondary" onclick="generateMultipleSolutions()">🔄 重新生成</button>
+      </div>
+    `;
+
+    solutionsDiv.innerHTML = html;
+
+    // 保存方案数据
+    window._formalSolutions = solutions;
+    window._selectedFormalSolution = null;
+
+    showToast('✅ 方案生成完成', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 选择方案
+window.selectFormalSolution = function(index) {
+  // 取消之前的选中
+  document.querySelectorAll('.solution-card').forEach(card => {
+    card.classList.remove('selected');
+  });
+
+  // 选中当前
+  const card = document.getElementById(`solution-${index}`);
+  if (card) {
+    card.classList.add('selected');
+  }
+
+  window._selectedFormalSolution = index;
+};
+
+// 应用选中的方案
+window.applySelectedFormalSolution = async function() {
+  if (window._selectedFormalSolution === null || window._selectedFormalSolution === undefined) {
+    showToast('请先选择一个方案', 'warning');
+    return;
+  }
+
+  const solution = window._formalSolutions[window._selectedFormalSolution];
+  if (!solution) {
+    showToast('选中的方案无效', 'error');
+    return;
+  }
+
+  if (!confirm(`确定要应用方案 ${window._selectedFormalSolution + 1} 吗？这将覆盖当前的排课结果。`)) {
+    return;
+  }
+
+  try {
+    showToast('正在应用方案...', 'info');
+
+    // 调用 API 应用方案
+    await api('/ai/apply-solution', {
+      method: 'POST',
+      body: JSON.stringify({
+        assignments: solution.assignments,
+        seed: solution.seed
+      })
+    });
+
+    showToast('✅ 方案已应用', 'success');
+
+    // 刷新状态
+    await loadFormalSolvePage();
+
+    // 显示成功消息
+    const resultDiv = document.getElementById('formal-result');
+    const contentDiv = document.getElementById('formal-result-content');
+    resultDiv.classList.remove('hidden');
+    contentDiv.innerHTML = `
+      <div class="validation-result success">
+        ✅ 方案 ${window._selectedFormalSolution + 1} 已成功应用！
+      </div>
+      <div style="margin-top: 16px;">
+        <button class="btn btn-primary" onclick="switchView('overview-timetable')">查看总课表</button>
+        <button class="btn btn-secondary" onclick="switchView('export')">导出课表</button>
+      </div>
+    `;
   } catch (error) {
     showToast(error.message, 'error');
   }

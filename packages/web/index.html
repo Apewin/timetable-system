@@ -23,7 +23,6 @@
           <ul>
             <li><a href="#" data-view="formal-timetable" class="active">📘 正式课表</a></li>
             <li><a href="#" data-view="temp-timetable">📙 临时课表</a></li>
-            <li><a href="#" data-view="ai-solve">🤖 AI智能排课</a></li>
             <li><a href="#" data-view="validate">✅ 数据校验</a></li>
           </ul>
         </div>
@@ -87,15 +86,17 @@
             </div>
 
             <div class="solve-section">
-              <h3>🤖 自然语言排课需求（可选）</h3>
-              <p class="ai-hint">用自然语言描述你的排课偏好，AI 会理解并应用到排课中</p>
+              <h3>🤖 AI 智能排课</h3>
+              <p class="ai-hint">用自然语言描述你的排课偏好，AI 会理解并生成多个最优解供你选择</p>
               <div class="ai-input-group">
-                <textarea id="formal-description" placeholder="例如：&#10;- 数学课分散在一周，每天最多1节&#10;- 物理课安排在上午&#10;- 周五下午不排课&#10;- AP课程优先走班时段"></textarea>
+                <textarea id="formal-description" placeholder="例如：&#10;- 数学课分散在一周，每天最多1节&#10;- 物理课安排在上午&#10;- 周五下午不排课&#10;- AP课程优先走班时段&#10;- 张老师周二有事不排课"></textarea>
               </div>
               <div class="formal-actions">
                 <button class="btn btn-secondary" onclick="parseFormalDescription()">🤖 解析需求</button>
+                <button class="btn btn-primary" onclick="generateMultipleSolutions()">🎯 生成多个方案</button>
               </div>
               <div id="formal-parse-result" class="ai-result hidden"></div>
+              <div id="formal-solutions" class="solutions-grid hidden"></div>
             </div>
 
             <div class="solve-section">
@@ -513,51 +514,6 @@
           </div>
         </div>
 
-        <div id="view-ai-solve" class="view">
-          <h2>🤖 AI智能排课</h2>
-          <div class="ai-container">
-            <div class="ai-section">
-              <h3>📝 输入排课需求（自然语言）</h3>
-              <p class="ai-hint">用自然语言描述你的排课需求，AI会理解并生成多个最优解</p>
-              <div class="ai-input-group">
-                <textarea id="ai-preference-input" placeholder="例如：&#10;- 数学课分散在一周，每天最多1节&#10;- 物理课安排在上午&#10;- 周五下午不排课&#10;- AP课程优先走班时段&#10;- 张老师周二有事不排课"></textarea>
-                <button id="btn-ai-solve" class="btn btn-primary">🤖 AI求解</button>
-              </div>
-              <div id="ai-parse-result" class="ai-result hidden"></div>
-            </div>
-
-            <div id="ai-solutions-section" class="ai-section hidden">
-              <h3>🎯 多个最优解（请选择）</h3>
-              <p class="ai-hint">AI生成了多个满足条件的最优解，请选择你最满意的一个</p>
-              <div id="ai-solutions-list" class="solutions-grid"></div>
-              <div class="ai-actions">
-                <button class="btn btn-secondary" onclick="regenerateSolutions()">🔄 重新生成</button>
-                <button class="btn btn-primary" onclick="applySelectedSolution()">✅ 应用选中方案</button>
-              </div>
-            </div>
-
-            <div class="ai-section">
-              <h3>💡 使用示例</h3>
-              <div class="examples-list">
-                <div class="example-item" onclick="useExample(this)">
-                  <strong>分散排课：</strong>数学课分散在一周，每天最多1节
-                </div>
-                <div class="example-item" onclick="useExample(this)">
-                  <strong>上午优先：</strong>物理课、化学课安排在上午
-                </div>
-                <div class="example-item" onclick="useExample(this)">
-                  <strong>禁排时段：</strong>周五下午不排课
-                </div>
-                <div class="example-item" onclick="useExample(this)">
-                  <strong>教师偏好：</strong>张老师周二有事，不排课
-                </div>
-                <div class="example-item" onclick="useExample(this)">
-                  <strong>走班优先：</strong>AP课程优先安排在走班时段
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </main>
     </div>
 
