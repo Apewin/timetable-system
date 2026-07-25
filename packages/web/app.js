@@ -136,7 +136,7 @@ async function loadViewData(viewName) {
 
 // 加载欢迎页面
 function loadWelcomePage() {
-  // 更新时间
+  // 立即更新时间
   updateDateTime();
   // 每秒更新时间
   if (window._dateTimeInterval) {
@@ -145,22 +145,23 @@ function loadWelcomePage() {
   window._dateTimeInterval = setInterval(updateDateTime, 1000);
 }
 
-// 更新时间显示
+// 更新时间显示（使用浏览器本地时间）
 function updateDateTime() {
   const now = new Date();
-  const options = {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'long',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  };
 
-  const dateTimeStr = now.toLocaleString('zh-CN', options);
-  const [dateStr, timeStr] = dateTimeStr.split(' ');
+  // 格式化时间
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  const timeStr = `${hours}:${minutes}:${seconds}`;
+
+  // 格式化日期
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+  const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+  const weekday = weekdays[now.getDay()];
+  const dateStr = `${year}年${month}月${day}日 ${weekday}`;
 
   document.getElementById('current-datetime').innerHTML = `
     <div>${timeStr}</div>
