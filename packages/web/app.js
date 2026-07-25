@@ -507,10 +507,15 @@ function applyStudentFilters(data) {
 
   // 按班级筛选
   if (classFilter) {
-    const [type, classId] = classFilter.split('_');
-    if (type === 'admin') {
+    // 格式: admin_AC_G1_1 或 teaching_TC_G1_1
+    const isAdmin = classFilter.startsWith('admin_');
+    const isTeaching = classFilter.startsWith('teaching_');
+
+    if (isAdmin) {
+      const classId = classFilter.substring(6); // 移除 "admin_" 前缀
       filtered = filtered.filter(s => s.admin_class_id === classId);
-    } else if (type === 'teaching') {
+    } else if (isTeaching) {
+      const classId = classFilter.substring(9); // 移除 "teaching_" 前缀
       filtered = filtered.filter(s => s.teaching_class_id === classId);
     }
   }
