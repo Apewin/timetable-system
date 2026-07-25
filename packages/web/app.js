@@ -2708,7 +2708,7 @@ window.exportTimetable = async function() {
         break;
 
       case 'csv':
-        content = generateCSV(data);
+        content = await generateCSV(data);
         filename += '.csv';
         mimeType = 'text/csv';
         break;
@@ -2887,14 +2887,40 @@ function generateClassTableHTML(className, classType, data, days) {
 }
 
 // 生成 CSV 格式
-function generateCSV(data) {
+async function generateCSV(data) {
   const days = ['周一', '周二', '周三', '周四', '周五'];
   let csv = '﻿'; // BOM for Excel
 
-  // 表头
-  csv += '节次,' + days.join(',') + '\n';
+  // 如果是全部课表，按班级分组
+  if (data.title.includes('全部课表')) {
+    const [adminClasses, teachingClasses] = await Promise.all([
+      api('/admin_classes'),
+      api('/teaching_classes')
+    ]);
 
-  // 数据行
+    // 行政班
+    for (const cls of adminClasses) {
+      const classData = await api(`/timetable/class/${cls.id}`);
+      if (classData.rows && classData.rows.length > 0) {
+        csv += `\n"${cls.name} (行政班)"\n`;
+        csv += generateClassCSV(classData, days);
+      }
+    }
+
+    // 教学班
+    for (const cls of teachingClasses) {
+      const classData = await api(`/timetable/class/${cls.id}`);
+      if (classData.rows && classData.rows.length > 0) {
+        csv += `\n"${cls.name} (教学班)"\n`;
+        csv += generateClassCSV(classData, days);
+      }
+    }
+
+    return csv;
+  }
+
+  // 单个课表
+  csv += '节次,' + days.join(',') + '\n';
   data.rows.forEach((row, index) => {
     csv += `第${index + 1}节,`;
     csv += [1, 2, 3, 4, 5].map(i => {
@@ -2904,5 +2930,19 @@ function generateCSV(data) {
     csv += '\n';
   });
 
+  return csv;
+}
+
+// 生成单个班级的 CSV
+function generateClassCSV(data, days) {
+  let csv = '节次,' + days.join(',') + '\n';
+  data.rows.forEach((row, index) => {
+    csv += `第${index + 1}节,`;
+    csv += [1, 2, 3, 4, 5].map(i => {
+      const slot = row[i];
+      return slot ? `"${slot.course} ${slot.teacher} ${slot.room}"` : '';
+    }).join(',');
+    csv += '\n';
+  });
   return csv;
 }
