@@ -116,7 +116,7 @@ async function loadViewData(viewName) {
     case 'overview-timetable':
       await loadOverviewTimetable();
       break;
-    case 'ai-assistant':
+    case 'ai-solve':
       await loadAIAssistant();
       break;
     case 'import':
