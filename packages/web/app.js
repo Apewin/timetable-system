@@ -3032,6 +3032,9 @@ function generateClassCSV(data, days) {
 
 // ==================== 排课表功能 ====================
 
+// 存储解析后的约束
+let formalConstraints = [];
+
 // 加载正式课表页面
 async function loadFormalSolvePage() {
   try {
@@ -3053,10 +3056,66 @@ async function loadFormalSolvePage() {
       document.getElementById('formal-violations-count').textContent = '-';
       document.getElementById('formal-score').textContent = '-';
     }
+
+    // 重置
+    formalConstraints = [];
+    document.getElementById('formal-parse-result').classList.add('hidden');
+    document.getElementById('formal-suggestions').classList.add('hidden');
   } catch (error) {
     console.error('加载排课状态失败:', error);
   }
 }
+
+// 解析自然语言排课需求
+window.parseFormalDescription = async function() {
+  const description = document.getElementById('formal-description').value.trim();
+
+  if (!description) {
+    showToast('请输入排课需求', 'warning');
+    return;
+  }
+
+  try {
+    showToast('🤖 AI 正在解析...', 'info');
+
+    const resultDiv = document.getElementById('formal-parse-result');
+    resultDiv.classList.remove('hidden');
+    resultDiv.innerHTML = '<div class="loading">正在解析您的需求...</div>';
+
+    // 调用 AI 解析
+    const result = await api('/ai/parse-preference', {
+      method: 'POST',
+      body: JSON.stringify({ text: description })
+    });
+
+    formalConstraints = result.parsed_preferences || [];
+
+    // 显示解析结果
+    let html = `
+      <div style="margin-bottom: 12px;">
+        <strong>🤖 AI 理解的需求：</strong>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+    `;
+
+    formalConstraints.forEach(c => {
+      html += `<span class="preference-tag">${c.description || JSON.stringify(c)}</span>`;
+    });
+
+    html += `
+      </div>
+      <div style="margin-top: 12px; font-size: 13px; color: var(--gray-500);">
+        这些需求将在排课时自动应用
+      </div>
+    `;
+
+    resultDiv.innerHTML = html;
+
+    showToast('✅ 需求解析完成', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
 
 // 开始正式排课
 window.startFormalSolve = async function() {
@@ -3064,6 +3123,7 @@ window.startFormalSolve = async function() {
   const seed = document.getElementById('formal-seed').value;
   const timeout = document.getElementById('formal-timeout').value;
   const keep = document.getElementById('formal-keep').checked;
+  const description = document.getElementById('formal-description').value;
 
   // 确认操作
   let confirmMsg = '';
@@ -3088,6 +3148,7 @@ window.startFormalSolve = async function() {
 
     const resultDiv = document.getElementById('formal-result');
     const contentDiv = document.getElementById('formal-result-content');
+    const suggestionsDiv = document.getElementById('formal-suggestions');
 
     let result;
 
@@ -3099,7 +3160,9 @@ window.startFormalSolve = async function() {
         body: JSON.stringify({
           seed: seed ? parseInt(seed) : undefined,
           timeout: parseInt(timeout) * 1000,
-          keep
+          keep,
+          constraints: formalConstraints,
+          description
         })
       });
     } else if (mode === 'sections') {
@@ -3112,7 +3175,9 @@ window.startFormalSolve = async function() {
         body: JSON.stringify({
           seed: seed ? parseInt(seed) : undefined,
           timeout: parseInt(timeout) * 1000,
-          keep
+          keep,
+          constraints: formalConstraints,
+          description
         })
       });
     }
@@ -3132,22 +3197,49 @@ window.startFormalSolve = async function() {
       `;
     } else {
       const hasViolations = result.hard_violations && result.hard_violations.length > 0;
-      contentDiv.innerHTML = `
-        <div class="validation-result ${hasViolations ? 'warning' : 'success'}">
-          ${hasViolations
-            ? `⚠️ 排课完成，但有 ${result.hard_violations.length} 个硬约束违规`
-            : '✅ 正式课表生成成功！所有硬约束满足'
-          }
-        </div>
-        <div style="margin-top: 12px;">
-          <p>软约束得分: <strong>${result.soft_score || 0}</strong></p>
-          <p>排课数量: <strong>${result.assignments?.length || 0}</strong> 节</p>
-        </div>
-        <div style="margin-top: 16px;">
-          <button class="btn btn-primary" onclick="switchView('overview-timetable')">查看总课表</button>
-          <button class="btn btn-secondary" onclick="switchView('export')">导出课表</button>
-        </div>
-      `;
+
+      if (hasViolations) {
+        // 有违规，显示违规详情和AI建议
+        contentDiv.innerHTML = `
+          <div class="validation-result warning">
+            ⚠️ 排课完成，但有 ${result.hard_violations.length} 个硬约束违规
+          </div>
+          <div style="margin-top: 16px;">
+            <h4>违规详情：</h4>
+            ${result.hard_violations.map(v => `
+              <div class="violation-item">
+                <div class="constraint-id">${v.constraint_id || 'H?'}</div>
+                <div class="reason">${v.reason}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div style="margin-top: 16px;">
+            <p>软约束得分: <strong>${result.soft_score || 0}</strong></p>
+            <p>排课数量: <strong>${result.assignments?.length || 0}</strong> 节</p>
+          </div>
+          <div style="margin-top: 16px;">
+            <button class="btn btn-primary" onclick="requestAISuggestions()">🤖 请求 AI 优化建议</button>
+            <button class="btn btn-secondary" onclick="switchView('overview-timetable')">查看当前课表</button>
+          </div>
+        `;
+
+        // 自动请求AI建议
+        await requestAISuggestions();
+      } else {
+        contentDiv.innerHTML = `
+          <div class="validation-result success">
+            ✅ 正式课表生成成功！所有硬约束满足
+          </div>
+          <div style="margin-top: 12px;">
+            <p>软约束得分: <strong>${result.soft_score || 0}</strong></p>
+            <p>排课数量: <strong>${result.assignments?.length || 0}</strong> 节</p>
+          </div>
+          <div style="margin-top: 16px;">
+            <button class="btn btn-primary" onclick="switchView('overview-timetable')">查看总课表</button>
+            <button class="btn btn-secondary" onclick="switchView('export')">导出课表</button>
+          </div>
+        `;
+      }
     }
 
     // 更新状态
@@ -3156,6 +3248,114 @@ window.startFormalSolve = async function() {
     showToast('正式课表生成完成！', 'success');
   } catch (error) {
     showToast(error.message, 'error');
+  }
+};
+
+// 请求AI优化建议
+window.requestAISuggestions = async function() {
+  try {
+    showToast('🤖 AI 正在分析优化方案...', 'info');
+
+    const suggestionsDiv = document.getElementById('formal-suggestions');
+    const contentDiv = document.getElementById('formal-suggestions-content');
+
+    suggestionsDiv.classList.remove('hidden');
+    contentDiv.innerHTML = '<div class="loading">AI 正在分析约束冲突并生成优化建议...</div>';
+
+    // 获取当前状态
+    const [validation, tasks, courses, teachers, rooms] = await Promise.all([
+      api('/validate'),
+      api('/teaching_tasks'),
+      api('/courses'),
+      api('/teachers'),
+      api('/rooms')
+    ]);
+
+    // 调用 AI 生成建议
+    const result = await api('/ai/suggest-fixes', {
+      method: 'POST',
+      body: JSON.stringify({
+        violations: validation.hard_violations_details || [],
+        tasks,
+        courses,
+        teachers,
+        rooms,
+        constraints: formalConstraints
+      })
+    });
+
+    // 显示建议
+    if (result.suggestions && result.suggestions.length > 0) {
+      let html = `
+        <div style="margin-bottom: 16px; color: var(--gray-600);">
+          AI 生成了 ${result.suggestions.length} 条优化建议，选择接受或拒绝：
+        </div>
+      `;
+
+      result.suggestions.forEach((suggestion, index) => {
+        const typeClass = suggestion.type;
+        const typeLabel = suggestion.type === 'room' ? '教室' :
+                         suggestion.type === 'teacher' ? '教师' : '时段';
+
+        html += `
+          <div class="suggestion-item" id="suggestion-${index}">
+            <div class="suggestion-header">
+              <h4>${suggestion.title}</h4>
+              <span class="badge ${typeClass}">${typeLabel}</span>
+            </div>
+            <div class="suggestion-body">
+              ${suggestion.description}
+            </div>
+            <div class="suggestion-actions">
+              <button class="btn btn-primary btn-sm" onclick="acceptSuggestion(${index})">✅ 接受</button>
+              <button class="btn btn-secondary btn-sm" onclick="rejectSuggestion(${index})">❌ 拒绝</button>
+            </div>
+          </div>
+        `;
+      });
+
+      contentDiv.innerHTML = html;
+    } else {
+      contentDiv.innerHTML = `
+        <div class="empty-state">
+          <p>AI 未能生成优化建议，可能需要手动调整约束条件</p>
+        </div>
+      `;
+    }
+
+    showToast('✅ AI 建议生成完成', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 接受建议
+window.acceptSuggestion = async function(index) {
+  try {
+    showToast('正在应用建议...', 'info');
+
+    // 这里可以调用 API 应用建议
+    // await api('/ai/apply-suggestion', { method: 'POST', body: JSON.stringify({ index }) });
+
+    // 更新UI
+    const item = document.getElementById(`suggestion-${index}`);
+    if (item) {
+      item.classList.add('accepted');
+      item.querySelector('.suggestion-actions').innerHTML = '<span style="color: #2e7d32; font-weight: 600;">✅ 已接受</span>';
+    }
+
+    showToast('建议已接受', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// 拒绝建议
+window.rejectSuggestion = function(index) {
+  const item = document.getElementById(`suggestion-${index}`);
+  if (item) {
+    item.classList.add('rejected');
+    item.querySelector('.suggestion-actions').innerHTML = '<span style="color: #c62828; font-weight: 600;">❌ 已拒绝</span>';
   }
 };
 

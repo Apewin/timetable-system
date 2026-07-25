@@ -1470,6 +1470,95 @@ app.post('/api/ai/apply-solution', async (req, res) => {
   }
 });
 
+// API: 生成优化建议（当有约束违规时）
+app.post('/api/ai/suggest-fixes', async (req, res) => {
+  try {
+    const { violations, tasks, courses, teachers, rooms, constraints } = req.body;
+
+    if (!violations || violations.length === 0) {
+      return res.json({ ok: true, data: { suggestions: [] } });
+    }
+
+    // 构建违规信息
+    const violationInfo = violations.map(v => {
+      const task = tasks?.find(t => t.id === v.task_ids?.[0]);
+      const course = courses?.find(c => c.id === task?.course_id);
+      const teacher = teachers?.find(t => t.id === task?.teacher_id);
+      return {
+        constraint: v.constraint_id,
+        reason: v.reason,
+        task_id: v.task_ids?.[0],
+        course_name: course?.name || task?.course_id,
+        teacher_name: teacher?.name || task?.teacher_id,
+        slot: v.slot
+      };
+    });
+
+    // 构建资源信息
+    const resourceInfo = {
+      rooms: rooms?.map(r => `${r.id}(${r.name}, ${r.type}, 容量${r.capacity})`).join(', ') || '',
+      teachers: teachers?.map(t => `${t.id}(${t.name}, 可教${t.can_teach?.join('/')})`).join(', ') || ''
+    };
+
+    // 使用 DeepSeek 生成建议
+    const systemPrompt = `你是一个排课系统的优化顾问。当排课出现约束违规时，你需要分析问题并给出具体的优化建议。
+
+当前违规情况：
+${violationInfo.map(v => `- [${v.constraint}] ${v.reason}（课程：${v.course_name}，教师：${v.teacher_name}）`).join('\n')}
+
+可用资源：
+- 教室：${resourceInfo.rooms}
+- 教师：${resourceInfo.teachers}
+
+请针对每个违规，给出具体的优化建议。建议类型包括：
+1. room - 更换教室（当教室冲突或类型不匹配时）
+2. teacher - 更换教师（当教师冲突时）
+3. slot - 调整时段（当时间冲突时）
+
+输出JSON格式：
+{
+  "suggestions": [
+    {
+      "type": "room|teacher|slot",
+      "title": "简短标题",
+      "description": "详细说明，包括具体操作",
+      "task_id": "相关任务ID",
+      "action": "具体操作（如换到R102、调到D3P6等）"
+    }
+  ]
+}
+
+注意：
+- 建议要具体可操作，不要泛泛而谈
+- 优先建议影响最小的调整
+- 考虑调整后的连锁反应
+- 只输出JSON，不要有其他内容`;
+
+    const response = await callDeepSeek([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: '请分析违规并给出优化建议' }
+    ], { temperature: 0.5 });
+
+    // 解析响应
+    let result;
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      result = jsonMatch ? JSON.parse(jsonMatch[0]) : { suggestions: [] };
+    } catch (e) {
+      console.error('JSON解析失败:', response);
+      result = { suggestions: [] };
+    }
+
+    res.json({
+      ok: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('生成优化建议失败:', error);
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
 // API: 自然语言偏好解析（使用 DeepSeek）
 app.post('/api/ai/parse-preference', async (req, res) => {
   try {

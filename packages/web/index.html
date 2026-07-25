@@ -87,6 +87,18 @@
             </div>
 
             <div class="solve-section">
+              <h3>🤖 自然语言排课需求（可选）</h3>
+              <p class="ai-hint">用自然语言描述你的排课偏好，AI 会理解并应用到排课中</p>
+              <div class="ai-input-group">
+                <textarea id="formal-description" placeholder="例如：&#10;- 数学课分散在一周，每天最多1节&#10;- 物理课安排在上午&#10;- 周五下午不排课&#10;- AP课程优先走班时段"></textarea>
+              </div>
+              <div class="formal-actions">
+                <button class="btn btn-secondary" onclick="parseFormalDescription()">🤖 解析需求</button>
+              </div>
+              <div id="formal-parse-result" class="ai-result hidden"></div>
+            </div>
+
+            <div class="solve-section">
               <h3>⚙️ 求解选项</h3>
               <div class="solve-options">
                 <div class="form-group">
@@ -123,6 +135,12 @@
               <div id="formal-result-content"></div>
             </div>
 
+            <div id="formal-suggestions" class="solve-section hidden">
+              <h3>💡 AI 优化建议</h3>
+              <p class="ai-hint">当无法满足所有约束时，AI 会建议如何调整以获得可行解</p>
+              <div id="formal-suggestions-content"></div>
+            </div>
+
             <div class="solve-section">
               <h3>💡 使用说明</h3>
               <div class="solve-guide">
@@ -131,6 +149,7 @@
                 <p><strong>仅排课：</strong>在现有教学任务基础上排课，适合手动调整后重新排课</p>
                 <p><strong>随机种子：</strong>相同种子会生成相同结果，用于复现排课方案</p>
                 <p><strong>保留锁定：</strong>勾选后，已锁定的课程不会被重新排课</p>
+                <p><strong>自然语言：</strong>描述你的排课偏好，AI 会理解并应用</p>
               </div>
             </div>
           </div>

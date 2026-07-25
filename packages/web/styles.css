@@ -419,6 +419,97 @@ tr:hover {
   color: var(--gray-800);
 }
 
+/* Formal Actions */
+.formal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Suggestions */
+.suggestion-item {
+  background-color: var(--gray-100);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.suggestion-item.accepted {
+  background-color: #e8f5e9;
+  border-color: #a5d6a7;
+}
+
+.suggestion-item.rejected {
+  background-color: #ffebee;
+  border-color: #ef9a9a;
+}
+
+.suggestion-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.suggestion-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.suggestion-header .badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.suggestion-header .badge.room {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+.suggestion-header .badge.teacher {
+  background-color: #f3e5f5;
+  color: #7b1fa2;
+}
+
+.suggestion-header .badge.slot {
+  background-color: #fff3e0;
+  color: #e65100;
+}
+
+.suggestion-body {
+  font-size: 14px;
+  color: var(--gray-600);
+  margin-bottom: 12px;
+}
+
+.suggestion-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Constraint Violations */
+.violation-item {
+  background-color: #fff3e0;
+  border: 1px solid #ffcc80;
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.violation-item .constraint-id {
+  font-weight: 600;
+  color: #e65100;
+  margin-bottom: 4px;
+}
+
+.violation-item .reason {
+  font-size: 13px;
+  color: var(--gray-600);
+}
+
 /* Temp Timetable */
 .temp-info {
   display: grid;
