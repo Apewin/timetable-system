@@ -1,14 +1,15 @@
 /**
- * G12 高三引擎 — Min-Conflicts CSP求解器 + batch选修AP
+ * G12 — Min-Conflicts CSP teaching + batch AP/elective
  */
 const fs=require('fs');
 class G12Engine{
   constructor(rulesPath,dataPath){this.rules=JSON.parse(fs.readFileSync(rulesPath,'utf-8'));this.data=JSON.parse(fs.readFileSync(dataPath,'utf-8'));this.students=this.data.students.filter(s=>s.grade===12);this.ac5=this.students.filter(s=>s.admin_class_id==='AC5');this.ac6=this.students.filter(s=>s.admin_class_id==='AC6');this.tc1=this.students.filter(s=>s.teaching_class_id==='TC_G12_1');this.tc2=this.students.filter(s=>s.teaching_class_id==='TC_G12_2');this.tc3=this.students.filter(s=>s.teaching_class_id==='TC_G12_3');this.tcS=[this.tc1,this.tc2,this.tc3];this.tcI=['TC_G12_1','TC_G12_2','TC_G12_3'];this.tcR=['R9','R10','R10'];this.globalTeacher={};(this.data.assignments||[]).forEach(a=>{if(a.teacher_id){if(!this.globalTeacher[a.teacher_id])this.globalTeacher[a.teacher_id]=new Set();this.globalTeacher[a.teacher_id].add(a.slot_id)}})}
   _add(stu,cid,sid,cls,ctype,room,tid,A){stu.forEach(s=>A.push({task_id:cls+'_'+cid+'_'+s.id,slot_id:sid,room_id:room,course_id:cid,class_id:cls,class_type:ctype,teacher_id:tid,student_id:s.id}))}
   teacherBusy(tid,sid){return this.globalTeacher[tid]?.has(sid)||false}
+
   generateInitial(){
     const A=[];
-    // Fixed admin
+    // Phase 1: Place admin + batch AP + batch elective
     this._add(this.ac5,'DUTY','D1P10','AC5','admin','R9',null,A);this._add(this.ac6,'DUTY','D1P10','AC6','admin','R10',null,A);
     this._add(this.ac5,'MEETING','D1P9','AC5','admin','R9',null,A);this._add(this.ac6,'MEETING','D1P9','AC6','admin','R10',null,A);
     this._add(this.ac5,'CLUB','D2P10','AC5','admin','R9',null,A);this._add(this.ac6,'CLUB','D2P10','AC6','admin','R10',null,A);
@@ -17,36 +18,52 @@ class G12Engine{
     // Batch AP
     const apCfg={AP_PHYSC:'T_BAIRUSHUANG',AP_CHEM:'T_YANGHONGXU',AP_BIO:'T_FANZHENGWEI',AP_CS:'T_SUNHUA',AP_ENVSCI:'T_ZHUJIE',AP_PSYCH:'T_XINLI',AP_ARTHIST:'T_ZHANGHUIHUI',AP_MACRO:'T_YUYUANYING'};
     Object.entries(apCfg).forEach(([cid,tid])=>{const stus=this.students.filter(s=>(s.ap_courses||[]).includes(cid));if(!stus.length)return;const nS=2,perS=Math.ceil(stus.length/nS),secs=[];for(let i=0;i<nS;i++)secs.push(stus.slice(i*perS,(i+1)*perS));secs.forEach((secStu,si)=>{let as=0;for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(secStu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)))continue;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;if(this.teacherBusy(tid,sid))continue;this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;if(this.teacherBusy(tid,sid))continue;secStu.forEach(s=>{const i=A.findIndex(x=>x.student_id===s.id&&x.slot_id===sid&&x.class_type!=='admin'&&x.class_type!=='ap');if(i>=0)A.splice(i,1)});this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}})});
-    // Batch electives
+    // Batch elective
     const eT={AP_LANG:'T_HANPENG',AP_LIT:'T_WEIWEI',HONOR_LIT:'T_ZHANGHUIHUI',LINEAR_ALG:'T_ZHANGZUOPING',BUSINESS:'T_QINXINXUAN',MECH_BASIS:'T_YUYUANYING',JAPANESE:'T_NIUYONGMEI',FRENCH:'T_BIFEI',GERMAN:'T_GLENN'};
-    const batchOneGroup = (courses, hrs, key) => {
+    const batchOne = (courses, hrs, key) => {
       const secs = courses.map(c => this.students.filter(s => (s.elective_choices || {})[key] === c));
       for (let assigned = 0; assigned < hrs; ) {
         let placed = false;
         for (let d = 1; d <= 5 && !placed; d++) {
           for (const p of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
-            if (placed) break;
-            const sid = 'D' + d + 'P' + p;
+            if (placed) break; const sid = 'D' + d + 'P' + p;
             if (secs.some(sec => sec.some(s => A.some(a => a.student_id === s.id && a.slot_id === sid)))) continue;
             if (courses.some(c => A.some(a => a.teacher_id === eT[c] && a.slot_id === sid))) continue;
             courses.forEach((c, i) => { secs[i].forEach(s => { this._add([s], c, sid, s.id, 'elective', 'R8', eT[c], A); }); });
-            assigned++;
-            placed = true;
+            assigned++; placed = true;
           }
         }
         if (!placed) break;
       }
     };
-    batchOneGroup(['JAPANESE', 'FRENCH', 'GERMAN'], 2, 'group_c');
-    batchOneGroup(['LINEAR_ALG', 'BUSINESS', 'MECH_BASIS'], 4, 'group_b');
-    batchOneGroup(['AP_LANG', 'AP_LIT', 'HONOR_LIT'], 5, 'group_a');
-    // Min-Conflicts solve teaching per TC
-    const{MinConflictsSolver}=require('./solver/min-conflicts-solver.cjs');
+    batchOne(['JAPANESE', 'FRENCH', 'GERMAN'], 2, 'group_c');
+    batchOne(['LINEAR_ALG', 'BUSINESS', 'MECH_BASIS'], 4, 'group_b');
+    batchOne(['AP_LANG', 'AP_LIT', 'HONOR_LIT'], 5, 'group_a');
+
+    // Phase 2: Save admin+AP+elective, clear all, re-add saved
+    const saved=[];
+    this.students.forEach(stu=>{A.filter(a=>a.student_id===stu.id&&(a.class_type==='admin'||a.class_type==='ap'||a.class_type==='elective')).forEach(a=>saved.push({...a}))});
+    A.length=0;
+    saved.forEach(a=>A.push({...a}));
+
+    // Phase 3: SAT solve teaching per TC
+    const{SATScheduler}=require('./solver/sat-scheduler.cjs');
     const tc=[['AP_STAT',5,'T_JAIME'],['ENG_CW',5,'T_LUKE'],['COLLEGE_APP',4,null],['SELF_STUDY',2,null]];
-    this.tcS.forEach((stu,ti)=>{const blocked=new Set();stu.forEach(s=>{A.filter(a=>a.student_id===s.id).forEach(a=>blocked.add(a.slot_id))});const solver=new MinConflictsSolver(tc,blocked,stu,(sid)=>!stu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)),(tid,sid)=>!!(tid&&(A.some(x=>x.teacher_id===tid&&x.slot_id===sid)||this.teacherBusy(tid,sid))));solver.solve();solver.getResult().forEach(([cid,sid])=>{const info=tc.find(c=>c[0]===cid);this._add(stu,cid,sid,this.tcI[ti],'teaching',this.tcR[ti],info?info[2]:null,A)})});
+    this.tcS.forEach((stu,ti)=>{
+      const blocked=new Set();
+      stu.forEach(s=>{A.filter(a=>a.student_id===s.id).forEach(a=>blocked.add(a.slot_id))});
+      const solver=new SATScheduler(tc,blocked);
+      const result=solver.solve();
+      if(result){
+        result.forEach(([cid,sid])=>{
+          const info=tc.find(c=>c[0]===cid);
+          this._add(stu,cid,sid,this.tcI[ti],'teaching',this.tcR[ti],info?info[2]:null,A);
+        });
+      }
+    });
     return A;
   }
-  evaluate(A){let sc=0;const exp={AP_STAT:5,ENG_CW:5,COLLEGE_APP:4};this.tcS.forEach(stu=>{for(let i=0;i<Math.min(3,stu.length);i++){const s=stu[Math.floor(i*stu.length/Math.min(3,stu.length))];Object.entries(exp).forEach(([cid,hrs])=>{sc+=Math.abs(A.filter(a=>a.student_id===s.id&&a.course_id===cid).length-hrs)*100});const daily=[0,0,0,0,0];A.filter(a=>a.student_id===s.id).forEach(a=>daily[a.slot_id.charAt(1)-1]++);if(daily.some(d=>d!==10))sc+=1000;const ssAM=A.filter(a=>a.student_id===s.id&&a.course_id==='SELF_STUDY'&&parseInt(a.slot_id.substring(3))<=5).length;if(ssAM>0)sc+=ssAM*5000;const apIds=(s.ap_courses||[]);if(apIds.length>0){const apTotal=apIds.reduce((sum,cid)=>sum+A.filter(a=>a.student_id===s.id&&a.course_id===cid).length,0);sc+=Math.abs(apTotal-apIds.length*5)*100}}});return sc}
+  evaluate(A){let sc=0;const exp={AP_STAT:5,ENG_CW:5,COLLEGE_APP:4};this.tcS.forEach(stu=>{for(let i=0;i<Math.min(3,stu.length);i++){const s=stu[Math.floor(i*stu.length/Math.min(3,stu.length))];Object.entries(exp).forEach(([cid,hrs])=>{sc+=Math.abs(A.filter(a=>a.student_id===s.id&&a.course_id===cid).length-hrs)*100});const daily=[0,0,0,0,0];A.filter(a=>a.student_id===s.id).forEach(a=>daily[a.slot_id.charAt(1)-1]++);if(daily.some(d=>d!==10))sc+=1000;const ssAM=A.filter(a=>a.student_id===s.id&&a.course_id==='SELF_STUDY'&&parseInt(a.slot_id.substring(3))<=5).length;if(ssAM>0)sc+=ssAM*5000}});return sc}
   anneal(initial,iters=5000){const cur=initial.map(a=>({...a}));let curS=this.evaluate(cur),best=cur.map(a=>({...a})),bestS=curS,temp=200;for(let i=0;i<iters&&temp>0.05;i++){const stu=this.students[Math.floor(Math.random()*this.students.length)];const sA=cur.filter(a=>a.student_id===stu.id&&a.class_type!=='admin');if(sA.length<2)continue;const[ai,aj]=[Math.floor(Math.random()*sA.length),Math.floor(Math.random()*sA.length)];if(ai===aj)continue;const[a1,a2]=[sA[ai],sA[aj]];if(a1.slot_id===a2.slot_id)continue;const[t1,t2,o1,o2]=[a1.teacher_id,a2.teacher_id,a1.slot_id,a2.slot_id];let ok=true;for(const a of cur)if(a.student_id!==stu.id&&((a.slot_id===o2&&a.teacher_id===t1)||(a.slot_id===o1&&a.teacher_id===t2))){ok=false;break}if(!ok)continue;cur.forEach(a=>{if(a.student_id===stu.id){if(a.slot_id===o1)a.slot_id=o2;else if(a.slot_id===o2)a.slot_id=o1}});const ns=this.evaluate(cur);if(ns<curS||Math.random()<Math.exp(-(ns-curS)/temp)){curS=ns;if(ns<bestS){best=cur.map(a=>({...a}));bestS=ns}}else{cur.forEach(a=>{if(a.student_id===stu.id){if(a.slot_id===o2)a.slot_id=o1;else if(a.slot_id===o1)a.slot_id=o2}})}temp*=0.9995}return{assignments:best,score:bestS}}
 }
 module.exports={G12Engine};

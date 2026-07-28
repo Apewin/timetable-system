@@ -18,7 +18,7 @@ class MinConflictsSolver {
     this.isSlotFree = isSlotFree;
     this.teacherConflict = teacherConflict;
     this.assignment = new Map(); // "courseId_periodIndex" → "DxPy"
-    this.maxSteps = 5000;
+    this.maxSteps = 50000;
   }
 
   /** Build initial greedy assignment (one period per day, distribute) */
@@ -111,8 +111,8 @@ class MinConflictsSolver {
         sameDayPeriods.push(parseInt(s.substring(3)));
       }
     }
-    if (hrs <= 5 && sameDay >= 1) conflicts += 10;
-    if (sameDay >= 2) conflicts += 50;
+    if (hrs <= 5 && sameDay >= 1) conflicts += 10000;
+    if (sameDay >= 2) conflicts += 50000;
     if (hrs > 5 && sameDay === 1) {
       sameDayPeriods.push(p);
       sameDayPeriods.sort((a,b)=>a-b);
