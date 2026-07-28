@@ -26,11 +26,9 @@ function runOneRound(round) {
   console.log('--- G10 ---');
   const e10 = new SchedulingEngine(RULES_PATH, DATA_PATH);
   let best10 = null, bestS10 = Infinity;
-  for (let i = 0; i < 5; i++) {
-    const init = e10.generateInitial();
-    const r = e10.anneal(init, 3000);
-    if (r.score < bestS10) { bestS10 = r.score; best10 = r.assignments; }
-  }
+  const init10 = e10.generateInitial();
+  const r10 = e10.anneal(init10, 20000);
+  bestS10 = r10.score; best10 = r10.assignments;
   const s10 = e10.students[0];
   const c10 = {};
   best10.filter(a => a.student_id === s10.id && a.course_id).forEach(a => { c10[a.course_id] = (c10[a.course_id] || 0) + 1; });
@@ -47,11 +45,9 @@ function runOneRound(round) {
   console.log('--- G11 ---');
   const e11 = new G11Engine(RULES_PATH, DATA_PATH);
   let best11 = null, bestS11 = Infinity;
-  for (let i = 0; i < 5; i++) {
-    const init = e11.generateInitial();
-    const r = e11.anneal(init, 3000);
-    if (r.score < bestS11) { bestS11 = r.score; best11 = r.assignments; }
-  }
+  const init11 = e11.generateInitial();
+  const r11 = e11.anneal(init11, 20000);
+  bestS11 = r11.score; best11 = r11.assignments;
   console.log('  Score=' + bestS11);
 
   // Write G10+G11
@@ -62,11 +58,9 @@ function runOneRound(round) {
   console.log('--- G12 ---');
   const e12 = new G12Engine(RULES_PATH, DATA_PATH);
   let best12 = null, bestS12 = Infinity;
-  for (let i = 0; i < 5; i++) {
-    const init = e12.generateInitial();
-    const r = e12.anneal(init, 3000);
-    if (r.score < bestS12) { bestS12 = r.score; best12 = r.assignments; }
-  }
+  const init12 = e12.generateInitial();
+  const r12 = e12.anneal(init12, 20000);
+  bestS12 = r12.score; best12 = r12.assignments;
   console.log('  Score=' + bestS12);
 
   // Write final

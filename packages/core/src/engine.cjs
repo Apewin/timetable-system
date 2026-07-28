@@ -156,7 +156,7 @@ class SchedulingEngine {
   }
 
   // 模拟退火优化
-  anneal(initial, iterations = 5000) {
+  anneal(initial, iterations = 20000) {
     const cur = initial.map(a => ({ ...a }));
     let curScore = this.evaluate(cur);
     let best = cur.map(a => ({ ...a })), bestScore = curScore;
@@ -208,7 +208,16 @@ class SchedulingEngine {
         const daily = [0, 0, 0, 0, 0]; A.filter(a => a.student_id === s.id).forEach(a => daily[a.slot_id.charAt(1) - 1]++);
         if (daily.some(d => d !== 10)) sc += 1000;
         const seen = new Set(); A.filter(a => a.student_id === s.id).forEach(a => { if (seen.has(a.slot_id)) sc += 500; seen.add(a.slot_id); });
-        Object.entries(exp).forEach(([cid, hrs]) => { if (hrs > 5) return; const d = [0, 0, 0, 0, 0]; A.filter(a => a.student_id === s.id && a.course_id === cid).forEach(a => d[a.slot_id.charAt(1) - 1]++); d.forEach(c => { if (c >= 2) sc += (this.getRule('no_cluster')?.penalty || 3); }); });
+        // Distribution penalty: ≤5hr max 1/day; >5hr max 2/day consecutive
+        [...Object.entries(exp),['SELF_STUDY',2]].forEach(([cid, hrs]) => {
+          const byDay = [0,0,0,0,0,0]; const periods = [[],[],[],[],[],[]];
+          A.filter(a => a.student_id === s.id && a.course_id === cid).forEach(a => { const d=parseInt(a.slot_id.charAt(1)); byDay[d]++; periods[d].push(parseInt(a.slot_id.substring(3))); });
+          for(let d=1;d<=5;d++){
+            if(hrs<=5 && byDay[d]>=2) sc += 5000; // ≤5hr: max 1/day
+            if(byDay[d]>=3) sc += 10000; // never 3+ on same day
+            if(hrs>5 && byDay[d]===2){ const ps=periods[d].sort((a,b)=>a-b); if(Math.abs(ps[1]-ps[0])!==1) sc += 5000; } // >5hr: must be consecutive
+          }
+        });
         const ssAM = A.filter(a => a.student_id === s.id && a.course_id === 'SELF_STUDY' && parseInt(a.slot_id.substring(3)) <= 5).length;
         if (ssAM > 0) sc += ssAM * (this.getRule('no_self_study_morning')?.penalty || 1000);
       });
