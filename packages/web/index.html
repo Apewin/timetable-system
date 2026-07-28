@@ -47,6 +47,8 @@
             <li><a href="#" data-view="rooms">教室管理</a></li>
             <li><a href="#" data-view="assignments">教师分工</a></li>
             <li><a href="#" data-view="selections">AP选课</a></li>
+            <li><a href="#" data-view="elective-selections">其他选课</a></li>
+            <li><a href="#" data-view="sectioning">分班管理</a></li>
             <li><a href="#" data-view="constraints">约束管理</a></li>
           </ul>
         </div>
@@ -302,9 +304,9 @@
               <label>选择年级：</label>
               <select id="select-grade" class="select">
                 <option value="all">全部年级</option>
-                <option value="1">高一</option>
-                <option value="2">高二</option>
-                <option value="3">高三</option>
+                <option value="10">高一</option>
+                <option value="11">高二</option>
+                <option value="12">高三</option>
               </select>
             </div>
             <div class="control-group">
@@ -358,9 +360,9 @@
             <div class="filter-group">
               <select id="filter-student-grade" class="select">
                 <option value="">全部年级</option>
-                <option value="1">高一</option>
-                <option value="2">高二</option>
-                <option value="3">高三</option>
+                <option value="10">高一</option>
+                <option value="11">高二</option>
+                <option value="12">高三</option>
               </select>
               <select id="filter-student-class" class="select">
                 <option value="">全部班级</option>
@@ -400,6 +402,44 @@
             <button id="btn-add-selection" class="btn btn-primary">添加选课</button>
           </div>
           <div id="selections-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-elective-selections" class="view">
+          <h2>其他选课</h2>
+          <div class="toolbar">
+            <div class="control-group">
+              <label>选择年级：</label>
+              <select id="filter-elective-grade" class="select">
+                <option value="">全部年级</option>
+                <option value="10">高一</option>
+                <option value="11">高二</option>
+                <option value="12">高三</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <label>选择组别：</label>
+              <select id="filter-elective-group" class="select">
+                <option value="">全部组别</option>
+                <option value="A">A组</option>
+                <option value="B">B组</option>
+                <option value="C">C组</option>
+              </select>
+            </div>
+            <input type="text" id="search-elective-selections" class="search-input" placeholder="🔍 搜索学生姓名或课程...">
+          </div>
+          <div id="elective-selections-list" class="content">加载中...</div>
+        </div>
+
+        <div id="view-sectioning" class="view">
+          <h2>分班管理</h2>
+          <div class="toolbar">
+            <button id="btn-solve-sections" class="btn btn-primary">运行分班引擎</button>
+            <button id="btn-refresh-sections" class="btn btn-secondary">刷新</button>
+            <button id="btn-sectioning-suggestions" class="btn btn-secondary">查看建议</button>
+          </div>
+          <div id="sectioning-stats" class="stats-bar"></div>
+          <div id="sectioning-suggestions" class="suggestions-container"></div>
+          <div id="sectioning-list" class="content">点击"运行分班引擎"开始分班</div>
         </div>
 
         <div id="view-constraints" class="view">

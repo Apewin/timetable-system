@@ -1,116 +1,230 @@
 /**
- * AP分班引擎
- * 实现贪心初分 + 模拟退火优化
+ * 完整分班流水线
+ * 支持：行政班必修、教学班必修、分层教学、必修选修课、AP选修课
+ * 支持：AI智能分班 + 手动调整
  */
 import type {
   TimetableState,
   ApSection,
-  ApSelection,
   TeachingTask,
-  Teacher,
+  Student,
   Course,
-  Room,
-  SlotId,
 } from "../models/types.js";
-
-// 冲突图节点（AP Section）
-interface ConflictNode {
-  sectionId: string;
-  studentIds: string[];
-}
-
-// 冲突图边
-interface ConflictEdge {
-  from: string;
-  to: string;
-}
 
 // 分班结果
 export interface SectioningResult {
-  ap_sections: ApSection[];
   teaching_tasks: TeachingTask[];
-  color_number: number;
-  walk_slot_count: number;
-  overflow_expected: boolean;
+  ap_sections: ApSection[];
+  elective_sections: ElectiveSection[];
+  statistics: {
+    required_tasks: number;
+    required_elective_tasks: number;
+    ap_tasks: number;
+    other_tasks: number;
+    total_tasks: number;
+    total_sections: number;
+  };
 }
 
-// 构建冲突图
-function buildConflictGraph(sections: ApSection[]): { nodes: ConflictNode[]; edges: ConflictEdge[] } {
-  const nodes: ConflictNode[] = sections.map(s => ({
-    sectionId: s.id,
-    studentIds: s.student_ids,
-  }));
+// 选修班（包括AP选修和必修选修）
+export interface ElectiveSection {
+  id: string;
+  course_id: string;
+  course_name: string;
+  course_type: 'ap' | 'required_elective';
+  section_index: number;
+  student_ids: string[];
+  teacher_id: string | null;
+  room_id: string | null;
+  capacity: number;
+  weekly_hours: number;
+}
 
-  const edges: ConflictEdge[] = [];
-  for (let i = 0; i < sections.length; i++) {
-    for (let j = i + 1; j < sections.length; j++) {
-      const sharedStudents = sections[i].student_ids.filter(s =>
-        sections[j].student_ids.includes(s)
-      );
-      if (sharedStudents.length > 0) {
-        edges.push({ from: sections[i].id, to: sections[j].id });
+// 分班配置
+export interface SectioningConfig {
+  max_students_per_section?: number;  // 每班最大人数
+  balance_sections?: boolean;  // 是否均衡分班
+  respect_student_preferences?: boolean;  // 是否尊重学生偏好
+}
+
+// Step 1: 行政班/教学班必修课分班
+function generateRequiredTasks(state: TimetableState): TeachingTask[] {
+  const tasks: TeachingTask[] = [];
+
+  state.teaching_assignments.forEach(assignment => {
+    const course = state.courses.find(c => c.id === assignment.course_id);
+    if (!course) return;
+
+    // 确定学生列表和固定教室
+    let studentIds: string[] = [];
+    let roomId: string | undefined;
+    let sourceClassId: string | undefined;
+
+    if (assignment.class_type === "admin") {
+      const adminClass = state.admin_classes.find(c => c.id === assignment.class_id);
+      if (adminClass) {
+        studentIds = adminClass.student_ids;
+        roomId = adminClass.fixed_room_id;
+        sourceClassId = adminClass.id;
+      }
+    } else {
+      const teachingClass = state.teaching_classes.find(c => c.id === assignment.class_id);
+      if (teachingClass) {
+        studentIds = teachingClass.student_ids;
+        roomId = teachingClass.fixed_room_id;
+        sourceClassId = teachingClass.id;
       }
     }
-  }
 
-  return { nodes, edges };
-}
+    if (studentIds.length === 0) return;
 
-// 贪心着色算法（计算色数近似）
-function greedyColoring(sections: ApSection[], edges: ConflictEdge[]): number {
-  const colorMap = new Map<string, number>();
-  const sectionIds = sections.map(s => s.id);
+    // 创建教学任务
+    const task: TeachingTask = {
+      id: `TASK_REQ_${assignment.id}`,
+      source: "required",
+      course_id: assignment.course_id,
+      teacher_id: assignment.teacher_id,
+      student_ids: studentIds,
+      weekly_hours: assignment.weekly_hours,
+      room_policy: "pinned",
+      room_id: roomId,
+      source_class_id: sourceClassId,
+    };
 
-  // 按度数排序（度数高的先着色）
-  const degree = new Map<string, number>();
-  sectionIds.forEach(id => degree.set(id, 0));
-  edges.forEach(e => {
-    degree.set(e.from, (degree.get(e.from) || 0) + 1);
-    degree.set(e.to, (degree.get(e.to) || 0) + 1);
+    tasks.push(task);
   });
 
-  const sorted = [...sectionIds].sort((a, b) => (degree.get(b) || 0) - (degree.get(a) || 0));
+  return tasks;
+}
 
-  let maxColor = 0;
-  sorted.forEach(sectionId => {
-    const usedColors = new Set<number>();
+// Step 2: 必修选修课分班
+function generateRequiredElectiveSections(
+  state: TimetableState,
+  config: SectioningConfig
+): { sections: ElectiveSection[]; tasks: TeachingTask[] } {
+  const sections: ElectiveSection[] = [];
+  const tasks: TeachingTask[] = [];
 
-    // 找相邻节点已用的颜色
-    edges.forEach(e => {
-      if (e.from === sectionId && colorMap.has(e.to)) {
-        usedColors.add(colorMap.get(e.to)!);
+  // 按组别收集必修选修课
+  const groupCourses = new Map<string, Course[]>();
+  state.courses
+    .filter(c => c.type === "required_elective" && c.elective_group)
+    .forEach(course => {
+      const group = course.elective_group!;
+      if (!groupCourses.has(group)) {
+        groupCourses.set(group, []);
       }
-      if (e.to === sectionId && colorMap.has(e.from)) {
-        usedColors.add(colorMap.get(e.from)!);
+      groupCourses.get(group)!.push(course);
+    });
+
+  // 统计每个组别的学生选择
+  groupCourses.forEach((courses, group) => {
+    const courseStudents = new Map<string, string[]>();
+    courses.forEach(c => courseStudents.set(c.id, []));
+
+    // 收集学生选择
+    state.students.forEach(student => {
+      if (!student.elective_choices) return;
+
+      const choiceField = `group_${group.toLowerCase()}` as keyof typeof student.elective_choices;
+      const chosenCourseId = student.elective_choices[choiceField];
+
+      if (chosenCourseId && courseStudents.has(chosenCourseId)) {
+        courseStudents.get(chosenCourseId)!.push(student.id);
       }
     });
 
-    // 找最小可用颜色
-    let color = 0;
-    while (usedColors.has(color)) color++;
-    colorMap.set(sectionId, color);
-    maxColor = Math.max(maxColor, color);
+    // 为每门选修课生成平行班
+    courseStudents.forEach((studentIds, courseId) => {
+      if (studentIds.length === 0) return;
+
+      const course = state.courses.find(c => c.id === courseId);
+      if (!course) return;
+
+      const sectionCount = course.section_count || 1;
+      const maxStudents = config.max_students_per_section || 30;
+      const actualSectionCount = Math.max(sectionCount, Math.ceil(studentIds.length / maxStudents));
+
+      // 智能分班：尽量均衡
+      const sectionStudents: string[][] = Array.from({ length: actualSectionCount }, () => []);
+
+      if (config.balance_sections) {
+        // 均衡分班：轮询分配
+        studentIds.forEach((studentId, index) => {
+          sectionStudents[index % actualSectionCount].push(studentId);
+        });
+      } else {
+        // 按顺序分班
+        const studentsPerSection = Math.ceil(studentIds.length / actualSectionCount);
+        for (let i = 0; i < actualSectionCount; i++) {
+          const start = i * studentsPerSection;
+          const end = Math.min(start + studentsPerSection, studentIds.length);
+          sectionStudents[i] = studentIds.slice(start, end);
+        }
+      }
+
+      // 创建分班结果
+      for (let i = 0; i < actualSectionCount; i++) {
+        if (sectionStudents[i].length === 0) continue;
+
+        const sectionId = `ELECTIVE_${courseId}_${i + 1}`;
+
+        const section: ElectiveSection = {
+          id: sectionId,
+          course_id: courseId,
+          course_name: course.name,
+          course_type: 'required_elective',
+          section_index: i,
+          student_ids: sectionStudents[i],
+          teacher_id: null,  // 需要后续分配教师
+          room_id: null,
+          capacity: sectionStudents[i].length,
+          weekly_hours: course.weekly_hours,
+        };
+
+        sections.push(section);
+
+        // 创建教学任务
+        const task: TeachingTask = {
+          id: `TASK_ELECTIVE_${courseId}_${i + 1}`,
+          source: "required_elective",
+          course_id: courseId,
+          teacher_id: null,
+          student_ids: sectionStudents[i],
+          weekly_hours: course.weekly_hours,
+          room_policy: "assign",
+          source_class_id: undefined,
+          elective_group: group as "A" | "B" | "C",
+          section_index: i,
+        };
+
+        tasks.push(task);
+      }
+    });
   });
 
-  return maxColor + 1; // 色数
+  return { sections, tasks };
 }
 
-// 贪心初分算法
-function greedyInitialAssignment(
+// Step 3: AP 选修课分班
+function generateApSections(
   state: TimetableState,
-  seed: number
-): { sections: ApSection[]; teacherAssignments: Map<string, string> } {
-  const sections: ApSection[] = [];
-  const teacherAssignments = new Map<string, string>();
+  config: SectioningConfig
+): { sections: ElectiveSection[]; tasks: TeachingTask[] } {
+  const sections: ElectiveSection[] = [];
+  const tasks: TeachingTask[] = [];
 
-  // 按课程分组选课数据
+  // 从学生的 ap_courses 字段收集AP选课数据
   const courseStudents = new Map<string, string[]>();
-  state.ap_selections.forEach(selection => {
-    selection.course_ids.forEach(courseId => {
+
+  state.students.forEach(student => {
+    if (!student.ap_courses || student.ap_courses.length === 0) return;
+
+    student.ap_courses.forEach(courseId => {
       if (!courseStudents.has(courseId)) {
         courseStudents.set(courseId, []);
       }
-      courseStudents.get(courseId)!.push(selection.student_id);
+      courseStudents.get(courseId)!.push(student.id);
     });
   });
 
@@ -125,245 +239,235 @@ function greedyInitialAssignment(
     );
 
     if (availableTeachers.length === 0) {
-      throw new Error(`没有能教 ${courseId} 的老师`);
+      console.warn(`没有能教 ${courseId} 的老师，跳过分班`);
+      return;
     }
 
     // 计算需要多少个section
-    // 找该类型教室的最小容量
-    const availableRooms = state.rooms.filter(r =>
-      !course.required_room_type || r.type === course.required_room_type
+    const sectionCount = course.section_count || 1;
+    const maxStudents = config.max_students_per_section || 25;
+    const actualSectionCount = Math.max(
+      Math.min(sectionCount, availableTeachers.length),
+      Math.ceil(studentIds.length / maxStudents)
     );
-    const minCapacity = availableRooms.length > 0
-      ? Math.min(...availableRooms.map(r => r.capacity))
-      : 30;
 
-    const sectionCount = Math.ceil(studentIds.length / minCapacity);
-    const actualSectionCount = Math.min(sectionCount, availableTeachers.length);
-
-    // 按行政班分组，尽量保持同班学生在一起
-    const studentByAdminClass = new Map<string, string[]>();
-    studentIds.forEach(studentId => {
-      const student = state.students.find(s => s.id === studentId);
-      if (student) {
-        if (!studentByAdminClass.has(student.admin_class_id)) {
-          studentByAdminClass.set(student.admin_class_id, []);
-        }
-        studentByAdminClass.get(student.admin_class_id)!.push(studentId);
-      }
-    });
-
-    // 创建section并分配学生
+    // 智能分班
     const sectionStudents: string[][] = Array.from({ length: actualSectionCount }, () => []);
 
-    // 轮询分配学生（保持班级均衡）
-    let sectionIndex = 0;
-    const sortedClasses = [...studentByAdminClass.entries()].sort((a, b) => b[1].length - a[1].length);
-
-    sortedClasses.forEach(([, students]) => {
-      students.forEach(studentId => {
-        sectionStudents[sectionIndex].push(studentId);
-        sectionIndex = (sectionIndex + 1) % actualSectionCount;
+    if (config.balance_sections) {
+      // 均衡分班：轮询分配
+      studentIds.forEach((studentId, index) => {
+        sectionStudents[index % actualSectionCount].push(studentId);
       });
-    });
+    } else {
+      // 按顺序分班
+      const studentsPerSection = Math.ceil(studentIds.length / actualSectionCount);
+      for (let i = 0; i < actualSectionCount; i++) {
+        const start = i * studentsPerSection;
+        const end = Math.min(start + studentsPerSection, studentIds.length);
+        sectionStudents[i] = studentIds.slice(start, end);
+      }
+    }
 
-    // 创建ApSection对象
+    // 创建分班结果
     for (let i = 0; i < actualSectionCount; i++) {
+      if (sectionStudents[i].length === 0) continue;
+
       const sectionId = `AP_${courseId}_${i + 1}`;
       const teacher = availableTeachers[i % availableTeachers.length];
 
-      const section: ApSection = {
+      const section: ElectiveSection = {
         id: sectionId,
         course_id: courseId,
-        teacher_id: teacher.id,
+        course_name: course.name,
+        course_type: 'ap',
+        section_index: i,
         student_ids: sectionStudents[i],
-        room_type: course.required_room_type || "general",
-        capacity: minCapacity,
+        teacher_id: teacher.id,
+        room_id: null,
+        capacity: sectionStudents[i].length,
+        weekly_hours: course.weekly_hours,
       };
 
       sections.push(section);
-      teacherAssignments.set(sectionId, teacher.id);
+
+      // 创建教学任务
+      const task: TeachingTask = {
+        id: `TASK_${sectionId}`,
+        source: "ap",
+        course_id: courseId,
+        teacher_id: teacher.id,
+        student_ids: sectionStudents[i],
+        weekly_hours: course.weekly_hours,
+        room_policy: "assign",
+        source_class_id: undefined,
+        source_section_id: sectionId,
+      };
+
+      tasks.push(task);
     }
   });
 
-  return { sections, teacherAssignments };
+  return { sections, tasks };
 }
 
-// 模拟退火优化
-function simulatedAnnealing(
-  state: TimetableState,
-  initialSections: ApSection[],
-  iterations: number,
-  seed: number
-): ApSection[] {
-  let current = [...initialSections];
-  let best = [...current];
-  let bestScore = evaluateSectioning(state, current);
-
-  let temperature = 100;
-  const coolingRate = 0.995;
-
-  // 简单的伪随机数生成器
-  let rng = seed;
-  const random = () => {
-    rng = (rng * 1664525 + 1013904223) % 4294967296;
-    return rng / 4294967296;
-  };
-
-  for (let iter = 0; iter < iterations; iter++) {
-    temperature *= coolingRate;
-
-    // 随机选择邻域操作
-    const operation = Math.floor(random() * 3);
-
-    if (operation === 0 && current.length > 0) {
-      // 操作1：把一个学生换到同课另一section
-      const sectionIndex = Math.floor(random() * current.length);
-      const section = current[sectionIndex];
-
-      if (section.student_ids.length > 0) {
-        const studentIndex = Math.floor(random() * section.student_ids.length);
-        const studentId = section.student_ids[studentIndex];
-
-        // 找同课程的其他section
-        const sameCourseSections = current.filter(
-          (s, i) => i !== sectionIndex && s.course_id === section.course_id
-        );
-
-        if (sameCourseSections.length > 0) {
-          const targetSection = sameCourseSections[Math.floor(random() * sameCourseSections.length)];
-
-          // 交换学生
-          const newSections = current.map((s, i) => {
-            if (i === sectionIndex) {
-              return { ...s, student_ids: s.student_ids.filter(id => id !== studentId) };
-            }
-            if (s.id === targetSection.id) {
-              return { ...s, student_ids: [...s.student_ids, studentId] };
-            }
-            return s;
-          });
-
-          const newScore = evaluateSectioning(state, newSections);
-          const delta = newScore - bestScore;
-
-          if (delta < 0 || random() < Math.exp(-delta / temperature)) {
-            current = newSections;
-            if (newScore < bestScore) {
-              best = newSections;
-              bestScore = newScore;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return best;
-}
-
-// 评估分班质量
-function evaluateSectioning(state: TimetableState, sections: ApSection[]): number {
-  let score = 0;
-
-  // 1. 均衡性：同门AP各section人数方差
-  const courseSections = new Map<string, number[]>();
-  sections.forEach(s => {
-    if (!courseSections.has(s.course_id)) {
-      courseSections.set(s.course_id, []);
-    }
-    courseSections.get(s.course_id)!.push(s.student_ids.length);
-  });
-
-  courseSections.forEach((sizes) => {
-    const avg = sizes.reduce((a, b) => a + b, 0) / sizes.length;
-    const variance = sizes.reduce((sum, size) => sum + Math.pow(size - avg, 2), 0) / sizes.length;
-    score += variance;
-  });
-
-  // 2. 冲突压力：色数代理
-  const { edges } = buildConflictGraph(sections);
-  const colorNumber = greedyColoring(sections, edges);
-  score += colorNumber * 10;
-
-  // 3. 教师负载均衡
-  const teacherLoad = new Map<string, number>();
-  sections.forEach(s => {
-    const current = teacherLoad.get(s.teacher_id) || 0;
-    teacherLoad.set(s.teacher_id, current + s.student_ids.length);
-  });
-
-  const loads = [...teacherLoad.values()];
-  if (loads.length > 0) {
-    const avgLoad = loads.reduce((a, b) => a + b, 0) / loads.length;
-    const loadVariance = loads.reduce((sum, load) => sum + Math.pow(load - avgLoad, 2), 0) / loads.length;
-    score += loadVariance;
-  }
-
-  return score;
-}
-
-// 主函数：执行分班
+// 主函数：执行完整分班流水线
 export function solveSections(
   state: TimetableState,
-  options: { seed?: number; candidates?: number } = {}
+  config: SectioningConfig = {}
 ): SectioningResult {
-  const seed = options.seed || Date.now();
-  const candidates = options.candidates || 1;
+  // 默认配置
+  const defaultConfig: SectioningConfig = {
+    max_students_per_section: 30,
+    balance_sections: true,
+    respect_student_preferences: true,
+  };
 
-  // 检查是否有AP选课数据
-  if (state.ap_selections.length === 0) {
-    throw new Error("没有AP选课数据，请先添加 ap-selection");
-  }
+  const finalConfig = { ...defaultConfig, ...config };
 
-  // 贪心初分
-  const { sections: initialSections } = greedyInitialAssignment(state, seed);
+  console.log("开始分班流水线...");
+  console.log("配置:", finalConfig);
 
-  // 如果需要多组候选，运行多次
-  let bestSections = initialSections;
-  let bestScore = evaluateSectioning(state, initialSections);
+  // Step 1: 行政班/教学班必修课分班
+  console.log("Step 1: 生成必修课教学任务...");
+  const requiredTasks = generateRequiredTasks(state);
+  console.log(`  生成 ${requiredTasks.length} 个必修课任务`);
 
-  for (let i = 0; i < candidates; i++) {
-    const candidateSeed = seed + i * 1000;
-    const optimized = simulatedAnnealing(state, initialSections, 1000, candidateSeed);
-    const score = evaluateSectioning(state, optimized);
+  // Step 2: 必修选修课分班
+  console.log("Step 2: 生成必修选修课任务...");
+  const { sections: electiveSections, tasks: electiveTasks } = generateRequiredElectiveSections(state, finalConfig);
+  console.log(`  生成 ${electiveTasks.length} 个必修选修课任务，${electiveSections.length} 个班级`);
 
-    if (score < bestScore) {
-      bestSections = optimized;
-      bestScore = score;
-    }
-  }
+  // Step 3: AP 选修课分班
+  console.log("Step 3: 生成 AP 选修课任务...");
+  const { sections: apSections, tasks: apTasks } = generateApSections(state, finalConfig);
+  console.log(`  生成 ${apTasks.length} 个 AP 选修课任务，${apSections.length} 个班级`);
 
-  // 计算冲突图色数
-  const { edges } = buildConflictGraph(bestSections);
-  const colorNumber = greedyColoring(bestSections, edges);
+  // 合并所有任务和分班结果
+  const allTasks = [...requiredTasks, ...electiveTasks, ...apTasks];
+  const allSections = [...electiveSections, ...apSections];
 
-  // 计算走班时段数
-  const walkSlotCount = state.config.walk_blocks.length;
+  // 统计
+  const statistics = {
+    required_tasks: requiredTasks.length,
+    required_elective_tasks: electiveTasks.length,
+    ap_tasks: apTasks.length,
+    other_tasks: 0,
+    total_tasks: allTasks.length,
+    total_sections: allSections.length,
+  };
 
-  // 判断是否溢出
-  const overflowExpected = colorNumber > walkSlotCount;
-
-  // 生成AP教学任务
-  const apTasks: TeachingTask[] = bestSections.map(section => {
-    const course = state.courses.find(c => c.id === section.course_id);
-    return {
-      id: `TASK_AP_${section.id}`,
-      source: "ap",
-      course_id: section.course_id,
-      teacher_id: section.teacher_id,
-      student_ids: section.student_ids,
-      weekly_hours: course?.weekly_hours || 2,
-      room_policy: "assign",
-      room_id: undefined,
-      source_section_id: section.id,
-    };
-  });
+  console.log("分班完成！");
+  console.log("统计:", statistics);
 
   return {
-    ap_sections: bestSections,
-    teaching_tasks: apTasks,
-    color_number: colorNumber,
-    walk_slot_count: walkSlotCount,
-    overflow_expected: overflowExpected,
+    teaching_tasks: allTasks,
+    ap_sections: apSections.map(s => ({
+      id: s.id,
+      course_id: s.course_id,
+      teacher_id: s.teacher_id || '',
+      student_ids: s.student_ids,
+      room_type: 'general',
+      capacity: s.capacity,
+    })),
+    elective_sections: allSections,
+    statistics,
   };
+}
+
+// 手动调整分班：将学生从一个班级移到另一个班级
+export function moveStudentBetweenSections(
+  sections: ElectiveSection[],
+  studentId: string,
+  fromSectionId: string,
+  toSectionId: string
+): ElectiveSection[] {
+  return sections.map(section => {
+    if (section.id === fromSectionId) {
+      // 从源班级移除学生
+      return {
+        ...section,
+        student_ids: section.student_ids.filter(id => id !== studentId),
+        capacity: section.student_ids.length - 1,
+      };
+    }
+    if (section.id === toSectionId) {
+      // 将学生添加到目标班级
+      return {
+        ...section,
+        student_ids: [...section.student_ids, studentId],
+        capacity: section.student_ids.length + 1,
+      };
+    }
+    return section;
+  });
+}
+
+// 手动调整分班：交换两个学生
+export function swapStudentsBetweenSections(
+  sections: ElectiveSection[],
+  student1Id: string,
+  section1Id: string,
+  student2Id: string,
+  section2Id: string
+): ElectiveSection[] {
+  return sections.map(section => {
+    if (section.id === section1Id) {
+      return {
+        ...section,
+        student_ids: section.student_ids.map(id => id === student1Id ? student2Id : id),
+      };
+    }
+    if (section.id === section2Id) {
+      return {
+        ...section,
+        student_ids: section.student_ids.map(id => id === student2Id ? student1Id : id),
+      };
+    }
+    return section;
+  });
+}
+
+// 获取分班建议（AI辅助）
+export function getSectioningSuggestions(
+  state: TimetableState,
+  sections: ElectiveSection[]
+): string[] {
+  const suggestions: string[] = [];
+
+  // 检查班级人数均衡性
+  const courseGroups = new Map<string, ElectiveSection[]>();
+  sections.forEach(section => {
+    if (!courseGroups.has(section.course_id)) {
+      courseGroups.set(section.course_id, []);
+    }
+    courseGroups.get(section.course_id)!.push(section);
+  });
+
+  courseGroups.forEach((courseSections, courseId) => {
+    if (courseSections.length <= 1) return;
+
+    const sizes = courseSections.map(s => s.student_ids.length);
+    const maxSize = Math.max(...sizes);
+    const minSize = Math.min(...sizes);
+    const diff = maxSize - minSize;
+
+    if (diff > 5) {
+      const course = state.courses.find(c => c.id === courseId);
+      suggestions.push(`${course?.name || courseId} 的班级人数不均衡（${minSize}-${maxSize}人），建议调整`);
+    }
+  });
+
+  // 检查是否有学生没有被分配
+  const assignedStudentIds = new Set(sections.flatMap(s => s.student_ids));
+  const unassignedStudents = state.students.filter(s =>
+    !assignedStudentIds.has(s.id) &&
+    ((s.ap_courses && s.ap_courses.length > 0) || s.elective_choices)
+  );
+
+  if (unassignedStudents.length > 0) {
+    suggestions.push(`有 ${unassignedStudents.length} 名学生未被分配到选修班`);
+  }
+
+  return suggestions;
 }

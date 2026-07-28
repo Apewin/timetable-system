@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    dependencies:
+      xlsx:
+        specifier: ^0.18.5
+        version: 0.18.5
 
   packages/cli:
     dependencies:

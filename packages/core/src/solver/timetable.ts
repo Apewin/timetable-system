@@ -79,11 +79,11 @@ export function checkHardConstraints(
     assignmentByTask.get(a.task_id)!.push(a);
   });
 
-  // H1: 老师不重叠 - 同老师同时段只一课
+  // H1: 老师不重叠 - 同老师同时段只一课（跳过无教师课程）
   const teacherSlotMap = new Map<string, Map<string, string[]>>();
   assignments.forEach(a => {
     const task = taskMap.get(a.task_id);
-    if (!task) return;
+    if (!task || !task.teacher_id) return;  // 跳过无教师课程
 
     if (!teacherSlotMap.has(task.teacher_id)) {
       teacherSlotMap.set(task.teacher_id, new Map());
@@ -243,11 +243,11 @@ export function checkHardConstraints(
     }
   });
 
-  // H8: 教师日上限
+  // H8: 教师日上限（跳过无教师课程）
   const teacherDayCount = new Map<string, Map<number, number>>();
   assignments.forEach(a => {
     const task = taskMap.get(a.task_id);
-    if (!task) return;
+    if (!task || !task.teacher_id) return;  // 跳过无教师课程
 
     const day = parseInt(a.slot_id.substring(1, 2));
     if (!teacherDayCount.has(task.teacher_id)) {
@@ -407,11 +407,11 @@ function greedyInitialSolution(
       for (const slot of slots) {
         if (lockedTaskSlots.has(`${task.id}:${slot.id}`)) continue;
 
-        // 检查该时段老师是否已有课
-        const teacherBusy = assignments.some(a => {
+        // 检查该时段老师是否已有课（跳过无教师课程）
+        const teacherBusy = task.teacher_id ? assignments.some(a => {
           const otherTask = tasks.find(t => t.id === a.task_id);
-          return otherTask?.teacher_id === task.teacher_id && a.slot_id === slot.id;
-        });
+          return otherTask?.teacher_id && otherTask.teacher_id === task.teacher_id && a.slot_id === slot.id;
+        }) : false;
         if (teacherBusy) continue;
 
         // 检查该时段学生是否冲突
@@ -526,12 +526,12 @@ function simulatedAnnealing(
 
       const newSlot = slots[Math.floor(random() * slots.length)];
 
-      // 检查新slot是否可行
-      const teacherBusy = current.some((a, i) => {
+      // 检查新slot是否可行（跳过无教师课程）
+      const teacherBusy = task.teacher_id ? current.some((a, i) => {
         if (i === idx) return false;
         const otherTask = tasks.find(t => t.id === a.task_id);
-        return otherTask?.teacher_id === task.teacher_id && a.slot_id === newSlot.id;
-      });
+        return otherTask?.teacher_id && otherTask.teacher_id === task.teacher_id && a.slot_id === newSlot.id;
+      }) : false;
 
       if (!teacherBusy) {
         const newAssignments = [...current];
@@ -638,6 +638,41 @@ function evaluateSolution(
   return M * hardViolations.length + softScore;
 }
 
+// 验证周课时总计是否为50节
+export function validateWeeklyHours(
+  state: TimetableState,
+  tasks: TeachingTask[]
+): { ok: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const EXPECTED_HOURS = 50;
+
+  // 按行政班统计
+  state.admin_classes.forEach(ac => {
+    const classTasks = tasks.filter(t =>
+      t.source_class_id === ac.id ||
+      t.student_ids.some(sId => ac.student_ids.includes(sId))
+    );
+    const totalHours = classTasks.reduce((sum, t) => sum + t.weekly_hours, 0);
+    if (totalHours !== EXPECTED_HOURS) {
+      errors.push(`行政班 ${ac.name} (${ac.id}) 周课时为 ${totalHours}，应为 ${EXPECTED_HOURS}`);
+    }
+  });
+
+  // 按教学班统计
+  state.teaching_classes.forEach(tc => {
+    const classTasks = tasks.filter(t =>
+      t.source_class_id === tc.id ||
+      t.student_ids.some(sId => tc.student_ids.includes(sId))
+    );
+    const totalHours = classTasks.reduce((sum, t) => sum + t.weekly_hours, 0);
+    if (totalHours !== EXPECTED_HOURS) {
+      errors.push(`教学班 ${tc.name} (${tc.id}) 周课时为 ${totalHours}，应为 ${EXPECTED_HOURS}`);
+    }
+  });
+
+  return { ok: errors.length === 0, errors };
+}
+
 // 主函数：执行排课
 export function solveTimetable(
   state: TimetableState,
@@ -651,6 +686,12 @@ export function solveTimetable(
   const tasks = state.teaching_tasks;
   if (!tasks || tasks.length === 0) {
     throw new Error("没有教学任务，请先运行 build-tasks 或 solve sections");
+  }
+
+  // 验证周课时
+  const hourValidation = validateWeeklyHours(state, tasks);
+  if (!hourValidation.ok) {
+    console.warn("周课时验证警告:", hourValidation.errors);
   }
 
   const slots = generateTimeSlots(state.config);

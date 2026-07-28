@@ -24,11 +24,14 @@ export interface Teacher {
 export interface Course {
   id: EntityId;
   name: string;
-  type: "required" | "ap";  // 必修 / AP选修
+  type: "required" | "required_elective" | "ap" | "other";  // 必修 / 必修选修课 / AP选修 / 其他（班会社团自习等）
   required_room_type?: RoomType;  // AP课指定学科教室类型
   weekly_hours: number;  // 默认周课时
   prefer_morning?: boolean;  // 主课优先上午（软约束）
   consecutive?: { min: number; max: number };  // 连堂需求
+  elective_group?: "A" | "B" | "C";  // 必修选修课的组别
+  section_count?: number;  // 平行班数量（选修课用）
+  no_teacher?: boolean;  // 是否不需要教师（班会、社团、自习等）
 }
 
 // 教室
@@ -47,6 +50,12 @@ export interface Student {
   grade: 1 | 2 | 3;
   admin_class_id: EntityId;  // 行政班ID
   teaching_class_id: EntityId;  // 教学班ID
+  elective_choices?: {  // 必修选修课选择
+    group_a?: EntityId;  // A组选择的课程ID
+    group_b?: EntityId;  // B组选择的课程ID
+    group_c?: EntityId;  // C组选择的课程ID
+  };
+  ap_courses?: EntityId[];  // AP选课列表
 }
 
 // 行政班（固定学生分组）
@@ -96,15 +105,18 @@ export interface ApSection {
 // 教学任务（排课单位）
 export interface TeachingTask {
   id: EntityId;
-  source: "required" | "ap";
+  source: "required" | "required_elective" | "ap" | "other";  // 必修 / 必修选修 / AP选修 / 其他
   course_id: EntityId;
-  teacher_id: EntityId;
+  teacher_id: EntityId | null;  // null表示无教师（班会、社团等）
   student_ids: EntityId[];
   weekly_hours: number;
   room_policy: "pinned" | "assign";
   room_id?: EntityId;  // pinned时固定
-  source_class_id?: EntityId;  // 必修来源班
+  source_class_id?: EntityId;  // 必修来源班（行政班/教学班）
   source_section_id?: EntityId;  // AP来源
+  target_teaching_classes?: EntityId[];  // 分层教学：仅指定教学班上
+  elective_group?: "A" | "B" | "C";  // 必修选修课的组别
+  section_index?: number;  // 平行班索引（第几个平行班）
 }
 
 // 时段

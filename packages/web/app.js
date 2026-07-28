@@ -4,6 +4,48 @@
 
 const API_BASE = '/api';
 
+// 辅助函数：从slot中获取课程名称
+function getCourseName(slot) {
+  if (!slot) return '';
+  if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
+    const firstAdminCourse = Object.values(slot.admin_courses)[0];
+    return firstAdminCourse.course;
+  } else if (slot.teaching_course) {
+    return slot.teaching_course.course;
+  } else if (slot.elective_course) {
+    return slot.elective_course.course;
+  } else if (slot.course) {
+    return slot.course;
+  }
+  return '';
+}
+
+// 辅助函数：从slot中获取教师名称
+function getTeacherName(slot) {
+  if (!slot) return '';
+  if (slot.teaching_course) {
+    return slot.teaching_course.teacher;
+  } else if (slot.elective_course) {
+    return slot.elective_course.teacher;
+  } else if (slot.teacher) {
+    return slot.teacher;
+  }
+  return '';
+}
+
+// 辅助函数：从slot中获取教室
+function getRoomName(slot) {
+  if (!slot) return '';
+  if (slot.teaching_course) {
+    return slot.teaching_course.room;
+  } else if (slot.elective_course) {
+    return slot.elective_course.room;
+  } else if (slot.room) {
+    return slot.room;
+  }
+  return '';
+}
+
 // 工具函数
 function showToast(message, type = 'success') {
   const toast = document.getElementById('toast');
@@ -25,6 +67,133 @@ function showModal(title, content) {
 
 function hideModal() {
   document.getElementById('modal').classList.add('hidden');
+}
+
+// 生成课程选择界面（下拉菜单方式）
+function renderCourseSelector(selectedCourses = []) {
+  const courses = window._coursesData || [];
+  if (courses.length === 0) {
+    return '<div style="color: var(--gray-500);">暂无课程数据</div>';
+  }
+
+  // 显示已选课程
+  let html = '<div id="selected-courses" style="margin-bottom: 8px;">';
+  selectedCourses.forEach(courseId => {
+    const course = courses.find(c => c.id === courseId);
+    if (course) {
+      html += `<span class="ap-tag" style="margin: 2px 4px 2px 0;">${course.name} <span onclick="removeCourse('${courseId}')" style="cursor: pointer; margin-left: 4px;">×</span></span>`;
+    }
+  });
+  html += '</div>';
+
+  // 下拉选择框
+  html += `<select id="course-select" style="width: 100%; padding: 8px;">`;
+  html += '<option value="">选择课程...</option>';
+
+  // 按类型分组
+  const requiredCourses = courses.filter(c => c.type === 'required' || c.type === 'required_elective');
+  const apCourses = courses.filter(c => c.type === 'ap');
+  const otherCourses = courses.filter(c => c.type === 'other');
+
+  if (requiredCourses.length > 0) {
+    html += '<optgroup label="必修课">';
+    requiredCourses.forEach(c => {
+      const disabled = selectedCourses.includes(c.id) ? 'disabled' : '';
+      html += `<option value="${c.id}" ${disabled}>${c.name}</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (apCourses.length > 0) {
+    html += '<optgroup label="AP课程">';
+    apCourses.forEach(c => {
+      const disabled = selectedCourses.includes(c.id) ? 'disabled' : '';
+      html += `<option value="${c.id}" ${disabled}>${c.name}</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (otherCourses.length > 0) {
+    html += '<optgroup label="其他课程">';
+    otherCourses.forEach(c => {
+      const disabled = selectedCourses.includes(c.id) ? 'disabled' : '';
+      html += `<option value="${c.id}" ${disabled}>${c.name}</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  html += '</select>';
+
+  // 隐藏字段存储已选课程
+  html += '<input type="hidden" name="can_teach" id="can_teach_hidden" value="' + selectedCourses.join(',') + '">';
+
+  return html;
+}
+
+// 添加课程到选择列表
+function addCourse(courseId) {
+  if (!courseId) return;
+
+  const courses = window._coursesData || [];
+  const course = courses.find(c => c.id === courseId);
+  if (!course) return;
+
+  // 获取当前已选课程
+  const hiddenInput = document.getElementById('can_teach_hidden');
+  const selectedCourses = hiddenInput.value ? hiddenInput.value.split(',') : [];
+
+  // 检查是否已选
+  if (selectedCourses.includes(courseId)) {
+    showToast('该课程已选择', 'warning');
+    return;
+  }
+
+  // 添加到已选列表
+  selectedCourses.push(courseId);
+  hiddenInput.value = selectedCourses.join(',');
+
+  // 更新显示
+  const selectedDiv = document.getElementById('selected-courses');
+  const tag = document.createElement('span');
+  tag.className = 'ap-tag';
+  tag.style.margin = '2px 4px 2px 0';
+  tag.innerHTML = `${course.name} <span onclick="removeCourse('${courseId}')" style="cursor: pointer; margin-left: 4px;">×</span>`;
+  selectedDiv.appendChild(tag);
+
+  // 禁用下拉选项
+  const select = document.getElementById('course-select');
+  const option = select.querySelector(`option[value="${courseId}"]`);
+  if (option) option.disabled = true;
+
+  // 重置下拉框
+  select.value = '';
+}
+
+// 从选择列表移除课程
+function removeCourse(courseId) {
+  const hiddenInput = document.getElementById('can_teach_hidden');
+  const selectedCourses = hiddenInput.value ? hiddenInput.value.split(',') : [];
+
+  // 移除课程
+  const index = selectedCourses.indexOf(courseId);
+  if (index > -1) {
+    selectedCourses.splice(index, 1);
+    hiddenInput.value = selectedCourses.join(',');
+  }
+
+  // 更新显示
+  const selectedDiv = document.getElementById('selected-courses');
+  const tags = selectedDiv.querySelectorAll('.ap-tag');
+  tags.forEach(tag => {
+    if (tag.textContent.includes(courseId)) {
+      tag.remove();
+    }
+  });
+
+  // 启用下拉选项
+  const select = document.getElementById('course-select');
+  const option = select.querySelector(`option[value="${courseId}"]`);
+  if (option) option.disabled = false;
 }
 
 async function api(path, options = {}) {
@@ -101,8 +270,14 @@ async function loadViewData(viewName) {
     case 'selections':
       await loadSelections();
       break;
+    case 'elective-selections':
+      await loadElectiveSelections();
+      break;
     case 'constraints':
       await loadConstraints();
+      break;
+    case 'sectioning':
+      await loadSectioning();
       break;
     case 'student-timetable':
       await loadStudentSelect();
@@ -248,10 +423,33 @@ async function loadStatus() {
 
 // 加载教师列表
 async function loadTeachers() {
-  const data = await api('/teachers');
-  window._teachersData = data; // 缓存数据
-  renderTeachersList(data);
-  initEntitySearch('search-teachers', data, renderTeachersList, (item, keyword) => {
+  const [teachers, assignments] = await Promise.all([
+    api('/teachers'),
+    api('/teaching_assignments')
+  ]);
+
+  // 统计每个老师的周课时
+  const teacherHours = {};
+  assignments.forEach(a => {
+    if (a.teacher_id) {
+      if (!teacherHours[a.teacher_id]) {
+        teacherHours[a.teacher_id] = 0;
+      }
+      // 计算总课时：每周课时 * 班级数
+      const classCount = Array.isArray(a.class_ids) ? a.class_ids.length : 1;
+      teacherHours[a.teacher_id] += a.weekly_hours * classCount;
+    }
+  });
+
+  // 增强教师数据，添加周课时信息
+  const enhancedTeachers = teachers.map(t => ({
+    ...t,
+    weekly_hours: teacherHours[t.id] || 0
+  }));
+
+  window._teachersData = enhancedTeachers;
+  renderTeachersList(enhancedTeachers);
+  initEntitySearch('search-teachers', enhancedTeachers, renderTeachersList, (item, keyword) => {
     return item.id.toLowerCase().includes(keyword) ||
            item.name.toLowerCase().includes(keyword) ||
            item.can_teach.some(c => c.toLowerCase().includes(keyword));
@@ -264,17 +462,21 @@ function renderTeachersList(data) {
     content.innerHTML = '<div class="empty-state"><p>暂无教师数据</p></div>';
     return;
   }
+
+  // 统计总课时
+  const totalHours = data.reduce((sum, t) => sum + t.weekly_hours, 0);
+
   content.innerHTML = `
+    <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
+      共 ${data.length} 位教师，周课时总计 ${totalHours} 节
+    </div>
     <div class="table-container">
       <table>
         <thead>
           <tr>
             <th>ID</th>
             <th>姓名</th>
-            <th>年级</th>
-            <th>可教课程</th>
-            <th>日上限</th>
-            <th>周上限</th>
+            <th>周课时</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -283,10 +485,7 @@ function renderTeachersList(data) {
             <tr>
               <td>${t.id}</td>
               <td>${t.name}</td>
-              <td>${t.grade || '-'}</td>
-              <td>${t.can_teach.join(', ')}</td>
-              <td>${t.max_per_day}</td>
-              <td>${t.max_per_week}</td>
+              <td>${t.weekly_hours} 节</td>
               <td>
                 <button class="btn btn-primary btn-sm" onclick="editEntity('teachers', '${t.id}')">编辑</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteEntity('teachers', '${t.id}')">删除</button>
@@ -407,32 +606,41 @@ function renderCoursesList(data) {
 
 // 加载学生列表
 async function loadStudents() {
-  const [students, selections, courses, adminClasses, teachingClasses] = await Promise.all([
+  const [students, courses, adminClasses, teachingClasses] = await Promise.all([
     api('/students'),
-    api('/ap_selections'),
     api('/courses'),
     api('/admin_classes'),
     api('/teaching_classes')
   ]);
 
-  // 合并选修课数据（只显示选修课，不显示必修课）
+  // 增强学生数据，添加选课信息
   const enhancedStudents = students.map(s => {
-    const selection = selections.find(sel => sel.student_id === s.id);
-    const apCourses = selection ? selection.course_ids.map(cid => {
-      const course = courses.find(c => c.id === cid);
-      return { id: cid, name: course?.name || cid };
-    }) : [];
-
-    // 必修课（用于内部逻辑，不在UI显示）
-    const requiredCourses = (s.required_courses || []).map(cid => {
+    // AP选修课（从学生自己的 ap_courses 字段获取）
+    const apCourses = (s.ap_courses || []).map(cid => {
       const course = courses.find(c => c.id === cid);
       return { id: cid, name: course?.name || cid };
     });
 
+    // 必修选修课选择（从学生自己的 elective_choices 字段获取）
+    const electiveChoices = s.elective_choices ? {
+      group_a: s.elective_choices.group_a ? (() => {
+        const course = courses.find(c => c.id === s.elective_choices.group_a);
+        return { id: s.elective_choices.group_a, name: course?.name || s.elective_choices.group_a };
+      })() : null,
+      group_b: s.elective_choices.group_b ? (() => {
+        const course = courses.find(c => c.id === s.elective_choices.group_b);
+        return { id: s.elective_choices.group_b, name: course?.name || s.elective_choices.group_b };
+      })() : null,
+      group_c: s.elective_choices.group_c ? (() => {
+        const course = courses.find(c => c.id === s.elective_choices.group_c);
+        return { id: s.elective_choices.group_c, name: course?.name || s.elective_choices.group_c };
+      })() : null
+    } : null;
+
     return {
       ...s,
-      ap_selections: apCourses,        // 选修课（显示）
-      required_courses_data: requiredCourses  // 必修课（不显示，用于内部）
+      ap_selections: apCourses,
+      elective_choices_data: electiveChoices
     };
   });
 
@@ -533,11 +741,25 @@ function applyStudentFilters(data) {
   // 按关键词搜索
   if (keyword) {
     filtered = filtered.filter(s => {
-      return s.id.toLowerCase().includes(keyword) ||
-             s.name.toLowerCase().includes(keyword) ||
-             s.admin_class_id.toLowerCase().includes(keyword) ||
-             s.teaching_class_id.toLowerCase().includes(keyword) ||
-             s.ap_selections.some(ap => ap.name.toLowerCase().includes(keyword) || ap.id.toLowerCase().includes(keyword));
+      // 搜索基本信息
+      const matchBasic = s.id.toLowerCase().includes(keyword) ||
+                         s.name.toLowerCase().includes(keyword) ||
+                         s.admin_class_id.toLowerCase().includes(keyword) ||
+                         s.teaching_class_id.toLowerCase().includes(keyword);
+
+      // 搜索AP选修课
+      const matchAP = s.ap_selections.some(ap =>
+        ap.name.toLowerCase().includes(keyword) || ap.id.toLowerCase().includes(keyword)
+      );
+
+      // 搜索必修选修课
+      const matchElective = s.elective_choices_data && (
+        (s.elective_choices_data.group_a && s.elective_choices_data.group_a.name.toLowerCase().includes(keyword)) ||
+        (s.elective_choices_data.group_b && s.elective_choices_data.group_b.name.toLowerCase().includes(keyword)) ||
+        (s.elective_choices_data.group_c && s.elective_choices_data.group_c.name.toLowerCase().includes(keyword))
+      );
+
+      return matchBasic || matchAP || matchElective;
     });
   }
 
@@ -594,7 +816,8 @@ function renderStudentsList(data, hasFilter = false) {
             <th>年级</th>
             <th>行政班</th>
             <th>教学班</th>
-            <th>选修课</th>
+            <th>AP选修课</th>
+            <th>${data.length > 0 && data[0].grade === 11 ? '英语选修课' : '必修选修课'}</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -609,7 +832,25 @@ function renderStudentsList(data, hasFilter = false) {
               <td>
                 ${s.ap_selections.length > 0
                   ? `<div class="ap-tags">${s.ap_selections.map(ap => `<span class="ap-tag">${ap.name}</span>`).join('')}</div>`
-                  : '<span style="color: var(--gray-400);">无选修课</span>'
+                  : '<span style="color: var(--gray-400);">无</span>'
+                }
+              </td>
+              <td>
+                ${s.grade === 11
+                  ? (s.courses?.includes('HONOR_LC') || s.courses?.includes('TOEFL') || s.courses?.includes('AP_LC')
+                    ? `<div class="ap-tags">
+                        ${s.courses?.includes('HONOR_LC') ? '<span class="ap-tag" style="background: #e3f2fd; color: #1565c0;">Honor LC</span>' : ''}
+                        ${s.courses?.includes('TOEFL') ? '<span class="ap-tag" style="background: #f3e5f5; color: #7b1fa2;">TOEFL</span>' : ''}
+                        ${s.courses?.includes('AP_LC') ? '<span class="ap-tag" style="background: #e8f5e9; color: #2e7d32;">AP LC</span>' : ''}
+                      </div>`
+                    : '<span style="color: var(--gray-400);">无</span>')
+                  : (s.elective_choices_data
+                    ? `<div class="ap-tags">
+                        ${s.elective_choices_data.group_a ? `<span class="ap-tag" style="background: #e3f2fd; color: #1565c0;">A:${s.elective_choices_data.group_a.name}</span>` : ''}
+                        ${s.elective_choices_data.group_b ? `<span class="ap-tag" style="background: #f3e5f5; color: #7b1fa2;">B:${s.elective_choices_data.group_b.name}</span>` : ''}
+                        ${s.elective_choices_data.group_c ? `<span class="ap-tag" style="background: #e8f5e9; color: #2e7d32;">C:${s.elective_choices_data.group_c.name}</span>` : ''}
+                      </div>`
+                    : '<span style="color: var(--gray-400);">无</span>')
                 }
               </td>
               <td>
@@ -1149,6 +1390,442 @@ window.addStudentToCourse = async function(courseId) {
   }
 };
 
+// 加载其他选课（必修选修课）
+async function loadElectiveSelections() {
+  const [students, courses] = await Promise.all([
+    api('/students'),
+    api('/courses')
+  ]);
+
+  // 获取筛选条件
+  const gradeFilter = document.getElementById('filter-elective-grade').value;
+  const groupFilter = document.getElementById('filter-elective-group').value;
+  const keyword = document.getElementById('search-elective-selections').value.toLowerCase().trim();
+
+  // 收集所有必修选修课选择数据
+  const electiveSelections = [];
+
+  students.forEach(student => {
+    if (!student.elective_choices) return;
+
+    const choices = student.elective_choices;
+    ['group_a', 'group_b', 'group_c'].forEach(groupKey => {
+      const courseId = choices[groupKey];
+      if (!courseId) return;
+
+      const course = courses.find(c => c.id === courseId);
+      const group = groupKey.replace('group_', '').toUpperCase();
+
+      electiveSelections.push({
+        student_id: student.id,
+        student_name: student.name,
+        grade: student.grade,
+        admin_class: student.admin_class_id,
+        teaching_class: student.teaching_class_id,
+        course_id: courseId,
+        course_name: course?.name || courseId,
+        group: group
+      });
+    });
+  });
+
+  // 应用筛选
+  let filtered = [...electiveSelections];
+
+  if (gradeFilter) {
+    filtered = filtered.filter(s => s.grade === parseInt(gradeFilter));
+  }
+
+  if (groupFilter) {
+    filtered = filtered.filter(s => s.group === groupFilter);
+  }
+
+  if (keyword) {
+    filtered = filtered.filter(s =>
+      s.student_id.toLowerCase().includes(keyword) ||
+      s.student_name.toLowerCase().includes(keyword) ||
+      s.course_name.toLowerCase().includes(keyword)
+    );
+  }
+
+  window._electiveSelectionsData = filtered;
+  renderElectiveSelectionsList(filtered);
+
+  // 添加筛选事件监听
+  document.getElementById('filter-elective-grade').onchange = () => loadElectiveSelections();
+  document.getElementById('filter-elective-group').onchange = () => loadElectiveSelections();
+  document.getElementById('search-elective-selections').oninput = () => loadElectiveSelections();
+}
+
+function renderElectiveSelectionsList(data) {
+  const content = document.getElementById('elective-selections-list');
+
+  if (data.length === 0) {
+    content.innerHTML = '<div class="empty-state"><p>暂无其他选课数据</p></div>';
+    return;
+  }
+
+  // 按组别分组统计
+  const groupStats = {
+    A: { name: 'A组', courses: {}, students: new Set() },
+    B: { name: 'B组', courses: {}, students: new Set() },
+    C: { name: 'C组', courses: {}, students: new Set() }
+  };
+
+  data.forEach(item => {
+    if (!groupStats[item.group]) return;
+
+    groupStats[item.group].students.add(item.student_id);
+    if (!groupStats[item.group].courses[item.course_name]) {
+      groupStats[item.group].courses[item.course_name] = 0;
+    }
+    groupStats[item.group].courses[item.course_name]++;
+  });
+
+  let html = `
+    <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px; margin-bottom: 16px;">
+      共 ${data.length} 条选课记录
+    </div>
+
+    <div class="overview-grid" style="margin-bottom: 24px;">
+      ${Object.entries(groupStats).map(([group, stats]) => `
+        <div class="overview-card">
+          <div class="overview-card-header" style="background: ${group === 'A' ? 'linear-gradient(135deg, #1565c0, #1976D2)' : group === 'B' ? 'background: linear-gradient(135deg, #7b1fa2, #9c27b0)' : 'background: linear-gradient(135deg, #2e7d32, #43a044)'};">
+            <h4>${stats.name}</h4>
+            <span class="badge">${stats.students.size} 人</span>
+          </div>
+          <div class="overview-card-body">
+            ${Object.entries(stats.courses).map(([course, count]) => `
+              <div style="display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px;">
+                <span>${course}</span>
+                <span style="color: var(--gray-500);">${count} 人</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  // 按组别显示详细列表
+  ['A', 'B', 'C'].forEach(group => {
+    const groupData = data.filter(d => d.group === group);
+    if (groupData.length === 0) return;
+
+    html += `
+      <div style="margin-bottom: 24px;">
+        <h3 style="margin-bottom: 12px; color: var(--gray-700);">${group}组选课详情</h3>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>学生ID</th>
+                <th>姓名</th>
+                <th>年级</th>
+                <th>行政班</th>
+                <th>教学班</th>
+                <th>选择课程</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${groupData.map(s => `
+                <tr>
+                  <td>${s.student_id}</td>
+                  <td>${s.student_name}</td>
+                  <td>高${s.grade}</td>
+                  <td>${s.admin_class}</td>
+                  <td>${s.teaching_class}</td>
+                  <td><span class="ap-tag">${s.course_name}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  });
+
+  content.innerHTML = html;
+}
+
+// 加载分班管理
+async function loadSectioning() {
+  try {
+    const sections = await api('/elective-sections');
+    window._sectioningData = sections;
+    renderSectioningList(sections);
+
+    // 绑定按钮事件
+    document.getElementById('btn-solve-sections').onclick = solveSections;
+    document.getElementById('btn-refresh-sections').onclick = loadSectioning;
+    document.getElementById('btn-sectioning-suggestions').onclick = loadSectioningSuggestions;
+  } catch (error) {
+    console.error('加载分班数据失败:', error);
+  }
+}
+
+async function solveSections() {
+  if (!confirm('确定要运行分班引擎吗？这将重新分配所有选修课班级。')) {
+    return;
+  }
+
+  try {
+    const result = await api('/solve-sections', { method: 'POST' });
+
+    // 显示统计信息
+    const statsDiv = document.getElementById('sectioning-stats');
+    statsDiv.innerHTML = `
+      <div class="stat-item">
+        <div class="stat-label">AP选修班</div>
+        <div class="stat-value">${result.statistics.ap_sections}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">必修选修班</div>
+        <div class="stat-value">${result.statistics.elective_sections}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">总班级数</div>
+        <div class="stat-value">${result.statistics.total_sections}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">教学任务</div>
+        <div class="stat-value">${result.statistics.total_tasks}</div>
+      </div>
+    `;
+
+    showToast('分班完成！');
+    loadSectioning();
+  } catch (error) {
+    showToast('分班失败: ' + error.message, 'error');
+  }
+}
+
+async function loadSectioningSuggestions() {
+  try {
+    const data = await api('/elective-sections/suggestions');
+    const suggestionsDiv = document.getElementById('sectioning-suggestions');
+
+    if (data.suggestions.length === 0) {
+      suggestionsDiv.innerHTML = '<div class="empty-state"><p>暂无建议</p></div>';
+    } else {
+      suggestionsDiv.innerHTML = `
+        <div class="suggestions-list">
+          ${data.suggestions.map(s => `<div class="suggestion-item">💡 ${s}</div>`).join('')}
+        </div>
+      `;
+    }
+  } catch (error) {
+    showToast('获取建议失败: ' + error.message, 'error');
+  }
+}
+
+function renderSectioningList(sections) {
+  const content = document.getElementById('sectioning-list');
+
+  if (!sections || sections.length === 0) {
+    content.innerHTML = '<div class="empty-state"><p>暂无分班数据，请点击"运行分班引擎"</p></div>';
+    return;
+  }
+
+  // 按课程类型分组
+  const apSections = sections.filter(s => s.course_type === 'ap');
+  const electiveSections = sections.filter(s => s.course_type === 'required_elective');
+
+  let html = '';
+
+  // AP选修班
+  if (apSections.length > 0) {
+    html += `
+      <div class="section-group">
+        <h3>AP选修班 (${apSections.length}个班)</h3>
+        <div class="sections-grid">
+          ${apSections.map(section => renderSectionCard(section)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // 必修选修班
+  if (electiveSections.length > 0) {
+    html += `
+      <div class="section-group">
+        <h3>必修选修班 (${electiveSections.length}个班)</h3>
+        <div class="sections-grid">
+          ${electiveSections.map(section => renderSectionCard(section)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  content.innerHTML = html;
+}
+
+function renderSectionCard(section) {
+  const courses = window._coursesData || [];
+  const course = courses.find(c => c.id === section.course_id);
+  const teacher = window._teachersData?.find(t => t.id === section.teacher_id);
+
+  return `
+    <div class="section-card" id="section-${section.id}">
+      <div class="section-header">
+        <h4>${section.course_name}</h4>
+        <span class="section-badge">${section.student_ids.length}人</span>
+      </div>
+      <div class="section-body">
+        <div class="section-info">
+          <div>班级: ${section.id}</div>
+          <div>教师: ${teacher?.name || '待分配'}</div>
+          <div>课时: ${section.weekly_hours}节/周</div>
+        </div>
+        <div class="section-students">
+          <div class="students-header">学生列表:</div>
+          <div class="students-list">
+            ${section.student_ids.slice(0, 10).map(id => {
+              const student = window._studentsData?.find(s => s.id === id);
+              return `<span class="student-tag">${student?.name || id}</span>`;
+            }).join('')}
+            ${section.student_ids.length > 10 ? `<span class="student-tag more">+${section.student_ids.length - 10}人</span>` : ''}
+          </div>
+        </div>
+        <div class="section-actions">
+          <button class="btn btn-primary btn-sm" onclick="editSection('${section.id}')">编辑</button>
+          <button class="btn btn-secondary btn-sm" onclick="viewSectionStudents('${section.id}')">查看全部</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.editSection = function(sectionId) {
+  const section = window._sectioningData?.find(s => s.id === sectionId);
+  if (!section) return;
+
+  const courses = window._coursesData || [];
+  const teachers = window._teachersData || [];
+
+  showModal('编辑分班 - ' + section.course_name, `
+    <form id="form-edit-section">
+      <div class="form-group">
+        <label>班级ID</label>
+        <input type="text" value="${section.id}" readonly style="background-color: var(--gray-100);">
+      </div>
+      <div class="form-group">
+        <label>课程</label>
+        <input type="text" value="${section.course_name}" readonly style="background-color: var(--gray-100);">
+      </div>
+      <div class="form-group">
+        <label>教师</label>
+        <select name="teacher_id" class="select">
+          <option value="">待分配</option>
+          ${teachers.filter(t => t.can_teach.includes(section.course_id)).map(t =>
+            `<option value="${t.id}" ${t.id === section.teacher_id ? 'selected' : ''}>${t.name}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>学生 (${section.student_ids.length}人)</label>
+        <div style="max-height: 200px; overflow-y: auto; border: 1px solid var(--gray-300); border-radius: var(--radius); padding: 8px;">
+          ${section.student_ids.map(id => {
+            const student = window._studentsData?.find(s => s.id === id);
+            return `<div style="padding: 4px 0; display: flex; justify-content: space-between; align-items: center;">
+              <span>${student?.name || id}</span>
+              <button type="button" class="btn btn-danger btn-sm" onclick="removeStudentFromSection('${section.id}', '${id}')">移除</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  `);
+
+  document.getElementById('form-edit-section').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const updates = {
+      teacher_id: formData.get('teacher_id') || null,
+    };
+
+    try {
+      await api(`/elective-sections/${sectionId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updates)
+      });
+      hideModal();
+      showToast('保存成功');
+      loadSectioning();
+    } catch (error) {
+      showToast('保存失败: ' + error.message, 'error');
+    }
+  });
+};
+
+window.viewSectionStudents = function(sectionId) {
+  const section = window._sectioningData?.find(s => s.id === sectionId);
+  if (!section) return;
+
+  showModal('学生列表 - ' + section.course_name, `
+    <div style="max-height: 400px; overflow-y: auto;">
+      <table style="width: 100%;">
+        <thead>
+          <tr>
+            <th>学生ID</th>
+            <th>姓名</th>
+            <th>年级</th>
+            <th>行政班</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${section.student_ids.map(id => {
+            const student = window._studentsData?.find(s => s.id === id);
+            return `
+              <tr>
+                <td>${id}</td>
+                <td>${student?.name || '-'}</td>
+                <td>${student?.grade || '-'}</td>
+                <td>${student?.admin_class_id || '-'}</td>
+                <td>
+                  <button class="btn btn-danger btn-sm" onclick="removeStudentFromSection('${section.id}', '${id}')">移除</button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div class="form-actions" style="margin-top: 16px;">
+      <button type="button" class="btn btn-secondary" onclick="hideModal()">关闭</button>
+    </div>
+  `);
+};
+
+window.removeStudentFromSection = async function(sectionId, studentId) {
+  if (!confirm('确定要将该学生从班级中移除吗？')) {
+    return;
+  }
+
+  try {
+    const section = window._sectioningData?.find(s => s.id === sectionId);
+    if (!section) return;
+
+    const updatedStudentIds = section.student_ids.filter(id => id !== studentId);
+
+    await api(`/elective-sections/${sectionId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ student_ids: updatedStudentIds })
+    });
+
+    showToast('已移除');
+    hideModal();
+    loadSectioning();
+  } catch (error) {
+    showToast('移除失败: ' + error.message, 'error');
+  }
+};
+
 // 加载约束列表
 async function loadConstraints() {
   const data = await api('/constraints');
@@ -1229,25 +1906,15 @@ async function loadTeacherSelect() {
 
 // 加载班级选择框
 async function loadClassSelect() {
-  const [adminClasses, teachingClasses] = await Promise.all([
-    api('/admin_classes'),
-    api('/teaching_classes'),
-  ]);
+  // 只加载教学班，不加载行政班
+  const teachingClasses = await api('/teaching_classes');
 
-  const allClasses = [
-    ...adminClasses.map(c => ({ ...c, type: 'admin' })),
-    ...teachingClasses.map(c => ({ ...c, type: 'teaching' }))
-  ];
+  const allClasses = teachingClasses.map(c => ({ ...c, type: 'teaching' }));
   window._classesData = allClasses; // 缓存数据供搜索使用
 
   const select = document.getElementById('select-class');
-  select.innerHTML = '<option value="">选择班级</option>' +
-    '<optgroup label="行政班">' +
-    adminClasses.map(c => `<option value="${c.id}">${c.id} - ${c.name}</option>`).join('') +
-    '</optgroup>' +
-    '<optgroup label="教学班">' +
-    teachingClasses.map(c => `<option value="${c.id}">${c.id} - ${c.name}</option>`).join('') +
-    '</optgroup>';
+  select.innerHTML = '<option value="">选择教学班</option>' +
+    teachingClasses.map(c => `<option value="${c.id}">${c.id} - ${c.name}</option>`).join('');
 
   // 初始化搜索
   initSearchFilter('search-class', 'select-class', allClasses, (item) => `${item.id} ${item.name}`);
@@ -1371,9 +2038,9 @@ function renderTimetable(containerId, data) {
         html += `
           <td>
             <div class="slot">
-              <div class="course">${slot.course}</div>
-              <div class="teacher">${slot.teacher}</div>
-              <div class="room">${slot.room}</div>
+              <div class="course">${getCourseName(slot)}</div>
+              <div class="teacher">${getTeacherName(slot)}</div>
+              <div class="room">${getRoomName(slot)}</div>
             </div>
           </td>
         `;
@@ -1436,19 +2103,50 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
         (row[0].includes('6') || row[0].includes('7') || row[0].includes('8'));
 
       if (slot) {
-        html += `
-          <div class="slot-cell has-class ${isWalkBlock ? 'walk-block' : ''}"
-               draggable="true"
-               data-task-id="${slot.task_id || ''}"
-               data-slot-id="D${day}P${period.id}">
-            <div class="course-name">
-              ${slot.course}
-              ${slot.course_type === 'ap' ? '<span class="course-badge ap">AP</span>' : ''}
+        // 检查是否是教学班课表（包含行政班课程）
+        if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
+          // 教学班课表：显示行政班课程
+          html += `
+            <div class="slot-cell has-class ${isWalkBlock ? 'walk-block' : ''}"
+                 data-slot-id="D${day}P${period.id}">
+              <div class="admin-courses">
+                ${Object.entries(slot.admin_courses).map(([classId, course]) => `
+                  <div class="admin-course-item">
+                    <span class="class-label">${classId}:</span>
+                    <span class="course-name">${course.course}</span>
+                  </div>
+                `).join('')}
+              </div>
+              ${slot.teaching_course ? `
+                <div class="teaching-course">
+                  <span class="course-name">${slot.teaching_course.course}</span>
+                  <span class="teacher-name">👨‍🏫 ${slot.teaching_course.teacher}</span>
+                </div>
+              ` : ''}
+              ${slot.elective_course ? `
+                <div class="elective-course">
+                  <span class="course-name">${slot.elective_course.course}</span>
+                  <span class="teacher-name">👨‍🏫 ${slot.elective_course.teacher}</span>
+                </div>
+              ` : ''}
             </div>
-            <div class="teacher-name">👨‍🏫 ${slot.teacher}</div>
-            <div class="room-name">🚪 ${slot.room}</div>
-          </div>
-        `;
+          `;
+        } else {
+          // 其他课表：直接显示
+          html += `
+            <div class="slot-cell has-class ${isWalkBlock ? 'walk-block' : ''}"
+                 draggable="true"
+                 data-task-id="${slot.task_id || ''}"
+                 data-slot-id="D${day}P${period.id}">
+              <div class="course-name">
+                ${getCourseName(slot)}
+                ${slot.course_type === 'ap' ? '<span class="course-badge ap">AP</span>' : ''}
+              </div>
+              <div class="teacher-name">👨‍🏫 ${getTeacherName(slot)}</div>
+              <div class="room-name">🚪 ${getRoomName(slot)}</div>
+            </div>
+          `;
+        }
       } else {
         html += `<div class="slot-cell" data-slot-id="D${day}P${period.id}"></div>`;
       }
@@ -1466,14 +2164,12 @@ async function loadOverviewTimetable() {
   const viewType = document.getElementById('select-view-type').value;
 
   try {
-    // 获取所有班级或教师
+    // 获取班级或教师
     let items = [];
     if (viewType === 'class') {
-      const [adminClasses, teachingClasses] = await Promise.all([
-        api('/admin_classes'),
-        api('/teaching_classes'),
-      ]);
-      items = [...adminClasses, ...teachingClasses];
+      // 只显示教学班，不显示行政班
+      const teachingClasses = await api('/teaching_classes');
+      items = teachingClasses;
       if (grade !== 'all') {
         items = items.filter(c => c.grade === parseInt(grade));
       }
@@ -1537,7 +2233,7 @@ function renderMiniTimetable(data) {
     for (let i = 1; i <= 5; i++) {
       const slot = row[i];
       if (slot) {
-        html += `<td class="slot-filled">${slot.course}</td>`;
+        html += `<td class="slot-filled">${getCourseName(slot)}</td>`;
       } else {
         html += `<td class="slot-empty">-</td>`;
       }
@@ -1582,6 +2278,10 @@ window.editEntity = async function(entity, id) {
     switch (entity) {
       case 'teachers':
         title = '编辑教师';
+        // 确保课程数据已加载
+        if (!window._coursesData) {
+          window._coursesData = await api('/courses');
+        }
         formHtml = `
           <form id="form-edit-teacher">
             <div class="form-group">
@@ -1593,8 +2293,8 @@ window.editEntity = async function(entity, id) {
               <input type="text" name="name" value="${item.name}" required>
             </div>
             <div class="form-group">
-              <label>可教课程（逗号分隔）</label>
-              <input type="text" name="can_teach" value="${item.can_teach.join(', ')}">
+              <label>可教课程</label>
+              ${renderCourseSelector(item.can_teach)}
             </div>
             <div class="form-group">
               <label>每天上限</label>
@@ -1791,6 +2491,16 @@ window.editEntity = async function(entity, id) {
     // 显示模态框
     showModal(title, formHtml);
 
+    // 添加下拉框事件监听（教师编辑页面）
+    if (entity === 'teachers') {
+      const courseSelect = document.getElementById('course-select');
+      if (courseSelect) {
+        courseSelect.addEventListener('change', (e) => {
+          addCourse(e.target.value);
+        });
+      }
+    }
+
     // 添加表单提交事件
     const form = document.querySelector(`form[id^="form-edit-"]`);
     if (form) {
@@ -1803,9 +2513,10 @@ window.editEntity = async function(entity, id) {
         for (const [key, value] of formData.entries()) {
           if (key === 'id') continue; // 跳过 ID 字段
 
-          // 特殊处理
+          // 特殊处理 can_teach（复选框）
           if (key === 'can_teach') {
-            updateData[key] = value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+            // 跳过，后面单独处理
+            continue;
           } else if (key === 'grade' || key === 'max_per_day' || key === 'max_per_week' || key === 'weekly_hours' || key === 'capacity') {
             updateData[key] = parseInt(value);
           } else if (key === 'prefer_morning') {
@@ -1813,6 +2524,11 @@ window.editEntity = async function(entity, id) {
           } else {
             updateData[key] = value;
           }
+        }
+
+        // 单独处理 can_teach（复选框多选）
+        if (entity === 'teachers') {
+          updateData.can_teach = formData.getAll('can_teach');
         }
 
         try {
@@ -1999,7 +2715,7 @@ async function aiSolve() {
   try {
     showToast('🤖 AI正在理解你的需求...', 'info');
     parseResult.classList.remove('hidden');
-    parseResult.innerHTML = '<div class="loading">正在解析需求并生成多个最优解...</div>';
+    parseResult.innerHTML = '<div class="loading">正在解析需求并生成排课方案...</div>';
 
     const response = await fetch('/api/ai/solve', {
       method: 'POST',
@@ -2013,29 +2729,92 @@ async function aiSolve() {
       throw new Error(result.errors?.[0]?.msg || '求解失败');
     }
 
-    // 显示解析结果
-    const constraints = result.data.parsed_constraints;
-    let parseHtml = '<div style="margin-bottom: 12px;"><strong>🎯 AI理解的需求：</strong></div>';
-    constraints.forEach(c => {
-      parseHtml += `<span class="preference-tag">${formatConstraint(c)}</span>`;
-    });
+    // 显示 AI 响应
+    const aiResponse = result.data.ai_response;
+    let parseHtml = '<div style="margin-bottom: 12px;"><strong>🎯 AI 响应：</strong></div>';
+
+    if (aiResponse.action === 'schedule') {
+      // 显示排课方案
+      parseHtml += `
+        <div style="background: var(--gray-100); padding: 12px; border-radius: var(--radius); margin-bottom: 12px;">
+          <div><strong>排课方案</strong></div>
+          <div>年级: ${aiResponse.grade || '未指定'}</div>
+          <div>任务数: ${aiResponse.tasks?.length || 0}</div>
+          <div>总课时: ${aiResponse.summary?.total_hours || 0}</div>
+        </div>
+      `;
+
+      // 显示任务列表
+      if (aiResponse.tasks && aiResponse.tasks.length > 0) {
+        parseHtml += '<div style="margin-bottom: 12px;"><strong>教学任务：</strong></div>';
+        parseHtml += '<div style="max-height: 300px; overflow-y: auto;">';
+        aiResponse.tasks.forEach(task => {
+          parseHtml += `
+            <div style="padding: 8px; border: 1px solid var(--gray-200); margin-bottom: 4px; border-radius: var(--radius);">
+              <div><strong>${task.course_id}</strong> - ${task.class_id}</div>
+              <div style="font-size: 12px; color: var(--gray-500);">
+                ${task.weekly_hours}节/周 | ${task.assignments?.length || 0} 个时段已分配
+              </div>
+            </div>
+          `;
+        });
+        parseHtml += '</div>';
+      }
+
+      // 添加执行按钮
+      parseHtml += `
+        <div style="margin-top: 16px;">
+          <button class="btn btn-primary" onclick="executeSchedule()">执行排课</button>
+          <button class="btn btn-secondary" onclick="viewScheduleDetails()">查看详情</button>
+        </div>
+      `;
+    } else {
+      // 显示文本响应
+      parseHtml += `<div style="background: var(--gray-100); padding: 12px; border-radius: var(--radius);">${aiResponse.message || result.data.message}</div>`;
+    }
+
     parseResult.innerHTML = parseHtml;
 
-    // 保存并显示解
-    currentSolutions = result.data.solutions;
-    selectedSolutionId = null;
-
-    if (currentSolutions.length > 0) {
-      solutionsSection.classList.remove('hidden');
-      renderSolutions();
-      showToast(`✅ 生成了 ${currentSolutions.length} 个最优解`, 'success');
+    // 如果有排课方案，显示成功消息
+    if (aiResponse.action === 'schedule') {
+      showToast(`✅ 已生成排课方案`, 'success');
     } else {
-      showToast('未能生成有效解，请调整需求', 'warning');
+      showToast(result.data.message || '请提供更具体的排课需求', 'info');
     }
   } catch (error) {
     parseResult.innerHTML = `<div style="color: var(--danger);">求解失败: ${error.message}</div>`;
     showToast(error.message, 'error');
   }
+}
+
+// 执行排课
+async function executeSchedule() {
+  if (!confirm('确定要执行排课吗？这将覆盖当前的排课结果。')) {
+    return;
+  }
+
+  try {
+    showToast('正在执行排课...', 'info');
+
+    // 调用分班引擎
+    const sectionResult = await api('/solve-sections', { method: 'POST' });
+
+    // 调用排课引擎
+    const solveResult = await api('/solve', { method: 'POST' });
+
+    showToast('✅ 排课完成！', 'success');
+
+    // 刷新页面
+    loadViewData(getCurrentView());
+  } catch (error) {
+    showToast('排课失败: ' + error.message, 'error');
+  }
+}
+
+// 查看排课详情
+function viewScheduleDetails() {
+  // 切换到分班管理页面
+  switchView('sectioning');
 }
 
 // 格式化约束显示
@@ -2450,7 +3229,12 @@ function init() {
   });
 
   // 添加教师按钮
-  document.getElementById('btn-add-teacher').addEventListener('click', () => {
+  document.getElementById('btn-add-teacher').addEventListener('click', async () => {
+    // 确保课程数据已加载
+    if (!window._coursesData) {
+      window._coursesData = await api('/courses');
+    }
+
     showModal('添加教师', `
       <form id="form-add-teacher">
         <div class="form-group">
@@ -2462,8 +3246,8 @@ function init() {
           <input type="text" name="name" required>
         </div>
         <div class="form-group">
-          <label>可教课程（逗号分隔）</label>
-          <input type="text" name="can_teach">
+          <label>可教课程</label>
+          ${renderCourseSelector([])}
         </div>
         <div class="form-group">
           <label>每天上限</label>
@@ -2480,13 +3264,18 @@ function init() {
       </form>
     `);
 
+    // 添加下拉框事件监听
+    document.getElementById('course-select').addEventListener('change', (e) => {
+      addCourse(e.target.value);
+    });
+
     document.getElementById('form-add-teacher').addEventListener('submit', async (e) => {
       e.preventDefault();
       const formData = new FormData(e.target);
       const data = {
         id: formData.get('id'),
         name: formData.get('name'),
-        can_teach: formData.get('can_teach') ? formData.get('can_teach').split(',').map(s => s.trim()) : [],
+        can_teach: formData.get('can_teach') ? formData.get('can_teach').split(',').filter(Boolean) : [],
         available_slots: [],
         max_per_day: parseInt(formData.get('max_per_day')),
         max_per_week: parseInt(formData.get('max_per_week')),
@@ -3095,9 +3884,9 @@ window.previewExport = async function() {
         const slot = row[i];
         if (slot) {
           html += `<td class="has-class">
-            <div><strong>${slot.course}</strong></div>
-            <div style="font-size: 12px; color: var(--gray-600);">${slot.teacher}</div>
-            <div style="font-size: 11px; color: var(--gray-500);">${slot.room}</div>
+            <div><strong>${getCourseName(slot)}</strong></div>
+            <div style="font-size: 12px; color: var(--gray-600);">${getTeacherName(slot)}</div>
+            <div style="font-size: 11px; color: var(--gray-500);">${getRoomName(slot)}</div>
           </td>`;
         } else {
           html += `<td class="empty-slot">-</td>`;
@@ -3145,9 +3934,9 @@ function generateClassPreview(className, classType, data, days, periods) {
       const slot = row[i];
       if (slot) {
         html += `<td class="has-class">
-          <div><strong>${slot.course}</strong></div>
-          <div style="font-size: 12px; color: var(--gray-600);">${slot.teacher}</div>
-          <div style="font-size: 11px; color: var(--gray-500);">${slot.room}</div>
+          <div><strong>${getCourseName(slot)}</strong></div>
+          <div style="font-size: 12px; color: var(--gray-600);">${getTeacherName(slot)}</div>
+          <div style="font-size: 11px; color: var(--gray-500);">${getRoomName(slot)}</div>
         </td>`;
       } else {
         html += `<td class="empty-slot">-</td>`;
@@ -3323,9 +4112,9 @@ async function generateHTML(data) {
             const slot = row[i];
             return slot ?
               `<td class="has-class">
-                <div class="course">${slot.course}</div>
-                <div class="teacher">${slot.teacher}</div>
-                <div class="room">${slot.room}</div>
+                <div class="course">${getCourseName(slot)}</div>
+                <div class="teacher">${getTeacherName(slot)}</div>
+                <div class="room">${getRoomName(slot)}</div>
               </td>` :
               '<td>-</td>';
           }).join('')}
@@ -3360,9 +4149,9 @@ function generateClassTableHTML(className, classType, data, days) {
                 const slot = row[i];
                 return slot ?
                   `<td class="has-class">
-                    <div class="course">${slot.course}</div>
-                    <div class="teacher">${slot.teacher}</div>
-                    <div class="room">${slot.room}</div>
+                    <div class="course">${getCourseName(slot)}</div>
+                    <div class="teacher">${getTeacherName(slot)}</div>
+                    <div class="room">${getRoomName(slot)}</div>
                   </td>` :
                   '<td>-</td>';
               }).join('')}
@@ -3413,7 +4202,7 @@ async function generateCSV(data) {
     csv += `第${index + 1}节,`;
     csv += [1, 2, 3, 4, 5].map(i => {
       const slot = row[i];
-      return slot ? `"${slot.course} ${slot.teacher} ${slot.room}"` : '';
+      return slot ? `"${getCourseName(slot)} ${getTeacherName(slot)} ${getRoomName(slot)}"` : '';
     }).join(',');
     csv += '\n';
   });
@@ -3428,7 +4217,7 @@ function generateClassCSV(data, days) {
     csv += `第${index + 1}节,`;
     csv += [1, 2, 3, 4, 5].map(i => {
       const slot = row[i];
-      return slot ? `"${slot.course} ${slot.teacher} ${slot.room}"` : '';
+      return slot ? `"${getCourseName(slot)} ${getTeacherName(slot)} ${getRoomName(slot)}"` : '';
     }).join(',');
     csv += '\n';
   });

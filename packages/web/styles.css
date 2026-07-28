@@ -2193,3 +2193,249 @@ tr:hover {
     flex-wrap: wrap;
   }
 }
+
+/* 分班管理样式 */
+.section-group {
+  margin-bottom: 24px;
+}
+
+.section-group h3 {
+  margin-bottom: 16px;
+  color: var(--gray-700);
+  font-size: 16px;
+}
+
+.sections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.section-card {
+  background-color: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: all 0.2s;
+}
+
+.section-card:hover {
+  box-shadow: var(--shadow-lg);
+  border-color: var(--primary);
+}
+
+.section-header {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: var(--white);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.section-header h4 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.section-badge {
+  background-color: rgba(255, 255, 255, 0.2);
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.section-body {
+  padding: 16px;
+}
+
+.section-info {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--gray-600);
+}
+
+.section-students {
+  margin-bottom: 12px;
+}
+
+.students-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-700);
+  margin-bottom: 8px;
+}
+
+.students-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.student-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background-color: var(--gray-100);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--gray-700);
+}
+
+.student-tag.more {
+  background-color: var(--primary);
+  color: var(--white);
+}
+
+.section-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.stats-bar {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stat-item {
+  background-color: var(--gray-100);
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  flex: 1;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--gray-500);
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.suggestions-container {
+  margin-bottom: 16px;
+}
+
+.suggestions-list {
+  background-color: var(--gray-100);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.suggestion-item {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--gray-200);
+  font-size: 14px;
+  color: var(--gray-700);
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+}
+
+/* 其他选课样式 */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.overview-card {
+  background-color: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.overview-card-header {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: var(--white);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.overview-card-header h4 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.badge {
+  background-color: rgba(255, 255, 255, 0.2);
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.overview-card-body {
+  padding: 16px;
+}
+
+/* 行政班课程显示 */
+.admin-courses {
+  margin-bottom: 4px;
+}
+
+.admin-course-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 4px;
+  background-color: #fff3e0;
+  border-radius: 3px;
+  margin-bottom: 2px;
+}
+
+.admin-course-item .class-label {
+  font-weight: 600;
+  color: #e65100;
+  min-width: 40px;
+}
+
+.admin-course-item .course-name {
+  color: #bf360c;
+}
+
+.teaching-course {
+  padding: 4px;
+  background-color: #e8f5e9;
+  border-radius: 3px;
+  margin-bottom: 2px;
+}
+
+.teaching-course .course-name {
+  font-weight: 600;
+  color: #2e7d32;
+  font-size: 12px;
+}
+
+.teaching-course .teacher-name {
+  font-size: 10px;
+  color: #388e3c;
+}
+
+.elective-course {
+  padding: 4px;
+  background-color: #e3f2fd;
+  border-radius: 3px;
+}
+
+.elective-course .course-name {
+  font-weight: 600;
+  color: #1565c0;
+  font-size: 12px;
+}
+
+.elective-course .teacher-name {
+  font-size: 10px;
+  color: #1976d2;
+}

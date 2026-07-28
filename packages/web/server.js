@@ -7,6 +7,7 @@ import cors from 'cors';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { getRules, applyRules, translateRule } from './llm-bridge.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -561,6 +562,464 @@ app.post('/api/swap', (req, res) => {
   }
 });
 
+// API: 运行分班引擎
+app.post('/api/solve-sections', (req, res) => {
+  try {
+    const state = readState();
+    const config = req.body || {};
+
+    // 默认配置
+    const sectioningConfig = {
+      max_students_per_section: config.max_students_per_section || 30,
+      balance_sections: config.balance_sections !== false,
+      respect_student_preferences: config.respect_student_preferences !== false,
+    };
+
+    // 从学生的 ap_courses 字段收集AP选课数据
+    const courseStudents = new Map();
+    state.students.forEach(student => {
+      if (!student.ap_courses || student.ap_courses.length === 0) return;
+      student.ap_courses.forEach(courseId => {
+        if (!courseStudents.has(courseId)) {
+          courseStudents.set(courseId, []);
+        }
+        courseStudents.get(courseId).push(student.id);
+      });
+    });
+
+    // 生成AP选修班
+    const apSections = [];
+    const apTasks = [];
+
+    courseStudents.forEach((studentIds, courseId) => {
+      const course = state.courses.find(c => c.id === courseId);
+      if (!course) return;
+
+      // 找能教这门课的老师
+      const availableTeachers = state.teachers.filter(t =>
+        t.can_teach.includes(courseId)
+      );
+
+      if (availableTeachers.length === 0) {
+        console.warn(`没有能教 ${courseId} 的老师，跳过分班`);
+        return;
+      }
+
+      // 计算需要多少个section
+      let sectionCount = course.section_count || 1;
+      // 处理 section_count 是数组的情况（跨年级课程）
+      if (Array.isArray(sectionCount)) {
+        sectionCount = Math.max(...sectionCount);
+      }
+      const maxStudents = sectioningConfig.max_students_per_section;
+      const actualSectionCount = Math.max(
+        Math.min(sectionCount, availableTeachers.length),
+        Math.ceil(studentIds.length / maxStudents)
+      );
+
+      // 智能分班
+      const sectionStudents = Array.from({ length: actualSectionCount }, () => []);
+
+      if (sectioningConfig.balance_sections) {
+        // 均衡分班：轮询分配
+        studentIds.forEach((studentId, index) => {
+          sectionStudents[index % actualSectionCount].push(studentId);
+        });
+      } else {
+        // 按顺序分班
+        const studentsPerSection = Math.ceil(studentIds.length / actualSectionCount);
+        for (let i = 0; i < actualSectionCount; i++) {
+          const start = i * studentsPerSection;
+          const end = Math.min(start + studentsPerSection, studentIds.length);
+          sectionStudents[i] = studentIds.slice(start, end);
+        }
+      }
+
+      // 创建分班结果
+      for (let i = 0; i < actualSectionCount; i++) {
+        if (sectionStudents[i].length === 0) continue;
+
+        const sectionId = `AP_${courseId}_${i + 1}`;
+        const teacher = availableTeachers[i % availableTeachers.length];
+
+        apSections.push({
+          id: sectionId,
+          course_id: courseId,
+          course_name: course.name,
+          course_type: 'ap',
+          section_index: i,
+          student_ids: sectionStudents[i],
+          teacher_id: teacher.id,
+          room_id: null,
+          capacity: sectionStudents[i].length,
+          weekly_hours: course.weekly_hours,
+        });
+
+        apTasks.push({
+          id: `TASK_${sectionId}`,
+          source: "ap",
+          course_id: courseId,
+          teacher_id: teacher.id,
+          student_ids: sectionStudents[i],
+          weekly_hours: course.weekly_hours,
+          room_policy: "assign",
+          source_class_id: undefined,
+          source_section_id: sectionId,
+        });
+      }
+    });
+
+    // 生成必修选修班
+    const electiveSections = [];
+    const electiveTasks = [];
+
+    // 按组别收集必修选修课
+    const groupCourses = new Map();
+    state.courses
+      .filter(c => c.type === "required_elective" && c.elective_group)
+      .forEach(course => {
+        const group = course.elective_group;
+        if (!groupCourses.has(group)) {
+          groupCourses.set(group, []);
+        }
+        groupCourses.get(group).push(course);
+      });
+
+    groupCourses.forEach((courses, group) => {
+      console.log(`处理组别: ${group}, 课程数: ${courses.length}`);
+
+      const courseStudentsMap = new Map();
+      courses.forEach(c => courseStudentsMap.set(c.id, []));
+
+      // 收集学生选择
+      state.students.forEach(student => {
+        if (!student.elective_choices) return;
+        const choiceField = `group_${group.toLowerCase()}`;
+        const chosenCourseId = student.elective_choices[choiceField];
+        if (chosenCourseId && courseStudentsMap.has(chosenCourseId)) {
+          courseStudentsMap.get(chosenCourseId).push(student.id);
+        }
+      });
+
+      console.log(`组别 ${group} 学生分布:`, Object.fromEntries(
+        [...courseStudentsMap.entries()].map(([id, students]) => [id, students.length])
+      ));
+
+      // 为每门选修课生成平行班
+      courseStudentsMap.forEach((studentIds, courseId) => {
+        if (studentIds.length === 0) return;
+
+        const course = state.courses.find(c => c.id === courseId);
+        if (!course) return;
+
+        let sectionCount = course.section_count || 1;
+        // 处理 section_count 是数组的情况（跨年级课程）
+        if (Array.isArray(sectionCount)) {
+          sectionCount = Math.max(...sectionCount);
+        }
+        const maxStudents = sectioningConfig.max_students_per_section;
+        const actualSectionCount = Math.max(sectionCount, Math.ceil(studentIds.length / maxStudents));
+
+        // 智能分班
+        const sectionStudents = Array.from({ length: actualSectionCount }, () => []);
+
+        if (sectioningConfig.balance_sections) {
+          studentIds.forEach((studentId, index) => {
+            sectionStudents[index % actualSectionCount].push(studentId);
+          });
+        } else {
+          const studentsPerSection = Math.ceil(studentIds.length / actualSectionCount);
+          for (let i = 0; i < actualSectionCount; i++) {
+            const start = i * studentsPerSection;
+            const end = Math.min(start + studentsPerSection, studentIds.length);
+            sectionStudents[i] = studentIds.slice(start, end);
+          }
+        }
+
+        // 创建分班结果
+        for (let i = 0; i < actualSectionCount; i++) {
+          if (sectionStudents[i].length === 0) continue;
+
+          const sectionId = `ELECTIVE_${courseId}_${i + 1}`;
+
+          electiveSections.push({
+            id: sectionId,
+            course_id: courseId,
+            course_name: course.name,
+            course_type: 'required_elective',
+            section_index: i,
+            student_ids: sectionStudents[i],
+            teacher_id: null,
+            room_id: null,
+            capacity: sectionStudents[i].length,
+            weekly_hours: course.weekly_hours,
+          });
+
+          electiveTasks.push({
+            id: `TASK_ELECTIVE_${courseId}_${i + 1}`,
+            source: "required_elective",
+            course_id: courseId,
+            teacher_id: null,
+            student_ids: sectionStudents[i],
+            weekly_hours: course.weekly_hours,
+            room_policy: "assign",
+            source_class_id: undefined,
+            elective_group: group,
+            section_index: i,
+          });
+        }
+      });
+    });
+
+    // 合并所有分班结果
+    const allSections = [...apSections, ...electiveSections];
+    const allTasks = [...apTasks, ...electiveTasks];
+
+    // 保存到状态文件
+    state.elective_sections = allSections;
+    state.teaching_tasks = [...(state.teaching_tasks || []), ...allTasks];
+    writeState(state);
+
+    res.json({
+      ok: true,
+      data: {
+        sections: allSections,
+        tasks: allTasks,
+        statistics: {
+          ap_sections: apSections.length,
+          elective_sections: electiveSections.length,
+          total_sections: allSections.length,
+          ap_tasks: apTasks.length,
+          elective_tasks: electiveTasks.length,
+          total_tasks: allTasks.length,
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 获取分班结果
+app.get('/api/elective-sections', (req, res) => {
+  try {
+    const state = readState();
+    res.json({ ok: true, data: state.elective_sections || [] });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 更新分班结果（手动调整）
+app.put('/api/elective-sections/:id', (req, res) => {
+  try {
+    const state = readState();
+    const sectionId = req.params.id;
+    const updates = req.body;
+
+    if (!state.elective_sections) {
+      return res.status(404).json({ ok: false, errors: [{ code: 'NOT_FOUND', msg: '分班结果不存在' }] });
+    }
+
+    const sectionIndex = state.elective_sections.findIndex(s => s.id === sectionId);
+    if (sectionIndex === -1) {
+      return res.status(404).json({ ok: false, errors: [{ code: 'NOT_FOUND', msg: `分班 ${sectionId} 不存在` }] });
+    }
+
+    // 更新分班结果
+    state.elective_sections[sectionIndex] = {
+      ...state.elective_sections[sectionIndex],
+      ...updates,
+    };
+
+    // 同步更新教学任务
+    const taskIndex = state.teaching_tasks?.findIndex(t => t.source_section_id === sectionId);
+    if (taskIndex !== -1 && taskIndex !== undefined) {
+      state.teaching_tasks[taskIndex] = {
+        ...state.teaching_tasks[taskIndex],
+        student_ids: state.elective_sections[sectionIndex].student_ids,
+        teacher_id: state.elective_sections[sectionIndex].teacher_id,
+      };
+    }
+
+    writeState(state);
+
+    res.json({ ok: true, data: state.elective_sections[sectionIndex] });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 移动学生到不同班级
+app.post('/api/elective-sections/move-student', (req, res) => {
+  try {
+    const state = readState();
+    const { student_id, from_section_id, to_section_id } = req.body;
+
+    if (!student_id || !from_section_id || !to_section_id) {
+      return res.status(400).json({
+        ok: false,
+        errors: [{ code: 'INVALID', msg: '需要 student_id, from_section_id 和 to_section_id' }]
+      });
+    }
+
+    if (!state.elective_sections) {
+      return res.status(404).json({ ok: false, errors: [{ code: 'NOT_FOUND', msg: '分班结果不存在' }] });
+    }
+
+    const fromSection = state.elective_sections.find(s => s.id === from_section_id);
+    const toSection = state.elective_sections.find(s => s.id === to_section_id);
+
+    if (!fromSection || !toSection) {
+      return res.status(404).json({ ok: false, errors: [{ code: 'NOT_FOUND', msg: '班级不存在' }] });
+    }
+
+    // 检查学生是否在源班级中
+    if (!fromSection.student_ids.includes(student_id)) {
+      return res.status(400).json({ ok: false, errors: [{ code: 'INVALID', msg: '学生不在源班级中' }] });
+    }
+
+    // 移动学生
+    fromSection.student_ids = fromSection.student_ids.filter(id => id !== student_id);
+    toSection.student_ids.push(student_id);
+
+    // 更新容量
+    fromSection.capacity = fromSection.student_ids.length;
+    toSection.capacity = toSection.student_ids.length;
+
+    // 同步更新教学任务
+    const fromTaskIndex = state.teaching_tasks?.findIndex(t => t.source_section_id === from_section_id);
+    const toTaskIndex = state.teaching_tasks?.findIndex(t => t.source_section_id === to_section_id);
+
+    if (fromTaskIndex !== -1 && fromTaskIndex !== undefined) {
+      state.teaching_tasks[fromTaskIndex].student_ids = fromSection.student_ids;
+    }
+    if (toTaskIndex !== -1 && toTaskIndex !== undefined) {
+      state.teaching_tasks[toTaskIndex].student_ids = toSection.student_ids;
+    }
+
+    writeState(state);
+
+    res.json({ ok: true, data: { from: fromSection, to: toSection } });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 获取分班建议
+app.get('/api/elective-sections/suggestions', (req, res) => {
+  try {
+    const state = readState();
+    const suggestions = [];
+
+    if (!state.elective_sections || state.elective_sections.length === 0) {
+      return res.json({ ok: true, data: { suggestions: ['尚未运行分班引擎'] } });
+    }
+
+    // 检查班级人数均衡性
+    const courseGroups = new Map();
+    state.elective_sections.forEach(section => {
+      if (!courseGroups.has(section.course_id)) {
+        courseGroups.set(section.course_id, []);
+      }
+      courseGroups.get(section.course_id).push(section);
+    });
+
+    courseGroups.forEach((courseSections, courseId) => {
+      if (courseSections.length <= 1) return;
+
+      const sizes = courseSections.map(s => s.student_ids.length);
+      const maxSize = Math.max(...sizes);
+      const minSize = Math.min(...sizes);
+      const diff = maxSize - minSize;
+
+      if (diff > 5) {
+        const course = state.courses.find(c => c.id === courseId);
+        suggestions.push(`${course?.name || courseId} 的班级人数不均衡（${minSize}-${maxSize}人），建议调整`);
+      }
+    });
+
+    // 检查是否有学生没有被分配
+    const assignedStudentIds = new Set(state.elective_sections.flatMap(s => s.student_ids));
+    const unassignedStudents = state.students.filter(s =>
+      !assignedStudentIds.has(s.id) &&
+      ((s.ap_courses && s.ap_courses.length > 0) || s.elective_choices)
+    );
+
+    if (unassignedStudents.length > 0) {
+      suggestions.push(`有 ${unassignedStudents.length} 名学生未被分配到选修班`);
+    }
+
+    res.json({ ok: true, data: { suggestions } });
+  } catch (error) {
+    res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
+  }
+});
+
+// API: 规则管理 (必须在通用路由之前)
+app.get('/api/rules', (req, res) => {
+  try { res.json({ ok: true, data: getRules() }); }
+  catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+app.post('/api/rules', (req, res) => {
+  try { const result = applyRules(req.body.rules || []); res.json({ ok: true, data: result }); }
+  catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+app.post('/api/rules/suggest', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ ok: false, errors: [{ msg: '请输入规则描述' }] });
+    if (!global.DEEPSEEK_API_KEY) return res.json({ ok: true, data: { suggestions: [], message: 'API Key未配置' } });
+    const suggestions = await translateRule(text, global.DEEPSEEK_API_KEY);
+    res.json({ ok: true, data: { text, suggestions } });
+  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+app.post('/api/rules/apply', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ ok: false, errors: [{ msg: '请输入规则描述' }] });
+    if (!global.DEEPSEEK_API_KEY) return res.status(503).json({ ok: false, errors: [{ msg: 'API Key未配置' }] });
+    const suggestions = await translateRule(text, global.DEEPSEEK_API_KEY);
+    if (!suggestions.length) return res.json({ ok: false, errors: [{ msg: 'LLM未能解析出规则' }] });
+    res.json({ ok: true, data: { suggestions, applied: applyRules(suggestions) } });
+  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+
+// API: 一键排课+验证 (必须在catch-all前)
+app.post('/api/solve-all', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const root = resolve(__dirname, '../..');
+    let output = '';
+    output += execSync('node ' + root + '/search-all.cjs 2000 10', { timeout: 300000, encoding: 'utf-8' });
+    output += execSync('node ' + root + '/search-all.cjs 3000 11', { timeout: 300000, encoding: 'utf-8' });
+    output += execSync('node ' + root + '/search-all.cjs 3000 12', { timeout: 300000, encoding: 'utf-8' });
+    const state = readState();
+    res.json({ ok: true, data: { output: output.slice(-500), counts: { g10: state.students.filter(s => s.grade === 10).length, g11: state.students.filter(s => s.grade === 11).length, g12: state.students.filter(s => s.grade === 12).length } } });
+  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+app.get('/api/validate-all', (req, res) => {
+  try {
+    const state = readState();
+    const issues = [];
+    [10, 11, 12].forEach(grade => {
+      const gStudents = state.students.filter(s => s.grade === grade);
+      const sample = gStudents[0];
+      if (!sample) { issues.push('高' + grade + ': 无学生'); return; }
+      const daily = [0, 0, 0, 0, 0];
+      state.assignments.filter(a => a.student_id === sample.id).forEach(a => daily[a.slot_id.charAt(1) - 1]++);
+      if (daily.some(d => d !== 10)) issues.push('高' + grade + ': 日课时≠10 (' + daily.join(',') + ')');
+      const ssAM = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'SELF_STUDY' && parseInt(a.slot_id.substring(3)) <= 5).length;
+      if (ssAM > 0) issues.push('高' + grade + ': 上午自习 ' + ssAM + '节');
+      const dutyAt10 = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'DUTY' && a.slot_id === 'D1P10');
+      if (dutyAt10.length === 0 && gStudents.some(s => s.admin_class_id && state.assignments.some(a => a.student_id === s.id && a.course_id === 'DUTY'))) issues.push('高' + grade + ': sample 值日不在D1P10');
+      const meeting = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'MEETING' && a.slot_id !== 'D1P9');
+      if (meeting.length > 0) issues.push('高' + grade + ': 班会不在D1P9');
+    });
+    res.json({ ok: issues.length === 0, data: { issues, pass: issues.length === 0 } });
+  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+
 // API: 获取实体列表
 app.get('/api/:entity', (req, res) => {
   try {
@@ -785,42 +1244,81 @@ app.get('/api/timetable/:by/:id', (req, res) => {
       return res.json({ ok: true, data: { title: '无排课结果', rows: [] } });
     }
 
-    const tasks = state.teaching_tasks || [];
     const assignments = state.assignments;
     const rows = [];
 
-    // 根据维度获取相关任务
-    let relatedTasks = [];
+    // 根据维度获取相关排课
+    let relatedAssignments = [];
     let title = '';
 
     switch (by) {
       case 'student':
-        relatedTasks = tasks.filter(t => t.student_ids.includes(id));
+        // 学生课表：找到该学生所在班级的所有排课
+        const student = state.students.find(s => s.id === id);
+        if (student) {
+          relatedAssignments = assignments.filter(a =>
+            a.class_id === student.teaching_class_id ||
+            a.class_id === student.admin_class_id ||
+            a.class_id === id ||
+            a.task_id?.includes(student.teaching_class_id) ||
+            a.task_id?.includes(student.admin_class_id)
+          );
+        }
         title = `学生 ${id} 的课表`;
         break;
+
       case 'teacher':
-        relatedTasks = tasks.filter(t => t.teacher_id === id);
+        // 教师课表：找到该教师的所有排课
+        relatedAssignments = assignments.filter(a => {
+          const task = state.teaching_tasks?.find(t => t.id === a.task_id);
+          return task?.teacher_id === id;
+        });
+        // 如果没有 teaching_tasks，尝试从 assignments 中直接查找
+        if (relatedAssignments.length === 0) {
+          relatedAssignments = assignments.filter(a =>
+            a.teacher_id === id
+          );
+        }
         title = `教师 ${id} 的课表`;
         break;
+
       case 'class':
-        relatedTasks = tasks.filter(t =>
-          t.source_class_id === id || t.student_ids.some(sId => {
-            const student = state.students.find(s => s.id === sId);
-            return student?.admin_class_id === id || student?.teaching_class_id === id;
-          })
+        // 班级课表：找到该班级学生的所有排课（包括行政班课程）
+        const classStudents = state.students.filter(s =>
+          s.teaching_class_id === id || s.admin_class_id === id
         );
+        const classStudentIds = new Set(classStudents.map(s => s.id));
+
+        // 获取该教学班学生所属的行政班
+        const adminClasses = [...new Set(classStudents.map(s => s.admin_class_id))];
+
+        relatedAssignments = assignments.filter(a => {
+          // 教学班课程
+          if (a.class_id === id || a.task_id?.includes(id)) return true;
+          // 行政班课程（学生也在这个教学班）
+          if (classStudents.some(s => s.admin_class_id === a.class_id)) return true;
+          // 学生个人选修课
+          if (classStudentIds.has(a.class_id)) return true;
+          return false;
+        });
+
+        // 保存行政班信息，用于前端显示
         title = `班级 ${id} 的课表`;
+        // 将行政班信息附加到响应中
+        res.locals = { adminClasses };
         break;
+
       case 'room':
-        relatedTasks = tasks.filter(t =>
-          assignments.some(a => a.task_id === t.id && a.room_id === id)
-        );
+        // 教室课表：找到使用该教室的所有排课
+        relatedAssignments = assignments.filter(a => a.room_id === id);
         title = `教室 ${id} 的课表`;
         break;
+
       case 'all':
-        relatedTasks = tasks;
+        relatedAssignments = assignments;
         title = `${state.meta?.school || '学校'}全部课表`;
         break;
+
       default:
         return res.status(400).json({ ok: false, errors: [{ code: 'INVALID', msg: '无效的维度' }] });
     }
@@ -830,21 +1328,75 @@ app.get('/api/timetable/:by/:id', (req, res) => {
       const row = [`${period}`];
       for (let day = 1; day <= 5; day++) {
         const slotId = `D${day}P${period}`;
-        const assignment = assignments.find(a =>
-          a.slot_id === slotId && relatedTasks.some(t => t.id === a.task_id)
-        );
+        const slotAssignments = relatedAssignments.filter(a => a.slot_id === slotId);
 
-        if (assignment) {
-          const task = tasks.find(t => t.id === assignment.task_id);
-          const course = state.courses.find(c => c.id === task?.course_id);
-          const teacher = state.teachers.find(t => t.id === task?.teacher_id);
-          row.push({
-            task_id: assignment.task_id,
-            course: course?.name || '?',
-            course_type: course?.type || 'required',
-            teacher: teacher?.name || '?',
-            room: assignment.room_id,
-          });
+        if (slotAssignments.length > 0) {
+          // 如果是教学班课表，需要区分不同行政班的课程
+          if (by === 'class' && id.startsWith('TC_')) {
+            // 教学班课表：区分行政班课程
+            const adminClassAssignments = slotAssignments.filter(a => a.class_type === 'admin');
+            const teachingClassAssignments = slotAssignments.filter(a => a.class_type === 'teaching' || a.class_type === 'filler');
+            const electiveAssignments = slotAssignments.filter(a => a.class_type?.startsWith('elective') || a.class_type === 'ap');
+
+            const slotData = {
+              slot_id: slotId,
+              admin_courses: {},
+              teaching_course: null,
+              elective_course: null
+            };
+
+            // 行政班课程（可能有多个）
+            adminClassAssignments.forEach(a => {
+              const course = state.courses.find(c => c.id === a.course_id);
+              const teacher = state.teachers.find(t => t.id === a.teacher_id);
+              slotData.admin_courses[a.class_id] = {
+                course: course?.name || a.course_id || '?',
+                course_type: course?.type || 'required',
+                teacher: teacher?.name || a.teacher_id || '?',
+                room: a.room_id,
+              };
+            });
+
+            // 教学班课程（只有一个）
+            if (teachingClassAssignments.length > 0) {
+              const a = teachingClassAssignments[0];
+              const course = state.courses.find(c => c.id === a.course_id);
+              const teacher = state.teachers.find(t => t.id === a.teacher_id);
+              slotData.teaching_course = {
+                course: course?.name || a.course_id || '?',
+                course_type: course?.type || 'required',
+                teacher: teacher?.name || a.teacher_id || '?',
+                room: a.room_id,
+              };
+            }
+
+            // 选修课（只有一个）
+            if (electiveAssignments.length > 0) {
+              const a = electiveAssignments[0];
+              const course = state.courses.find(c => c.id === a.course_id);
+              const teacher = state.teachers.find(t => t.id === a.teacher_id);
+              slotData.elective_course = {
+                course: course?.name || a.course_id || '?',
+                course_type: course?.type || 'required',
+                teacher: teacher?.name || a.teacher_id || '?',
+                room: a.room_id,
+              };
+            }
+
+            row.push(slotData);
+          } else {
+            // 其他课表：直接显示第一个排课
+            const assignment = slotAssignments[0];
+            const course = state.courses.find(c => c.id === assignment.course_id);
+            const teacher = state.teachers.find(t => t.id === assignment.teacher_id);
+            row.push({
+              task_id: assignment.task_id,
+              course: course?.name || assignment.course_id || '?',
+              course_type: course?.type || 'required',
+              teacher: teacher?.name || assignment.teacher_id || '?',
+              room: assignment.room_id,
+            });
+          }
         } else {
           row.push(null);
         }
@@ -852,7 +1404,14 @@ app.get('/api/timetable/:by/:id', (req, res) => {
       rows.push(row);
     }
 
-    res.json({ ok: true, data: { title, rows } });
+    res.json({
+      ok: true,
+      data: {
+        title,
+        rows,
+        adminClasses: res.locals?.adminClasses || []
+      }
+    });
   } catch (error) {
     res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
   }
@@ -1053,106 +1612,241 @@ app.post('/api/ai/solve', async (req, res) => {
       return res.status(400).json({ ok: false, errors: [{ code: 'INVALID', msg: '请输入排课需求' }] });
     }
 
-    // 第一步：用大模型精确理解用户需求
-    const parsePrompt = `你是一个排课系统的参数解析器。用户会用自然语言描述排课需求，你需要精确理解并转化为结构化的排课参数。
+    // 完整的系统提示词
+    const systemPrompt = `你是一个专业的排课系统 AI 助手。你的任务是帮助用户完成课程安排。
 
-## 课程名称映射
-用户可能会使用中文名称，你需要映射到系统ID：
-${state.courses.map(c => {
-  const nameMap = {
-    'MATH': '数学', 'ENG': '英语', 'PHYS': '物理', 'CHEM': '化学',
-    'BIO': '生物', 'AP_CALC': 'AP微积分', 'AP_PHYS': 'AP物理', 'AP_CHEM': 'AP化学'
-  };
-  return `- ${nameMap[c.id] || c.name} → ${c.id}`;
-}).join('\n')}
+## 学校基本信息
 
-## 教师名称映射
-${state.teachers.map(t => `- ${t.name} → ${t.id}`).join('\n')}
+- 学校名称：示例国际学校
+- 年级：高一、高二、高三（3个年级）
+- 每年级人数：约80人
+- 总人数：约240人
+- 每周课时：50节（5天×10节/天）
+- 课程体系：双轨制（国内必修课程 + AP国际课程）
 
-## 支持的参数类型
+## 班级结构
 
-1. 课程分散（每天最多N节）
-   输入："数学课分散在一周，每天最多1节"
-   输出：{"course_id": "MATH", "type": "spread", "max_per_day": 1}
+### 行政班（固定学生分组）
+- 高一：AC1、AC2（各40人）
+- 高二：AC3、AC4（各40人）
+- 高三：AC5、AC6（各40人）
 
-2. 上午优先
-   输入："物理课安排在上午"
-   输出：{"course_id": "PHYS", "type": "prefer_morning"}
+### 教学班（固定学生分组，用于必修课）
+- 高一：TC_G10_1、TC_G10_2、TC_G10_3（各约27人）
+- 高二：TC_G11_1、TC_G11_2、TC_G11_3（各约27人）
+- 高三：TC_G12_1、TC_G12_2、TC_G12_3（各约27人）
 
-3. 禁排时段
-   输入："周五下午不排课"
-   输出：{"type": "forbidden", "slots": ["D5P6", "D5P7", "D5P8", "D5P9", "D5P10"]}
+## 课程结构
 
-4. 教师禁排
-   输入："张老师周二有事"
-   输出：{"teacher_id": "T_MATH1", "type": "teacher_forbidden", "days": [2]}
+### 高一（50节，全部必修）
+**教学班课程（37节）**：
+- Comprehensive English - 中教L&S: 3节
+- Comprehensive English - 中教R&W: 3节
+- Comprehensive English - 外教L&S&Lit: 4节
+- 英美概况: 2节
+- 中方数学+Pre-Calculus: 6节
+- AP Physics 1+中方物理: 5节
+- 中方化学+Pre-Chemistry: 5节
+- 中方生物+Pre-Biology: 5节
+- 体育: 2节
+- 自习: 2节
 
-5. 走班优先
-   输入："AP课程优先走班时段"
-   输出：{"type": "prefer_walk_blocks", "ap_courses": true}
+**行政班课程（13节）**：
+- 语法: 2节
+- 语文: 2节
+- 历史: 2节
+- 地理: 2节
+- 美术: 1节
+- 升学课堂: 1节
+- 班会: 1节
+- 社团: 2节
 
-6. 连堂需求
-   输入："英语课需要连堂，2-3节"
-   输出：{"course_id": "ENG", "type": "consecutive", "min": 2, "max": 3}
+### 高二（50节，必修+AP选修）
+**教学班课程（18节）**：
+- Comprehensive English: 4节
+- Honor LC (TC1/TC2): 2节 或 AP LC (TC3): 5节
+- TOEFL (TC1/TC2): 3节
+- AP Calculus BC: 5节（AP必修课）
+- Pre AP-Literature and Composition: 2节
+- 中方物理: 2节
 
-7. 日上限
-   输入："每天最多6节课"
-   输出：{"type": "max_per_day", "value": 6}
+**行政班课程（17节）**：
+- 中方数学: 2节
+- 语文: 2节
+- 政治: 2节
+- 体育: 2节
+- 信息技术: 1节
+- 升学课堂: 2节
+- 自习: 2节
+- 班会: 1节
+- 社团: 2节
+- 值日: 1节
 
-## 处理规则
+**AP选修课（15节）**：
+- 学生选3门，每门5节
 
-1. 模糊语言理解：
-   - "不要太集中" → spread, max_per_day: 1
-   - "尽量分散" → spread, max_per_day: 2
-   - "上午好" → prefer_morning
-   - "下午不排" → forbidden (下午时段)
+### 高三（50节，必修+必修选修+AP选修）
+**教学班课程（16节）**：
+- AP Statistics: 5节
+- English Creative Writing: 5节
+- 大学申请自习课: 4节
+- 自习: 2节
 
-2. 组合需求：多个需求用数组返回
-   输入："数学分散，物理上午，周五下午不排"
-   输出：[
-     {"course_id": "MATH", "type": "spread", "max_per_day": 1},
-     {"course_id": "PHYS", "type": "prefer_morning"},
-     {"type": "forbidden", "slots": ["D5P6", "D5P7", "D5P8", "D5P9", "D5P10"]}
-   ]
+**行政班课程（8节）**：
+- 语文: 2节
+- 体育: 2节
+- 班会: 1节
+- 社团: 2节
+- 值日: 1节
 
-3. 时段编号规则：
-   - 周一到周五：D1-D5
-   - 第1-10节：P1-P10
-   - 上午：P1-P5
-   - 下午：P6-P10
-   - 走班时段：D1P6, D1P7, D2P6, D2P7, D3P6, D3P7, D4P6, D4P7, D5P6, D5P7
+**必修选修课（11节）**：
+- A组: 5节（AP Language / AP Literature / Honor英美文学）
+- B组: 4节（线性代数 / 商业 / 力学基础）
+- C组: 2节（日语 / 法语 / 德语）
+
+**AP选修课（15节）**：
+- 学生选3门，每门5节
+
+## 排课约束条件
+
+### 硬约束（不可违反）
+1. **教师不重叠**：同一教师同一时段只能上一门课
+2. **学生不重叠**：同一学生同一时段只能上一门课
+3. **教室不重叠**：同一教室同一时段只能有一门课
+4. **教室容量**：每个班的学生数 ≤ 教室容量
+5. **课时排满**：每门课必须排满规定的周课时
+6. **教师日上限**：每位教师每天上课节数有上限（默认8节）
+
+### 软约束（优化目标）
+1. **优先上午**：主要学术课程优先排在上午（第1-5节）
+2. **连堂课**：实验课等需要连续两节，优先排相邻时段
+3. **AP优先走班时段**：AP课程优先排在走班时段（下午第6-7节）
+4. **课表分散均衡**：同一课程在一周内尽量不连续排
+
+## 走班时段
+
+走班时段是专门为AP选修课预留的时间窗口：
+- 周一第6-7节（14:00-15:30）
+- 周二第6-7节
+- 周三第6-7节
+- 周四第6-7节
+- 周五第6-7节
+
+共5天×2节=10个走班时段/周。
+
+## 当前数据状态
+
+### 教师列表
+${state.teachers.map(t => `- ${t.id}: ${t.name}（可教课程: ${t.can_teach.join(', ')}）`).join('\n')}
+
+### 课程列表
+${state.courses.map(c => `- ${c.id}: ${c.name}（${c.type === 'ap' ? 'AP选修' : c.type === 'required_elective' ? '必修选修' : '必修'}，${c.weekly_hours}节/周）`).join('\n')}
+
+### 教室列表
+${state.rooms.map(r => `- ${r.id}: ${r.name}（${r.type}，容量${r.capacity}）`).join('\n')}
+
+### 学生选课情况
+- 高二学生AP选课：${state.students.filter(s => s.grade === 11 && s.ap_courses?.length > 0).length}人
+- 高三学生AP选课：${state.students.filter(s => s.grade === 12 && s.ap_courses?.length > 0).length}人
+- 高三学生必修选修课选择：${state.students.filter(s => s.grade === 12 && s.elective_choices).length}人
 
 ## 输出要求
 
-只输出JSON数组，不要有任何其他文字、解释或markdown格式。`;
+当用户要求排课时，你需要：
+1. 分析用户的指令，确定需要排哪些课程
+2. 生成完整的排课方案
+3. 输出可执行的排课命令
 
-    const parseResponse = await callDeepSeek([
-      { role: 'system', content: parsePrompt },
+排课命令格式：
+\`\`\`json
+{
+  "action": "schedule",
+  "grade": "10",
+  "tasks": [
+    {
+      "task_id": "TASK_XXX",
+      "course_id": "ENG_LS",
+      "class_id": "TC_G10_1",
+      "class_type": "teaching",
+      "weekly_hours": 3,
+      "assignments": [
+        {"slot_id": "D1P1", "room_id": "R1"},
+        {"slot_id": "D2P1", "room_id": "R1"},
+        {"slot_id": "D3P1", "room_id": "R1"}
+      ]
+    }
+  ],
+  "summary": {
+    "total_tasks": 18,
+    "total_hours": 50,
+    "conflicts": 0
+  }
+}
+\`\`\`
+
+## 注意事项
+
+1. 每个学生每天必须上满10节课
+2. 每个学生每周必须上满50节课
+3. 行政班课程在固定教室上课
+4. 教学班课程在固定教室上课
+5. AP选修课需要分配教室（按课程类型匹配）
+6. 必修选修课需要分配教室
+7. 无教师课程（班会、社团、自习等）不需要分配教师
+`;
+
+    // 调用 AI 生成排课方案
+    const response = await callDeepSeek([
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: text }
-    ], { temperature: 0.3 });
+    ], { temperature: 0.7 });
 
-    // 解析参数
-    let constraints = [];
+    // 解析响应
+    let result;
     try {
-      const jsonMatch = parseResponse.match(/\[[\s\S]*\]/);
-      constraints = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      // 尝试解析 JSON
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        result = JSON.parse(jsonMatch[0]);
+      } else {
+        // 如果不是 JSON，返回文本响应
+        result = {
+          action: 'text',
+          message: response
+        };
+      }
     } catch (e) {
-      console.error('参数解析失败:', parseResponse);
-      constraints = [];
+      result = {
+        action: 'text',
+        message: response
+      };
     }
 
-    // 第二步：根据参数生成多个最优解
-    const solutions = await generateMultipleSolutions(state, constraints);
+    // 如果是排课命令，执行排课
+    if (result.action === 'schedule' && result.tasks) {
+      // 保存排课结果
+      state.scheduled_tasks = result.tasks;
+      writeState(state);
 
-    res.json({
-      ok: true,
-      data: {
-        user_input: text,
-        parsed_constraints: constraints,
-        solutions: solutions,
-        total_solutions: solutions.length
-      }
-    });
+      res.json({
+        ok: true,
+        data: {
+          user_input: text,
+          ai_response: result,
+          message: `已生成 ${result.tasks.length} 个教学任务的排课方案`,
+          summary: result.summary
+        }
+      });
+    } else {
+      res.json({
+        ok: true,
+        data: {
+          user_input: text,
+          ai_response: result,
+          message: result.message || '请提供更具体的排课需求'
+        }
+      });
+    }
   } catch (error) {
     console.error('AI 求解失败:', error);
     res.status(500).json({ ok: false, errors: [{ code: 'ERROR', msg: error.message }] });
@@ -2307,6 +3001,43 @@ function getTypeName(type) {
   };
   return names[type] || type;
 }
+
+// API: 一键排课(所有年级)
+app.post('/api/solve-all', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const result = execSync('node ' + resolve(__dirname, '../../search-all.cjs') + ' 3000 10 && node ' + resolve(__dirname, '../../search-all.cjs') + ' 5000 11 && node ' + resolve(__dirname, '../../search-all.cjs') + ' 5000 12', { timeout: 600000, encoding: 'utf-8' });
+    // Reload state after scheduling
+    const state = readState();
+    res.json({ ok: true, data: { result, summary: { g10: state.students.filter(s=>s.grade===10).length, g11: state.students.filter(s=>s.grade===11).length, g12: state.students.filter(s=>s.grade===12).length } } });
+  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
+
+// API: 验证当前课表
+app.get('/api/validate-all', (req, res) => {
+  try {
+    const state = readState();
+    const issues = [];
+    [10,11,12].forEach(grade => {
+      const gStudents = state.students.filter(s => s.grade === grade);
+      const sample = gStudents[0];
+      if (!sample) return;
+      // Check daily
+      const daily = [0,0,0,0,0];
+      state.assignments.filter(a => a.student_id === sample.id).forEach(a => daily[a.slot_id.charAt(1)-1]++);
+      if (daily.some(d => d !== 10)) issues.push(`高${grade} sample daily≠10: ${daily.join(',')}`);
+      // Check self-study position
+      const ssAM = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'SELF_STUDY' && parseInt(a.slot_id.substring(3)) <= 5).length;
+      if (ssAM > 0) issues.push(`高${grade} sample 上午自习: ${ssAM}`);
+      // Check duty/meeting position
+      const duty = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'DUTY');
+      if (duty.length > 0 && !duty.every(a => a.slot_id === 'D1P10')) issues.push(`高${grade} 值日不在D1P10`);
+      const meeting = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'MEETING');
+      if (meeting.length > 0 && !meeting.every(a => a.slot_id === 'D1P9')) issues.push(`高${grade} 班会不在D1P9`);
+    });
+    res.json({ ok: issues.length === 0, data: { issues, count: issues.length } });
+  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
+});
 
 // 启动服务器
 const PORT = process.env.PORT || 3001;

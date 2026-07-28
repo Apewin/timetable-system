@@ -17,11 +17,11 @@ function checkHardConstraints(state: TimetableState): HardViolation[] {
   const assignments = state.assignments || [];
   const taskMap = new Map(tasks.map(t => [t.id, t]));
 
-  // H1: 老师不重叠
+  // H1: 老师不重叠（跳过无教师课程）
   const teacherSlotMap = new Map<string, Map<string, string[]>>();
   assignments.forEach(a => {
     const task = taskMap.get(a.task_id);
-    if (!task) return;
+    if (!task || !task.teacher_id) return;  // 跳过无教师课程
     if (!teacherSlotMap.has(task.teacher_id)) teacherSlotMap.set(task.teacher_id, new Map());
     const slotMap = teacherSlotMap.get(task.teacher_id)!;
     if (!slotMap.has(a.slot_id)) slotMap.set(a.slot_id, []);
@@ -98,11 +98,11 @@ function checkHardConstraints(state: TimetableState): HardViolation[] {
     }
   });
 
-  // H8: 教师日上限
+  // H8: 教师日上限（跳过无教师课程）
   const teacherDayCount = new Map<string, Map<number, number>>();
   assignments.forEach(a => {
     const task = taskMap.get(a.task_id);
-    if (!task) return;
+    if (!task || !task.teacher_id) return;  // 跳过无教师课程
     const day = parseInt(a.slot_id.substring(1, 2));
     if (!teacherDayCount.has(task.teacher_id)) teacherDayCount.set(task.teacher_id, new Map());
     const dayMap = teacherDayCount.get(task.teacher_id)!;

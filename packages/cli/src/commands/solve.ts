@@ -36,14 +36,15 @@ export const solveSectionsCmd = defineCommand({
       }
 
       const result = solveSections(state, {
-        seed: args.seed ? Number(args.seed) : undefined,
-        candidates: Number(args.candidates) || 1,
+        max_students_per_section: 30,
+        balance_sections: true,
       });
 
       // 更新状态
       const newState = {
         ...state,
         ap_sections: result.ap_sections,
+        elective_sections: result.elective_sections,
         teaching_tasks: [
           ...(state.teaching_tasks?.filter(t => t.source === "required") || []),
           ...result.teaching_tasks,
@@ -54,24 +55,19 @@ export const solveSectionsCmd = defineCommand({
       if (args.json) {
         jsonOutput({
           ap_sections: result.ap_sections,
-          color_number: result.color_number,
-          walk_slot_count: result.walk_slot_count,
-          overflow_expected: result.overflow_expected,
+          elective_sections: result.elective_sections,
+          statistics: result.statistics,
           tasks_generated: result.teaching_tasks.length,
         });
       } else {
-        console.log(chalk.green("✓ AP分班完成"));
-        console.log(`  生成 ${result.ap_sections.length} 个AP教学班`);
-        console.log(`  冲突图色数: ${result.color_number}`);
-        console.log(`  走班时段数: ${result.walk_slot_count}`);
-        console.log(`  预计溢出: ${result.overflow_expected ? "是" : "否"}`);
-
-        if (result.overflow_expected) {
-          console.log(chalk.yellow("\n⚠ 警告: 冲突图色数超过走班时段数，部分AP课可能需要排到普通时段"));
-        }
+        console.log(chalk.green("✓ 分班完成"));
+        console.log(`  AP选修班: ${result.ap_sections.length}`);
+        console.log(`  必修选修班: ${result.elective_sections.length}`);
+        console.log(`  总班级数: ${result.statistics.total_sections}`);
+        console.log(`  总教学任务: ${result.statistics.total_tasks}`);
       }
 
-      process.exit(result.overflow_expected ? 1 : 0);
+      process.exit(0);
     } catch (error: any) {
       if (args.json) jsonOutput(null, false, [{ code: "SOLVE_ERROR", msg: error.message }]);
       else console.error(chalk.red(`错误: ${error.message}`));
@@ -174,13 +170,16 @@ export const solveCmd = defineCommand({
 
       // 第一阶段：分班
       let sectionResult = null;
-      if (state.ap_selections.length > 0) {
+      if (state.students.some(s => s.ap_courses && s.ap_courses.length > 0) ||
+          state.students.some(s => s.elective_choices)) {
         sectionResult = solveSections(state, {
-          seed: args.seed ? Number(args.seed) : undefined,
+          max_students_per_section: 30,
+          balance_sections: true,
         });
 
         // 更新状态
         state.ap_sections = sectionResult.ap_sections;
+        (state as any).elective_sections = sectionResult.elective_sections;
         state.teaching_tasks = [
           ...(state.teaching_tasks?.filter(t => t.source === "required") || []),
           ...sectionResult.teaching_tasks,
@@ -207,9 +206,8 @@ export const solveCmd = defineCommand({
         jsonOutput({
           sections: sectionResult ? {
             ap_sections: sectionResult.ap_sections.length,
-            color_number: sectionResult.color_number,
-            walk_slot_count: sectionResult.walk_slot_count,
-            overflow_expected: sectionResult.overflow_expected,
+            elective_sections: sectionResult.elective_sections.length,
+            total_sections: sectionResult.statistics.total_sections,
           } : null,
           timetable: {
             ok: timetableResult.ok,
@@ -221,10 +219,10 @@ export const solveCmd = defineCommand({
       } else {
         console.log(chalk.bold("求解结果"));
         if (sectionResult) {
-          console.log(chalk.green("\n✓ AP分班完成"));
-          console.log(`  AP教学班: ${sectionResult.ap_sections.length}`);
-          console.log(`  冲突图色数: ${sectionResult.color_number}`);
-          console.log(`  走班时段数: ${sectionResult.walk_slot_count}`);
+          console.log(chalk.green("\n✓ 分班完成"));
+          console.log(`  AP选修班: ${sectionResult.ap_sections.length}`);
+          console.log(`  必修选修班: ${sectionResult.elective_sections.length}`);
+          console.log(`  总班级数: ${sectionResult.statistics.total_sections}`);
         }
 
         console.log(timetableResult.ok

@@ -25,7 +25,7 @@ export const teacherSchema = z.object({
 export const courseSchema = z.object({
   id: entityIdSchema,
   name: z.string().min(1),
-  type: z.enum(["required", "ap"]),
+  type: z.enum(["required", "required_elective", "ap", "other"]),
   required_room_type: roomTypeSchema.optional(),
   weekly_hours: z.number().int().positive(),
   prefer_morning: z.boolean().optional(),
@@ -33,6 +33,9 @@ export const courseSchema = z.object({
     min: z.number().int().positive(),
     max: z.number().int().positive(),
   }).optional(),
+  elective_group: z.enum(["A", "B", "C"]).optional(),
+  section_count: z.number().int().positive().optional(),
+  no_teacher: z.boolean().optional(),
 });
 
 // 教室
@@ -51,6 +54,12 @@ export const studentSchema = z.object({
   grade: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   admin_class_id: entityIdSchema,
   teaching_class_id: entityIdSchema,
+  elective_choices: z.object({
+    group_a: entityIdSchema.optional(),
+    group_b: entityIdSchema.optional(),
+    group_c: entityIdSchema.optional(),
+  }).optional(),
+  ap_courses: z.array(entityIdSchema).optional(),
 });
 
 // 行政班
@@ -100,15 +109,18 @@ export const apSectionSchema = z.object({
 // 教学任务
 export const teachingTaskSchema = z.object({
   id: entityIdSchema,
-  source: z.enum(["required", "ap"]),
+  source: z.enum(["required", "required_elective", "ap", "other"]),
   course_id: entityIdSchema,
-  teacher_id: entityIdSchema,
+  teacher_id: entityIdSchema.nullable(),  // null表示无教师
   student_ids: z.array(entityIdSchema),
   weekly_hours: z.number().int().positive(),
   room_policy: z.enum(["pinned", "assign"]),
   room_id: entityIdSchema.optional(),
   source_class_id: entityIdSchema.optional(),
   source_section_id: entityIdSchema.optional(),
+  target_teaching_classes: z.array(entityIdSchema).optional(),
+  elective_group: z.enum(["A", "B", "C"]).optional(),
+  section_index: z.number().int().optional(),
 });
 
 // 时段
