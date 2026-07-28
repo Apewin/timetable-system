@@ -222,18 +222,18 @@ function validate(state) {
     const ssTotal = gAs.filter(a => a.course_id === 'SELF_STUDY').length;
     console.log('  早上自习: ' + ssAM + ' / 总自习: ' + ssTotal);
 
-    // Teacher conflicts: same teacher, same slot, DIFFERENT course or DIFFERENT class
+    // Teacher conflicts: same teacher, same slot, DIFFERENT course (same course to multiple students = batch teaching, OK)
     const teacherSlotMap = {};
     gAs.forEach(a => {
       if (!a.teacher_id) return;
       const key = a.teacher_id + '@' + a.slot_id;
       if (!teacherSlotMap[key]) teacherSlotMap[key] = new Set();
-      teacherSlotMap[key].add(a.course_id + '|' + a.class_id);
+      teacherSlotMap[key].add(a.course_id); // only track course, not class_id (batch teaching is fine)
     });
     const conflicts = Object.entries(teacherSlotMap).filter(([, courses]) => courses.size > 1);
     if (conflicts.length > 0) {
-      console.log('  ❌ 教师冲突: ' + conflicts.length + ' 处 (同时段不同课程/班级)');
-      conflicts.slice(0, 3).forEach(([k, c]) => console.log('    ' + k + ': ' + [...c].join(', ')));
+      console.log('  ❌ 教师冲突: ' + conflicts.length + ' 处 (同时段不同课程)');
+      conflicts.slice(0, 5).forEach(([k, c]) => console.log('    ' + k + ': ' + [...c].join(', ')));
     } else {
       console.log('  ✅ 教师无冲突');
     }
