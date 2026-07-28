@@ -5,6 +5,7 @@ const fs = require('fs');
 const { SchedulingEngine } = require('./packages/core/src/engine.cjs');
 const { G11Engine } = require('./packages/core/src/g11-engine.cjs');
 const { G12Engine } = require('./packages/core/src/g12-engine.cjs');
+const { SoftOptimizer } = require('./packages/core/src/solver/soft-optimizer.cjs');
 
 const RULES_PATH = '/Users/apewin/Desktop/排课系统/rules.json';
 const DATA_PATH = '/Users/apewin/Desktop/排课系统/timetable.json';
@@ -70,4 +71,13 @@ state.assignments = allA;
 state.meta = state.meta || {};
 state.meta.updated_at = new Date().toISOString();
 fs.writeFileSync(DATA_PATH, JSON.stringify(state, null, 2), 'utf-8');
+
+// Soft optimization: eliminate morning self-study + reduce consecutive same-slot
+const optResult = SoftOptimizer.optimize(allA, state.students);
+if (optResult.swaps > 0) {
+  state.assignments = allA;
+  fs.writeFileSync(DATA_PATH, JSON.stringify(state, null, 2), 'utf-8');
+  console.log('  🔧 Soft optimizer: ' + optResult.swaps + ' swaps');
+}
+
 console.log('\n✅ Written to ' + DATA_PATH);
