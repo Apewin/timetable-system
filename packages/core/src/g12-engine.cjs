@@ -91,14 +91,14 @@ class G12Engine {
           if (secStu.some(s => A.some(x => x.student_id===s.id && x.slot_id===sid))) continue;
           if (A.some(x => x.teacher_id===cfg.teacher && x.slot_id===sid)) continue;
           if (this.teacherBusy(cfg.teacher, sid)) continue;
-          this._add(secStu, cid, sid, cid+'_S'+(secIdx+1), 'ap', 'R8', cfg.teacher, A); as++;
+          this._add(secStu, cid, sid, cid+'_S'+(secIdx+1), 'ap', 'R8', cfg.teacher, A); as++; break;
         }
         for (let d = 1; d <= 5 && as < 5; d++) for (const p of [1,2,3,4,5,8,9,10,6,7]) {
           if (as >= 5) break; const sid = 'D'+d+'P'+p;
           if (A.some(x => x.teacher_id===cfg.teacher && x.slot_id===sid)) continue;
           if (this.teacherBusy(cfg.teacher, sid)) continue;
           secStu.forEach(s => { const i = A.findIndex(x => x.student_id===s.id && x.slot_id===sid && x.class_type!=='admin'); if (i>=0) A.splice(i,1); });
-          this._add(secStu, cid, sid, cid+'_S'+(secIdx+1), 'ap', 'R8', cfg.teacher, A); as++;
+          this._add(secStu, cid, sid, cid+'_S'+(secIdx+1), 'ap', 'R8', cfg.teacher, A); as++; break;
         }
       });
     });
@@ -106,10 +106,10 @@ class G12Engine {
     // Elective assignment handled by batchAssign below (all sections share slots)
 
     // === NUCLEAR REBUILD ===
-    // Step 0: clear ALL non-admin for ALL students
+    // Step 0: clear only teaching + SELF_STUDY (preserve AP batch + elective batch assignments)
     this.students.forEach(stu => {
       const toRemove = [];
-      A.forEach((a, i) => { if (a.student_id === stu.id && a.class_type !== 'admin') toRemove.push(i); });
+      A.forEach((a, i) => { if (a.student_id === stu.id && (a.class_type === 'teaching' || a.class_type === 'filler' || (a.course_id === 'SELF_STUDY' && a.class_type !== 'admin'))) toRemove.push(i); });
       toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
     });
 
@@ -121,23 +121,32 @@ class G12Engine {
     };
     const batchAssign = (groupCourses, hrs, groupKey) => {
       const sections = groupCourses.map(c => this.students.filter(s => (s.elective_choices||{})[groupKey] === c));
+      const placedDays = new Set(); // track which days already have this group
       for (let assigned = 0; assigned < hrs; ) {
         let placed = false;
+        // Distribute across days: try each day before repeating
         for (let d = 1; d <= 5 && !placed; d++) {
+          if (placedDays.has(d)) continue; // prefer new days first
           for (const p of [1,2,3,4,5,6,7,8,9,10]) {
             if (placed) break;
             const sid = 'D'+d+'P'+p;
-            // All students in all sections must be free
             if (sections.some(sec => sec.some(s => A.some(a => a.student_id===s.id && a.slot_id===sid)))) continue;
-            // All teachers must be free
             if (groupCourses.some(c => A.some(a => a.teacher_id===eTeachers[c] && a.slot_id===sid))) continue;
-            // Assign all sections at this slot
-            groupCourses.forEach((c, i) => {
-              sections[i].forEach(s => {
-                this._add([s], c, sid, s.id, 'elective', 'R8', eTeachers[c], A);
-              });
-            });
-            assigned++; placed = true;
+            groupCourses.forEach((c, i) => { sections[i].forEach(s => { this._add([s], c, sid, s.id, 'elective', 'R8', eTeachers[c], A); }); });
+            assigned++; placed = true; placedDays.add(d);
+          }
+        }
+        // If all days used, allow repeat days
+        if (!placed) {
+          for (let d = 1; d <= 5 && !placed; d++) {
+            for (const p of [1,2,3,4,5,6,7,8,9,10]) {
+              if (placed) break;
+              const sid = 'D'+d+'P'+p;
+              if (sections.some(sec => sec.some(s => A.some(a => a.student_id===s.id && a.slot_id===sid)))) continue;
+              if (groupCourses.some(c => A.some(a => a.teacher_id===eTeachers[c] && a.slot_id===sid))) continue;
+              groupCourses.forEach((c, i) => { sections[i].forEach(s => { this._add([s], c, sid, s.id, 'elective', 'R8', eTeachers[c], A); }); });
+              assigned++; placed = true;
+            }
           }
         }
         if (!placed) break;
@@ -150,17 +159,14 @@ class G12Engine {
     // Step 2: per-student rebuild for teaching + AP + SELF_STUDY
     this.students.forEach(stu => {
       const room = stu.admin_class_id === 'AC5' ? 'R9' : 'R10';
-      const adminOccupied = new Set(
-        A.filter(a => a.student_id === stu.id && a.class_type === 'admin').map(a => a.slot_id)
+      // Block ALL existing non-teaching slots: admin + AP + elective
+      const occupied = new Set(
+        A.filter(a => a.student_id === stu.id).map(a => a.slot_id)
       );
-      const electiveOccupied = new Set(
-        A.filter(a => a.student_id === stu.id && a.class_type === 'elective').map(a => a.slot_id)
-      );
-      const occupied = new Set([...adminOccupied, ...electiveOccupied]);
 
       const courses = [];
+      // Only rebuild teaching + SELF_STUDY (AP and electives preserved from batch assignment)
       courses.push(['AP_STAT',5,'T_JAIME'],['ENG_CW',5,'T_LUKE'],['COLLEGE_APP',4,null]);
-      (stu.ap_courses || []).forEach(c => courses.push([c, 5, null]));
       courses.push(['SELF_STUDY', 2, null]);
 
       courses.forEach(([cid, hrs, tid]) => {
@@ -181,17 +187,15 @@ class G12Engine {
             occupied.add(sid); dayCount[d]++; added++; break;
           }
         }
-        // Pass 2: relaxed, ≤5hr can have 2/day
+        // Pass 2: only for >5hr courses (second period on same day, consecutive)
         for (let d = 1; d <= 5 && added < hrs; d++) {
           for (const p of [1,2,3,4,5,6,7,8,9,10]) {
             if (added >= hrs) break;
             const sid = 'D'+d+'P'+p;
             if (occupied.has(sid)) continue;
-            if (dayCount[d] >= 2) continue;
-            if (hrs > 5) {
-              const ep = [...occupied].find(s => s.startsWith('D'+d) && A.some(a => a.student_id===stu.id && a.slot_id===s && a.course_id===cid));
-              if (ep && Math.abs(p - parseInt(ep.substring(3))) !== 1) continue;
-            }
+            if (hrs <= 5 || dayCount[d] >= 2) continue;
+            const ep = [...occupied].find(s => s.startsWith('D'+d) && A.some(a => a.student_id===stu.id && a.slot_id===s && a.course_id===cid));
+            if (ep && Math.abs(p - parseInt(ep.substring(3))) !== 1) continue;
             this._add([stu], cid, sid, stu.id, 'teaching', room, tid, A);
             occupied.add(sid); dayCount[d]++; added++; break;
           }

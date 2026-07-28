@@ -195,25 +195,21 @@ class G11Engine {
     this.students.forEach(stu => {
       const room = stu.admin_class_id === 'AC3' ? 'R5' : 'R6';
       const tcId = stu.teaching_class_id;
-      // 1. Save admin entries (they're correct by construction)
-      const adminEntries = A.filter(a => a.student_id === stu.id && a.class_type === 'admin');
-      // 2. Remove ALL non-admin entries for this student
+      // 1. Save admin + AP entries (batch-assigned, correct by construction)
+      const keepEntries = A.filter(a => a.student_id === stu.id && (a.class_type === 'admin' || a.class_type === 'ap'));
+      // 2. Remove only teaching + filler (preserve AP batch + admin)
       const toRemove = [];
-      A.forEach((a, i) => { if (a.student_id === stu.id && a.class_type !== 'admin') toRemove.push(i); });
+      A.forEach((a, i) => { if (a.student_id === stu.id && (a.class_type === 'teaching' || a.class_type === 'filler' || (a.course_id === 'SELF_STUDY' && a.class_type !== 'admin'))) toRemove.push(i); });
       toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
-      // 3. Build course list
+      // 3. Rebuild only teaching courses (AP already placed by batch)
       const courses = [];
-      // Teaching courses
       if (tcId === 'TC_G11_3') {
         courses.push(['ENG_COMP',4,'T_YULIN'],['AP_CALC_BC',5,'T_WANGLILI'],['PRE_AP_LIT',2,'T_RACHEL'],['PHYS_CN',2,'T_BAIRUSHUANG'],['AP_LC',5,'T_HANPENG']);
       } else {
         courses.push(['ENG_COMP',4,'T_YULIN'],['AP_CALC_BC',5,'T_WANGLILI'],['PRE_AP_LIT',2,'T_RACHEL'],['PHYS_CN',2,'T_BAIRUSHUANG'],['TOEFL',3,'T_WEIWEI'],['HONOR_LC',2,'T_LUKE']);
       }
-      // AP courses
-      (stu.ap_courses || []).filter(c => c !== 'AP_CALC_BC').forEach(c => courses.push([c, 5, null]));
-      // SELF_STUDY already included in admin pairs (SELF_STUDY), skip
-      // 4. Re-add all courses using admin entries as blockers
-      const occupied = new Set(adminEntries.map(a => a.slot_id));
+      // 4. Re-add using ALL existing entries as blockers (admin+AP preserved from batch)
+      const occupied = new Set(A.filter(a => a.student_id === stu.id).map(a => a.slot_id));
       courses.forEach(([cid, hrs, tid]) => {
         let added = 0;
         const dayCount = [0,0,0,0,0,0];
@@ -236,11 +232,9 @@ class G11Engine {
             if (added >= hrs) break;
             const sid = 'D'+d+'P'+p;
             if (occupied.has(sid)) continue;
-            if (dayCount[d] >= 2) continue;
-            if (hrs > 5) {
-              const ep = [...occupied].find(s => s.startsWith('D'+d) && A.some(a => a.student_id===stu.id && a.slot_id===s && a.course_id===cid));
-              if (ep && Math.abs(p - parseInt(ep.substring(3))) !== 1) continue;
-            }
+            if (hrs <= 5 || dayCount[d] >= 2) continue;
+            const ep = [...occupied].find(s => s.startsWith('D'+d) && A.some(a => a.student_id===stu.id && a.slot_id===s && a.course_id===cid));
+            if (ep && Math.abs(p - parseInt(ep.substring(3))) !== 1) continue;
             this._add([stu], cid, sid, stu.id, 'teaching', room, tid, A);
             occupied.add(sid); dayCount[d]++; added++; break;
           }
