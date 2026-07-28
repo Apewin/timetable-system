@@ -22,7 +22,7 @@ class SchedulingEngine{
       const blocked=new Set();stu.forEach(s=>{A.filter(a=>a.student_id===s.id).forEach(a=>blocked.add(a.slot_id))});
       const allSlots=[];for(let d=1;d<=5;d++)for(let p=1;p<=10;p++){const sid='D'+d+'P'+p;if(!blocked.has(sid))allSlots.push(sid)}
       const solver=new Logic.Solver();const varMap=[];
-      for(const[cid,hrs,tid]of courses){for(let h=0;h<hrs;h++){const sv={};for(const sid of allSlots){if(tid&&A.some(x=>x.teacher_id===tid&&x.slot_id===sid&&!stu.some(s=>s.id===x.student_id)))continue;sv[sid]=`${cid}_${h}_${sid}`}varMap.push({cid,h,slotVars:sv});solver.require(Logic.exactlyOne(Object.values(sv)))}}
+      for(const[cid,hrs,tid]of courses){for(let h=0;h<hrs;h++){const sv={};const slots=cid==='SELF_STUDY'?allSlots.filter(sid=>parseInt(sid.substring(3))>=6):allSlots;for(const sid of slots){if(tid&&A.some(x=>x.teacher_id===tid&&x.slot_id===sid&&!stu.some(s=>s.id===x.student_id)))continue;sv[sid]=`${cid}_${h}_${sid}`}varMap.push({cid,h,slotVars:sv});solver.require(Logic.exactlyOne(Object.values(sv)))}}
       // Per-slot: at most 1 course per slot (no student overlap)
       for(const sid of allSlots){const sv=[];for(const vm of varMap){const vname=vm.slotVars[sid];if(vname)sv.push(vname)}if(sv.length>1)solver.require(Logic.atMostOne(sv))}
       // Distribution: ≤5hr max 1/day
