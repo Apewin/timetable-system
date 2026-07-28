@@ -11,7 +11,7 @@ class PostChecker {
     const A = state.assignments;
     const students = state.students;
     const violations = [];
-    const stats = { studentsChecked: 0, coursesChecked: 0, distributionViolations: 0, hourViolations: 0, dailyViolations: 0, duplicateViolations: 0, teacherConflicts: 0 };
+    const stats = { studentsChecked: 0, coursesChecked: 0, distributionViolations: 0, hourViolations: 0, dailyViolations: 0, duplicateViolations: 0, teacherConflicts: 0, emptySlotViolations: 0, consecutiveSameViolations: 0 };
 
     // Per-grade course specs
     const specs = PostChecker._getSpecs();
@@ -99,7 +99,49 @@ class PostChecker {
       });
     }
 
-    // 5. Teacher conflicts (same teacher, same slot, DIFFERENT course)
+    // 5. Empty slots (空堂): any student with unfilled periods
+    students.forEach(stu => {
+      const daily = [0,0,0,0,0];
+      (A.filter(a => a.student_id === stu.id)).forEach(a => daily[parseInt(a.slot_id.charAt(1))-1]++);
+      for (let d = 0; d < 5; d++) {
+        if (daily[d] < 10) {
+          violations.push('G' + stu.grade + ' ' + stu.id + ': D' + (d+1) + ' has ' + daily[d] + ' slots (empty=' + (10-daily[d]) + ')');
+          stats.emptySlotViolations++;
+        }
+      }
+    });
+
+    // 6. Consecutive same slot (连续同槽): same course at same period on consecutive days
+    students.forEach(stu => {
+      const slotMap = {}; // course_id → Set of day-period keys
+      A.filter(a => a.student_id === stu.id).forEach(a => {
+        if (!slotMap[a.course_id]) slotMap[a.course_id] = new Set();
+        slotMap[a.course_id].add(a.slot_id); // e.g. "D1P3"
+      });
+      Object.entries(slotMap).forEach(([cid, slots]) => {
+        if (cid === 'SELF_STUDY') return; // ignore self-study
+        const byPeriod = {}; // period → Set of days
+        slots.forEach(s => {
+          const d = parseInt(s.charAt(1));
+          const p = parseInt(s.substring(3));
+          if (!byPeriod[p]) byPeriod[p] = new Set();
+          byPeriod[p].add(d);
+        });
+        Object.entries(byPeriod).forEach(([p, days]) => {
+          const sorted = [...days].sort((a,b) => a-b);
+          let consecutive = 0;
+          for (let i = 1; i < sorted.length; i++) {
+            if (sorted[i] === sorted[i-1] + 1) consecutive++;
+          }
+          if (consecutive >= 2 && sorted.length >= 3) {
+            violations.push('G' + stu.grade + ' ' + stu.id + ': ' + cid + ' at P' + p + ' on ' + consecutive + '+ consecutive days (D' + sorted.join(',D') + ')');
+            stats.consecutiveSameViolations++;
+          }
+        });
+      });
+    });
+
+    // 7. Teacher conflicts (same teacher, same slot, DIFFERENT course)
     const tMap = {};
     A.forEach(a => {
       if (!a.teacher_id) return;
@@ -132,8 +174,10 @@ class PostChecker {
     console.log('\n❌ 发现 ' + result.violations.length + ' 个违规:');
     console.log('  分布违规: ' + result.stats.distributionViolations);
     console.log('  课时违规: ' + result.stats.hourViolations);
+    console.log('  空堂: ' + result.stats.emptySlotViolations);
     console.log('  每日课时: ' + result.stats.dailyViolations);
     console.log('  重复时段: ' + result.stats.duplicateViolations);
+    console.log('  连续同槽: ' + result.stats.consecutiveSameViolations);
     console.log('  教师冲突: ' + result.stats.teacherConflicts);
 
     // Show first 20 violations grouped by type
