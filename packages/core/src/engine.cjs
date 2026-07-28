@@ -54,22 +54,20 @@ class SchedulingEngine {
       this._add(this.ac2, p.ac2, slot, 'AC2', 'admin', 'R2', adminT[p.ac2], A);
     });
 
-    // Teaching
-    (this.rules.course_priority?.order || Object.keys(courseHrs)).forEach(cid => {
-      const hrs = courseHrs[cid], tid = courseTeacher[cid];
-      const fb = this.teacherRestrictions[tid] ? [...this.teacherRestrictions[tid]] : [];
-      const periods = [1, 2, 3, 4, 5, 8, 9, 10, 6, 7].filter(p => !fb.includes(p));
+    // Teaching — use DistributedPlacer for constraint-aware placement
+    const { DistributedPlacer } = require('./solver/distributed-placer.cjs');
+    for (let ti = 0; ti < 3; ti++) {
+      const stu = this.tcS[ti], tcId = this.tcI[ti], room = this.tcR[ti];
+      // Build blocked slots from admin entries for all TC students
+      const blocked = new Set();
+      stu.forEach(s => { A.filter(a => a.student_id === s.id && a.class_type === 'admin').forEach(a => blocked.add(a.slot_id)); });
 
-      for (let ti = 0; ti < 3; ti++) {
-        const stu = this.tcS[ti]; let as = 0;
-        for (let d = 1; d <= 5 && as < Math.min(hrs, 5); d++) {
-          const p = periods[(as + ti * 2) % periods.length];
-          const sid = 'D' + d + 'P' + p;
-          if (!stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid)) && !(tid && A.some(x => x.teacher_id === tid && x.slot_id === sid))) { this._add(stu, cid, sid, this.tcI[ti], 'teaching', this.tcR[ti], tid, A); as++; }
-        }
-        for (let d = 1; d <= 5 && as < hrs; d++) for (const p of periods) { if (as >= hrs) break; const sid = 'D' + d + 'P' + p; if (stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid))) continue; if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid)) continue; this._add(stu, cid, sid, this.tcI[ti], 'teaching', this.tcR[ti], tid, A); as++; break; }
-      }
-    });
+      const courses = Object.entries(courseHrs).map(([cid, hrs]) => [cid, hrs, courseTeacher[cid]]);
+      DistributedPlacer.place(courses, blocked,
+        (sid) => !stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid)),
+        (cid, sid) => { this._add(stu, cid, sid, tcId, 'teaching', room, courseTeacher[cid], A); }
+      );
+    }
 
     // Guarantee: all courses have exact hours (overwrite self-study if needed)
     this.tcS.forEach((stu, ti) => {
