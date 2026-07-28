@@ -115,45 +115,94 @@ class SchedulingEngine {
       });
     });
 
-    // SS + fill
-    // Teaching self-study: P10 first, then P9, P8
-    this.tcS.forEach((stu, ti) => {
-      let a = 0;
-      for (const p of [10, 9, 8]) { for (let d = 1; d <= 5 && a < 2; d++) { if (a >= 2) break; const sid = 'D' + d + 'P' + p; if (stu.every(s => !A.some(x => x.student_id === s.id && x.slot_id === sid))) { this._add(stu, 'SELF_STUDY', sid, this.tcI[ti], 'teaching', this.tcR[ti], null, A); a++; } } }
-    });
+    // === NUCLEAR REBUILD: per-TC with distribution rules ===
+    // Clear all teaching + filler for all students (keep admin)
     this.students.forEach(stu => {
-      const daily = [0, 0, 0, 0, 0], occ = new Set(); A.filter(a => a.student_id === stu.id).forEach(a => { daily[a.slot_id.charAt(1) - 1]++; occ.add(a.slot_id); });
-      const room = stu.admin_class_id === 'AC1' ? 'R1' : 'R2';
-      for (let d = 1; d <= 5; d++) while (daily[d - 1] < 10) { let f = false; for (const p of [10, 9, 8, 7, 6]) { const sid = 'D' + d + 'P' + p; if (!occ.has(sid)) { A.push({ task_id: 'fill_' + stu.id + '_' + sid, slot_id: sid, room_id: room, course_id: 'SELF_STUDY', class_id: stu.id, class_type: 'filler', teacher_id: null, student_id: stu.id }); daily[d - 1]++; occ.add(sid); f = true; break; } } if (!f) break; }
-      for (let d = 1; d <= 5; d++) while (daily[d - 1] < 10) { let f = false; for (const p of [5, 4, 3, 2, 1]) { const sid = 'D' + d + 'P' + p; if (!occ.has(sid)) { A.push({ task_id: 'fill2_' + stu.id + '_' + sid, slot_id: sid, room_id: room, course_id: 'SELF_STUDY', class_id: stu.id, class_type: 'filler', teacher_id: null, student_id: stu.id }); daily[d - 1]++; occ.add(sid); f = true; break; } } if (!f) break; }
+      const toRemove = [];
+      A.forEach((a, i) => { if (a.student_id === stu.id && a.class_type !== 'admin') toRemove.push(i); });
+      toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
     });
-    // === 课时强制修正 (确保完全符合Excel) ===
-    const { CourseCorrector } = require('./solver/course-corrector.cjs');
-    const _alloc = (stu, cid, sid, room, tid, ctype) => {
-      stu.forEach(s => A.push({ task_id: (ctype||'fix') + '_' + cid + '_' + s.id, slot_id: sid, room_id: room, course_id: cid, class_id: s.id, class_type: ctype||'fix', teacher_id: tid, student_id: s.id }));
-    };
-    const _getRoom = (stu) => stu.admin_class_id === 'AC1' ? 'R1' : 'R2';
-    const g10Courses = {
-      ENG_LS:{hrs:3,teacher:'T_BIFEI'},ENG_RW:{hrs:3,teacher:'T_NIUYONGMEI'},
-      ENG_LIT:{hrs:4,teacher:'T_RACHEL'},ENG_SURVEY:{hrs:2,teacher:'T_VINCENT'},
-      MATH_PRECAL:{hrs:6,teacher:'T_CUIXIAOPENG'},AP_PHYS1:{hrs:5,teacher:'T_XIEHAOYANG'},
-      CHEM_PRE:{hrs:5,teacher:'T_ZHANGRAN'},BIO_PRE:{hrs:5,teacher:'T_LIYIXUAN'},
-      PE:{hrs:2,teacher:'T_VINCENT'},SELF_STUDY:{hrs:2,teacher:null},
-      GRAMMAR:{hrs:2,teacher:'T_JIZHUREN'},CHIN:{hrs:2,teacher:'T_EXP_A'},
-      HIST:{hrs:2,teacher:'T_EXP_B'},GEOG:{hrs:2,teacher:'T_EXP_C'},
-      ART:{hrs:1,teacher:'T_EXP_D'},GUIDANCE:{hrs:1,teacher:'T_GUIDANCE'},
-      MEETING:{hrs:1,teacher:null},CLUB:{hrs:2,teacher:null},
-    };
-    const cr10 = CourseCorrector.enforce(A, this.students, g10Courses, _alloc, _getRoom);
-    if (cr10.remaining > 0) {
-      // Fallback: remove ALL self-study and re-add teaching courses
-      this.students.forEach(stu => {
-        const toRemove = [];
-        A.forEach((a, i) => { if (a.student_id === stu.id && a.course_id === 'SELF_STUDY' && a.class_type !== 'admin') toRemove.push(i); });
-        toRemove.sort((a,b) => b-a).forEach(i => A.splice(i, 1));
+
+    // Per-TC rebuild (TC students share slots)
+    const g10AllCourses = [
+      ['MATH_PRECAL',6,'T_CUIXIAOPENG'],['AP_PHYS1',5,'T_XIEHAOYANG'],
+      ['CHEM_PRE',5,'T_ZHANGRAN'],['BIO_PRE',5,'T_LIYIXUAN'],
+      ['ENG_LIT',4,'T_RACHEL'],['ENG_LS',3,'T_BIFEI'],['ENG_RW',3,'T_NIUYONGMEI'],
+      ['ENG_SURVEY',2,'T_VINCENT'],['PE',2,'T_VINCENT'],['SELF_STUDY',2,null]
+    ];
+
+    this.tcS.forEach((tcStu, ti) => {
+      const tcId = this.tcI[ti], room = this.tcR[ti];
+      // occupied = admin slots for all TC students
+      const tcOccupied = new Set();
+      tcStu.forEach(s => {
+        A.filter(a => a.student_id === s.id && a.class_type === 'admin').forEach(a => tcOccupied.add(a.slot_id));
       });
-      CourseCorrector.enforce(A, this.students, g10Courses, _alloc, _getRoom);
-    }
+
+      g10AllCourses.forEach(([cid, hrs, tid]) => {
+        let added = A.filter(a => a.student_id === tcStu[0].id && a.course_id === cid).length;
+        const dayCount = [0,0,0,0,0,0];
+        // Pass 1: one per day (≤5hr) or consecutive if >5hr
+        for (let d = 1; d <= 5 && added < hrs; d++) {
+          for (const p of [1,2,3,4,5,8,9,10,6,7]) {
+            if (added >= hrs) break;
+            const sid = 'D'+d+'P'+p;
+            if (tcOccupied.has(sid)) continue;
+            // Check TC students: all must be free at this slot
+            if (tcStu.some(s => A.some(x => x.student_id===s.id && x.slot_id===sid))) continue;
+            if (dayCount[d] >= 1 && hrs <= 5) continue;
+            if (dayCount[d] >= 1 && hrs > 5) {
+              const epSlot = [...tcOccupied].find(s => s.startsWith('D'+d));
+              if (!epSlot) { const existing = A.filter(a => tcStu.some(s => s.id===a.student_id) && a.course_id===cid && a.slot_id.startsWith('D'+d)); if (existing.length > 0) { const ep = parseInt(existing[0].slot_id.substring(3)); if (Math.abs(p-ep) !== 1) continue; } }
+            }
+            this._add(tcStu, cid, sid, tcId, 'teaching', room, tid, A);
+            dayCount[d]++; added++; break;
+          }
+        }
+        // Pass 2: >5hr second period (must be consecutive)
+        for (let d = 1; d <= 5 && added < hrs; d++) {
+          for (const p of [1,2,3,4,5,6,7,8,9,10]) {
+            if (added >= hrs) break;
+            const sid = 'D'+d+'P'+p;
+            if (tcOccupied.has(sid)) continue;
+            if (tcStu.some(s => A.some(x => x.student_id===s.id && x.slot_id===sid))) continue;
+            if (hrs <= 5 || dayCount[d] >= 2) continue;
+            const existing = A.filter(a => tcStu.some(s => s.id===a.student_id) && a.course_id===cid && a.slot_id.startsWith('D'+d));
+            if (existing.length === 0) continue;
+            const ep = parseInt(existing[0].slot_id.substring(3));
+            if (Math.abs(p - ep) !== 1) continue;
+            this._add(tcStu, cid, sid, tcId, 'teaching', room, tid, A);
+            dayCount[d]++; added++; break;
+          }
+        }
+        // Pass 3: fallback any slot (for ≤5hr that couldn't fit 1/day)
+        for (let d = 1; d <= 5 && added < hrs; d++) {
+          for (const p of [1,2,3,4,5,6,7,8,9,10]) {
+            if (added >= hrs) break;
+            const sid = 'D'+d+'P'+p;
+            if (tcOccupied.has(sid)) continue;
+            if (tcStu.some(s => A.some(x => x.student_id===s.id && x.slot_id===sid))) continue;
+            this._add(tcStu, cid, sid, tcId, 'teaching', room, tid, A);
+            dayCount[d]++; added++; break;
+          }
+        }
+      });
+    });
+
+    // Fill remaining empty slots with SELF_STUDY (afternoon priority)
+    this.students.forEach(stu => {
+      const room = stu.admin_class_id === 'AC1' ? 'R1' : 'R2';
+      const daily = [0,0,0,0,0], occ = new Set();
+      A.filter(a => a.student_id === stu.id).forEach(a => { daily[parseInt(a.slot_id.charAt(1))-1]++; occ.add(a.slot_id); });
+      for (let d = 1; d <= 5; d++) {
+        while (daily[d-1] < 10) {
+          let f = false;
+          for (const p of [10,9,8,7,6]) { const sid = 'D'+d+'P'+p; if (!occ.has(sid)) { this._add([stu], 'SELF_STUDY', sid, stu.id, 'filler', room, null, A); daily[d-1]++; occ.add(sid); f=true; break; } }
+          if (!f) { for (const p of [5,4,3,2,1]) { const sid = 'D'+d+'P'+p; if (!occ.has(sid)) { this._add([stu], 'SELF_STUDY', sid, stu.id, 'filler', room, null, A); daily[d-1]++; occ.add(sid); f=true; break; } } }
+          if (!f) break;
+        }
+      }
+    });
     return A;
   }
 
