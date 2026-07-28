@@ -43,7 +43,7 @@ function runOneRound(round) {
   const e10 = new SchedulingEngine(RULES_PATH, DATA_PATH);
   let best10 = null, bestS10 = Infinity;
   const init10 = e10.generateInitial();
-  const r10 = e10.anneal(init10, 20000);
+  const r10 = e10.anneal(init10, 100000);
   bestS10 = r10.score; best10 = r10.assignments;
   postFill(best10, e10.students);
   const s10 = e10.students[0];
@@ -63,7 +63,7 @@ function runOneRound(round) {
   const e11 = new G11Engine(RULES_PATH, DATA_PATH);
   let best11 = null, bestS11 = Infinity;
   const init11 = e11.generateInitial();
-  const r11 = e11.anneal(init11, 20000);
+  const r11 = e11.anneal(init11, 100000);
   bestS11 = r11.score; best11 = r11.assignments;
   postFill(best11, e11.students);
   console.log('  Score=' + bestS11);
@@ -77,7 +77,7 @@ function runOneRound(round) {
   const e12 = new G12Engine(RULES_PATH, DATA_PATH);
   let best12 = null, bestS12 = Infinity;
   const init12 = e12.generateInitial();
-  const r12 = e12.anneal(init12, 20000);
+  const r12 = e12.anneal(init12, 100000);
   bestS12 = r12.score; best12 = r12.assignments;
   postFill(best12, e12.students);
   console.log('  Score=' + bestS12);

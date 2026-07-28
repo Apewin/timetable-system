@@ -156,7 +156,7 @@ class SchedulingEngine {
   }
 
   // 模拟退火优化
-  anneal(initial, iterations = 20000) {
+  anneal(initial, iterations = 100000) {
     const cur = initial.map(a => ({ ...a }));
     let curScore = this.evaluate(cur);
     let best = cur.map(a => ({ ...a })), bestScore = curScore;
