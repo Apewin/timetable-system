@@ -48,10 +48,10 @@ class G11Engine {
       {s:'D2P4',a3:'IT',a4:'PE'},
       {s:'D3P2',a3:'MATH_CN',a4:'CHIN'},{s:'D3P3',a3:'CHIN',a4:'MATH_CN'},
       {s:'D3P4',a3:'POL',a4:'GUIDANCE'},
-      {s:'D4P2',a3:'GUIDANCE',a4:'POL'},{s:'D4P3',a3:'PE',a4:'ADMIN_SS'},
-      {s:'D5P2',a3:'ADMIN_SS',a4:'PE'},{s:'D5P3',a3:'ADMIN_SS',a4:'ADMIN_SS'},
+      {s:'D4P2',a3:'GUIDANCE',a4:'POL'},{s:'D4P3',a3:'PE',a4:'SELF_STUDY'},
+      {s:'D5P2',a3:'SELF_STUDY',a4:'PE'},{s:'D5P3',a3:'SELF_STUDY',a4:'SELF_STUDY'},
     ];
-    const adminT = { MATH_CN:'T_EXP_E',CHIN:'T_EXP_F',POL:'T_EXP_G',IT:'T_EXP_J',GUIDANCE:'T_GUIDANCE',PE:'T_EXP_H1',ADMIN_SS:null };
+    const adminT = { MATH_CN:'T_EXP_E',CHIN:'T_EXP_F',POL:'T_EXP_G',IT:'T_EXP_J',GUIDANCE:'T_GUIDANCE',PE:'T_EXP_H1',SELF_STUDY:null };
     adminPairs.forEach(p => {
       const t3 = p.a3==='PE'?'T_EXP_H1':adminT[p.a3];
       const t4 = p.a4==='PE'?'T_EXP_H2':adminT[p.a4];
@@ -91,14 +91,12 @@ class G11Engine {
             assigned++; break;
           }
         }
-        // Pass 2: clear ALL entries for ALL section students at a slot, add AP
+        // Pass 2: clear NON-ADMIN entries for all section students (preserve admin)
         for (let d = 1; d <= 5 && assigned < 5; d++) {
           for (const p of [1,2,3,4,5,8,9,10,6,7]) {
             if (assigned >= 5) break; const sid = 'D'+d+'P'+p;
             if (A.some(x => x.teacher_id === cfg.teacher && x.slot_id === sid)) continue;
-            // Clear ALL entries at this slot for ALL section students (if any)
-            secStu.forEach(s => { const i = A.findIndex(x => x.student_id===s.id && x.slot_id===sid); if (i>=0) A.splice(i,1); });
-            // Add AP for all section students
+            secStu.forEach(s => { const i = A.findIndex(x => x.student_id===s.id && x.slot_id===sid && x.class_type!=='admin'); if (i>=0) A.splice(i,1); });
             this._add(secStu, cid, sid, cid+'_S'+(secIdx+1), 'ap', 'R8', cfg.teacher, A);
             assigned++; break;
           }
@@ -107,12 +105,13 @@ class G11Engine {
     });
 
     // === Teaching: Common courses (all 3 TCs) ===
+    // Cross-TC teacher courses first (AP_CALC_BC shared across all 3 TCs)
     const commonCourses = [
-      ['ENG_COMP',4,'T_YULIN'],['AP_CALC_BC',5,'T_WANGLILI'],
+      ['AP_CALC_BC',5,'T_WANGLILI'],['ENG_COMP',4,'T_YULIN'],
       ['PRE_AP_LIT',2,'T_RACHEL'],['PHYS_CN',2,'T_BAIRUSHUANG']
     ];
     const layeredCourses = {
-      tc12: [['HONOR_LC',2,'T_LUKE'],['TOEFL',3,'T_WEIWEI']],
+      tc12: [['TOEFL',3,'T_WEIWEI'],['HONOR_LC',2,'T_LUKE']], // TOEFL first (cross-TC teacher)
       tc3: [['AP_LC',5,'T_HANPENG']]
     };
 
@@ -126,13 +125,13 @@ class G11Engine {
           const p = periods[(as + tcStagger) % periods.length];
           const sid = 'D' + d + 'P' + p;
           if (stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid))) continue;
-          if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid)) continue;
+          if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid && !stu.some(s => s.id === x.student_id))) continue;
           this._add(stu, cid, sid, tcId, 'teaching', room, tid, A); as++;
         }
         for (let d = 1; d <= 5 && as < hrs; d++) for (const p of [1,2,3,4,5,8,9,10,6,7]) {
           if (as >= hrs) break; const sid = 'D' + d + 'P' + p;
           if (stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid))) continue;
-          if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid)) continue;
+          if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid && !stu.some(s => s.id === x.student_id))) continue;
           this._add(stu, cid, sid, tcId, 'teaching', room, tid, A); as++; break;
         }
       });
@@ -146,6 +145,39 @@ class G11Engine {
     // TC3: common + layered(tc3)
     assignCourses(this.tc3, [...commonCourses, ...layeredCourses.tc3], 'TC_G11_3', 'R6', 2);
 
+    // Second pass: aggressive fill for any TC with missing teaching courses
+    this.tcS.forEach((stu, ti) => {
+      const tcId = this.tcI[ti], room = this.tcR[ti];
+      const allCourses = ti === 2
+        ? [...commonCourses, ...layeredCourses.tc3]
+        : [...commonCourses, ...layeredCourses.tc12];
+      allCourses.forEach(([cid, hrs, tid]) => {
+        const s = stu[0];
+        let cur = A.filter(a => a.student_id === s.id && a.course_id === cid).length;
+        // Try 1: steal from non-admin
+        for (let d = 1; d <= 5 && cur < hrs; d++) {
+          for (const p of [1,2,3,4,5,8,9,10,6,7]) {
+            if (cur >= hrs) break;
+            const sid = 'D' + d + 'P' + p;
+            if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid && !stu.some(st => st.id === x.student_id))) continue;
+            stu.forEach(st => { const idx = A.findIndex(x => x.student_id === st.id && x.slot_id === sid && x.class_type !== 'admin' && x.course_id !== cid); if (idx >= 0) A.splice(idx, 1); });
+            this._add(stu, cid, sid, tcId, 'teaching', room, tid, A);
+            cur++;
+          }
+        }
+        // Try 2: steal from ANY entry INCLUDING admin (last resort)
+        for (let d = 1; d <= 5 && cur < hrs; d++) {
+          for (const p of [1,2,3,4,5,8,9,10,6,7]) {
+            if (cur >= hrs) break;
+            const sid = 'D' + d + 'P' + p;
+            stu.forEach(st => { const idx = A.findIndex(x => x.student_id === st.id && x.slot_id === sid && x.course_id !== cid); if (idx >= 0) A.splice(idx, 1); });
+            this._add(stu, cid, sid, tcId, 'teaching', room, tid, A);
+            cur++;
+          }
+        }
+      });
+    });
+
     // Re-fill after AP stealing
     this.students.forEach(stu => {
       const daily = [0,0,0,0,0], occ = new Set();
@@ -156,6 +188,88 @@ class G11Engine {
       }
       for (let d = 1; d <= 5; d++) while (daily[d-1] < 10) { let f = false;
         for (const p of [5,4,3,2,1]) { const sid = 'D'+d+'P'+p; if (!occ.has(sid)) { A.push({ task_id: 'refill2_'+stu.id+'_'+sid, slot_id: sid, room_id: room, course_id: 'SELF_STUDY', class_id: stu.id, class_type: 'filler', teacher_id: null, student_id: stu.id }); daily[d-1]++; occ.add(sid); f = true; break; } } if (!f) break;
+      }
+    });
+    // === DETERMINISTIC POST-FIX: ensure every student has exactly correct course hours ===
+    // Strategy: for each student, remove ALL non-admin entries, then re-add in correct order
+    this.students.forEach(stu => {
+      const room = stu.admin_class_id === 'AC3' ? 'R5' : 'R6';
+      const tcId = stu.teaching_class_id;
+      // 1. Save admin entries (they're correct by construction)
+      const adminEntries = A.filter(a => a.student_id === stu.id && a.class_type === 'admin');
+      // 2. Remove ALL non-admin entries for this student
+      const toRemove = [];
+      A.forEach((a, i) => { if (a.student_id === stu.id && a.class_type !== 'admin') toRemove.push(i); });
+      toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
+      // 3. Build course list
+      const courses = [];
+      // Teaching courses
+      if (tcId === 'TC_G11_3') {
+        courses.push(['ENG_COMP',4,'T_YULIN'],['AP_CALC_BC',5,'T_WANGLILI'],['PRE_AP_LIT',2,'T_RACHEL'],['PHYS_CN',2,'T_BAIRUSHUANG'],['AP_LC',5,'T_HANPENG']);
+      } else {
+        courses.push(['ENG_COMP',4,'T_YULIN'],['AP_CALC_BC',5,'T_WANGLILI'],['PRE_AP_LIT',2,'T_RACHEL'],['PHYS_CN',2,'T_BAIRUSHUANG'],['TOEFL',3,'T_WEIWEI'],['HONOR_LC',2,'T_LUKE']);
+      }
+      // AP courses
+      (stu.ap_courses || []).filter(c => c !== 'AP_CALC_BC').forEach(c => courses.push([c, 5, null]));
+      // SELF_STUDY already included in admin pairs (SELF_STUDY), skip
+      // 4. Re-add all courses using admin entries as blockers
+      const occupied = new Set(adminEntries.map(a => a.slot_id));
+      courses.forEach(([cid, hrs, tid]) => {
+        let added = 0;
+        const dayCount = [0,0,0,0,0,0];
+        for (let d = 1; d <= 5 && added < hrs; d++) {
+          for (const p of [1,2,3,4,5,8,9,10,6,7]) {
+            if (added >= hrs) break;
+            const sid = 'D'+d+'P'+p;
+            if (occupied.has(sid)) continue;
+            if (dayCount[d] >= 1 && hrs <= 5) continue;
+            if (dayCount[d] >= 1 && hrs > 5) {
+              const ep = [...occupied].find(s => s.startsWith('D'+d) && A.some(a => a.student_id===stu.id && a.slot_id===s && a.course_id===cid));
+              if (ep && Math.abs(p - parseInt(ep.substring(3))) !== 1) continue;
+            }
+            this._add([stu], cid, sid, stu.id, cid==='SELF_STUDY'?'filler':'teaching', room, tid, A);
+            occupied.add(sid); dayCount[d]++; added++; break;
+          }
+        }
+        for (let d = 1; d <= 5 && added < hrs; d++) {
+          for (const p of [1,2,3,4,5,6,7,8,9,10]) {
+            if (added >= hrs) break;
+            const sid = 'D'+d+'P'+p;
+            if (occupied.has(sid)) continue;
+            if (dayCount[d] >= 2) continue;
+            if (hrs > 5) {
+              const ep = [...occupied].find(s => s.startsWith('D'+d) && A.some(a => a.student_id===stu.id && a.slot_id===s && a.course_id===cid));
+              if (ep && Math.abs(p - parseInt(ep.substring(3))) !== 1) continue;
+            }
+            this._add([stu], cid, sid, stu.id, 'teaching', room, tid, A);
+            occupied.add(sid); dayCount[d]++; added++; break;
+          }
+        }
+        for (let d = 1; d <= 5 && added < hrs; d++) {
+          for (const p of [1,2,3,4,5,6,7,8,9,10]) {
+            if (added >= hrs) break;
+            const sid = 'D'+d+'P'+p;
+            if (occupied.has(sid)) continue;
+            this._add([stu], cid, sid, stu.id, 'teaching', room, tid, A);
+            occupied.add(sid); added++; break;
+          }
+        }
+      });
+    });
+    // Clean SELF_STUDY: remove all non-admin SS, add exactly 2 in afternoon
+    this.students.forEach(stu => {
+      const room = stu.admin_class_id === 'AC3' ? 'R5' : 'R6';
+      const toRemove = [];
+      A.forEach((a, i) => { if (a.student_id===stu.id && a.course_id==='SELF_STUDY' && a.class_type!=='admin') toRemove.push(i); });
+      toRemove.sort((a,b)=>b-a).forEach(i=>A.splice(i,1));
+      let added = 0;
+      for (const p of [10,9,8,7,6]) for (let d=1;d<=5&&added<2;d++) {
+        const sid='D'+d+'P'+p;
+        if (!A.some(a=>a.student_id===stu.id&&a.slot_id===sid)) { this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A); added++; }
+      }
+      for (const p of [5,4,3,2,1]) for (let d=1;d<=5&&added<2;d++) {
+        const sid='D'+d+'P'+p;
+        if (!A.some(a=>a.student_id===stu.id&&a.slot_id===sid)) { this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A); added++; }
       }
     });
     return A;

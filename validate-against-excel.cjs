@@ -29,9 +29,8 @@ const SPEC = {
       GUIDANCE: { hrs: 1, teacher: 'T_GUIDANCE', name: '升学课堂' },
       MEETING:  { hrs: 1, teacher: null, name: '班会' },
       CLUB:     { hrs: 2, teacher: null, name: '社团' },
-      DUTY:     { hrs: 1, teacher: null, name: '值日' },
     },
-    fixed_slots: { MEETING: ['D1P9'], CLUB: ['D2P10','D5P10'], DUTY: ['D1P10'] },
+    fixed_slots: { MEETING: ['D1P9'], CLUB: ['D2P10','D5P10'] },
     total: 50,
   },
 

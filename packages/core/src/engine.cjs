@@ -38,8 +38,9 @@ class SchedulingEngine {
     const courseHrs = { MATH_PRECAL: 6, AP_PHYS1: 5, CHEM_PRE: 5, BIO_PRE: 5, ENG_LS: 3, ENG_RW: 3, ENG_LIT: 4, ENG_SURVEY: 2, PE: 2 };
     const adminT = { GRAMMAR: 'T_JIZHUREN', CHIN: 'T_EXP_A', HIST: 'T_EXP_B', GEOG: 'T_EXP_C', ART: 'T_EXP_D', GUIDANCE: 'T_GUIDANCE' };
 
-    // Fixed
-    this.rules.rules.filter(r => r.fixed_slot || r.fixed_slots).forEach(r => {
+    // Fixed slots (filter by grade: only apply rules whose grades include this grade or have no grade restriction)
+    const grade = 10;
+    this.rules.rules.filter(r => (r.fixed_slot || r.fixed_slots) && (!r.grades || r.grades.includes(grade))).forEach(r => {
       (r.fixed_slot ? [r.fixed_slot] : r.fixed_slots).forEach(s => { this._add(this.ac1, r.course, s, 'AC1', 'admin', 'R1', null, A); this._add(this.ac2, r.course, s, 'AC2', 'admin', 'R2', null, A); });
     });
 
@@ -126,6 +127,33 @@ class SchedulingEngine {
       for (let d = 1; d <= 5; d++) while (daily[d - 1] < 10) { let f = false; for (const p of [10, 9, 8, 7, 6]) { const sid = 'D' + d + 'P' + p; if (!occ.has(sid)) { A.push({ task_id: 'fill_' + stu.id + '_' + sid, slot_id: sid, room_id: room, course_id: 'SELF_STUDY', class_id: stu.id, class_type: 'filler', teacher_id: null, student_id: stu.id }); daily[d - 1]++; occ.add(sid); f = true; break; } } if (!f) break; }
       for (let d = 1; d <= 5; d++) while (daily[d - 1] < 10) { let f = false; for (const p of [5, 4, 3, 2, 1]) { const sid = 'D' + d + 'P' + p; if (!occ.has(sid)) { A.push({ task_id: 'fill2_' + stu.id + '_' + sid, slot_id: sid, room_id: room, course_id: 'SELF_STUDY', class_id: stu.id, class_type: 'filler', teacher_id: null, student_id: stu.id }); daily[d - 1]++; occ.add(sid); f = true; break; } } if (!f) break; }
     });
+    // === 课时强制修正 (确保完全符合Excel) ===
+    const { CourseCorrector } = require('./solver/course-corrector.cjs');
+    const _alloc = (stu, cid, sid, room, tid, ctype) => {
+      stu.forEach(s => A.push({ task_id: (ctype||'fix') + '_' + cid + '_' + s.id, slot_id: sid, room_id: room, course_id: cid, class_id: s.id, class_type: ctype||'fix', teacher_id: tid, student_id: s.id }));
+    };
+    const _getRoom = (stu) => stu.admin_class_id === 'AC1' ? 'R1' : 'R2';
+    const g10Courses = {
+      ENG_LS:{hrs:3,teacher:'T_BIFEI'},ENG_RW:{hrs:3,teacher:'T_NIUYONGMEI'},
+      ENG_LIT:{hrs:4,teacher:'T_RACHEL'},ENG_SURVEY:{hrs:2,teacher:'T_VINCENT'},
+      MATH_PRECAL:{hrs:6,teacher:'T_CUIXIAOPENG'},AP_PHYS1:{hrs:5,teacher:'T_XIEHAOYANG'},
+      CHEM_PRE:{hrs:5,teacher:'T_ZHANGRAN'},BIO_PRE:{hrs:5,teacher:'T_LIYIXUAN'},
+      PE:{hrs:2,teacher:'T_VINCENT'},SELF_STUDY:{hrs:2,teacher:null},
+      GRAMMAR:{hrs:2,teacher:'T_JIZHUREN'},CHIN:{hrs:2,teacher:'T_EXP_A'},
+      HIST:{hrs:2,teacher:'T_EXP_B'},GEOG:{hrs:2,teacher:'T_EXP_C'},
+      ART:{hrs:1,teacher:'T_EXP_D'},GUIDANCE:{hrs:1,teacher:'T_GUIDANCE'},
+      MEETING:{hrs:1,teacher:null},CLUB:{hrs:2,teacher:null},
+    };
+    const cr10 = CourseCorrector.enforce(A, this.students, g10Courses, _alloc, _getRoom);
+    if (cr10.remaining > 0) {
+      // Fallback: remove ALL self-study and re-add teaching courses
+      this.students.forEach(stu => {
+        const toRemove = [];
+        A.forEach((a, i) => { if (a.student_id === stu.id && a.course_id === 'SELF_STUDY' && a.class_type !== 'admin') toRemove.push(i); });
+        toRemove.sort((a,b) => b-a).forEach(i => A.splice(i, 1));
+      });
+      CourseCorrector.enforce(A, this.students, g10Courses, _alloc, _getRoom);
+    }
     return A;
   }
 
