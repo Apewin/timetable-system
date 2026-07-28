@@ -103,44 +103,66 @@ class G12Engine {
       });
     });
 
-    // Per-student elective assignment
-    const electiveTeachers = {
+    // Elective assignment handled by batchAssign below (all sections share slots)
+
+    // === NUCLEAR REBUILD ===
+    // Step 0: clear ALL non-admin for ALL students
+    this.students.forEach(stu => {
+      const toRemove = [];
+      A.forEach((a, i) => { if (a.student_id === stu.id && a.class_type !== 'admin') toRemove.push(i); });
+      toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
+    });
+
+    // Step 1: batch assign elective groups (A/B/C: 3 sections sharing same slots)
+    const eTeachers = {
       AP_LANG:'T_HANPENG',AP_LIT:'T_WEIWEI',HONOR_LIT:'T_ZHANGHUIHUI',
       LINEAR_ALG:'T_ZHANGZUOPING',BUSINESS:'T_QINXINXUAN',MECH_BASIS:'T_YUYUANYING',
       JAPANESE:'T_NIUYONGMEI',FRENCH:'T_BIFEI',GERMAN:'T_GLENN'
     };
-    this.students.forEach(stu => {
-      const choices = stu.elective_choices || {};
-      [{g:'group_a',h:5},{g:'group_b',h:4},{g:'group_c',h:2}].forEach(({g,h}) => {
-        const cid = choices[g]; if (!cid) return;
-        const tid = electiveTeachers[cid]; let as = 0;
-        for (let d = 1; d <= 5 && as < h; d++) for (const p of [1,2,3,4,5,8,9,10,6,7]) {
-          if (as >= h) break; const sid = 'D' + d + 'P' + p;
-          if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
-          if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid) || this.teacherBusy(tid, sid))) continue;
-          this._add([stu], cid, sid, stu.id, 'elective', 'R9', tid, A); as++;
+    const batchAssign = (groupCourses, hrs, groupKey) => {
+      const sections = groupCourses.map(c => this.students.filter(s => (s.elective_choices||{})[groupKey] === c));
+      for (let assigned = 0; assigned < hrs; ) {
+        let placed = false;
+        for (let d = 1; d <= 5 && !placed; d++) {
+          for (const p of [1,2,3,4,5,6,7,8,9,10]) {
+            if (placed) break;
+            const sid = 'D'+d+'P'+p;
+            // All students in all sections must be free
+            if (sections.some(sec => sec.some(s => A.some(a => a.student_id===s.id && a.slot_id===sid)))) continue;
+            // All teachers must be free
+            if (groupCourses.some(c => A.some(a => a.teacher_id===eTeachers[c] && a.slot_id===sid))) continue;
+            // Assign all sections at this slot
+            groupCourses.forEach((c, i) => {
+              sections[i].forEach(s => {
+                this._add([s], c, sid, s.id, 'elective', 'R8', eTeachers[c], A);
+              });
+            });
+            assigned++; placed = true;
+          }
         }
-      });
-    });
+        if (!placed) break;
+      }
+    };
+    batchAssign(['JAPANESE','FRENCH','GERMAN'], 2, 'group_c');
+    batchAssign(['LINEAR_ALG','BUSINESS','MECH_BASIS'], 4, 'group_b');
+    batchAssign(['AP_LANG','AP_LIT','HONOR_LIT'], 5, 'group_a');
 
-    // === NUCLEAR REBUILD: deterministic per-student with distribution rules ===
+    // Step 2: per-student rebuild for teaching + AP + SELF_STUDY
     this.students.forEach(stu => {
       const room = stu.admin_class_id === 'AC5' ? 'R9' : 'R10';
-      const adminEntries = A.filter(a => a.student_id === stu.id && a.class_type === 'admin');
-      const toRemove = [];
-      A.forEach((a, i) => { if (a.student_id === stu.id && a.class_type !== 'admin') toRemove.push(i); });
-      toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
+      const adminOccupied = new Set(
+        A.filter(a => a.student_id === stu.id && a.class_type === 'admin').map(a => a.slot_id)
+      );
+      const electiveOccupied = new Set(
+        A.filter(a => a.student_id === stu.id && a.class_type === 'elective').map(a => a.slot_id)
+      );
+      const occupied = new Set([...adminOccupied, ...electiveOccupied]);
 
       const courses = [];
       courses.push(['AP_STAT',5,'T_JAIME'],['ENG_CW',5,'T_LUKE'],['COLLEGE_APP',4,null]);
-      const ec = stu.elective_choices || {};
-      if (ec.group_a) courses.push([ec.group_a, 5, null]);
-      if (ec.group_b) courses.push([ec.group_b, 4, null]);
-      if (ec.group_c) courses.push([ec.group_c, 2, null]);
       (stu.ap_courses || []).forEach(c => courses.push([c, 5, null]));
       courses.push(['SELF_STUDY', 2, null]);
 
-      const occupied = new Set(adminEntries.map(a => a.slot_id));
       courses.forEach(([cid, hrs, tid]) => {
         let added = 0;
         const dayCount = [0,0,0,0,0,0];
