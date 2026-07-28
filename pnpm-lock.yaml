@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@ortools-node/cp-sat':
+        specifier: 9.15.0-node.0-rc.0
+        version: 9.15.0-node.0-rc.0
       logic-solver:
         specifier: ^2.0.1
         version: 2.0.1
@@ -95,6 +98,9 @@ packages:
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
+
+  '@bufbuild/protobuf@2.13.0':
+    resolution: {integrity: sha512-acq7c49vxfm1ggJ95P70TX7ABDM0vxr1SYD3BB0o0jnBLB4OAqeHyKuN+cD3w80gXEDQ2zxHpR6CUeA+O/aU9g==}
 
   '@colors/colors@1.5.0':
     resolution: {integrity: sha512-ooWCrlZP11i8GImSjTHYHLkvFDP48nS4+204nGb1RiX/WXYHmJA2III9/e2DWVabCESdW7hBAEzHRqUn9OUVvQ==}
@@ -244,6 +250,10 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@ortools-node/cp-sat@9.15.0-node.0-rc.0':
+    resolution: {integrity: sha512-zYH4x6McyReuoDnRKLrfhiTewdaM+0CHYABvQbKMqLSOddOmfEBOKDm8FfEet2HYi0m6B78tGGp5tehFIw03jg==}
+    engines: {node: '>=20.0.0'}
 
   '@rollup/rollup-android-arm-eabi@4.62.2':
     resolution: {integrity: sha512-6o7ZLZK+BeenkZCFNDXqpbjw9bD6nuWonvS/lwQJp7NoVVxm6p3qE7qQ5jGuBjiFsgvqjD8mZAU5oWxTmbOeOg==}
@@ -808,6 +818,10 @@ packages:
     resolution: {integrity: sha512-+EUsqGPLsM+j/zdChZjsnX51g4XrHFOIXwfnCVPGlQk/k5giakcKsuxCObBRu6DSm9opw/O6slWbJdghQM4bBg==}
     engines: {node: '>= 0.6'}
 
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
+
   npm-run-path@5.3.0:
     resolution: {integrity: sha512-ppwTtiJZq0O/ai0z7yfudtBpWIoxM8yE6nHi1X47eFR2EWORqfbu6CnPlNsjeN683eT0qG6H/Pyf9fCcvjnnnQ==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
@@ -1191,6 +1205,8 @@ snapshots:
 
   '@babel/runtime@7.29.7': {}
 
+  '@bufbuild/protobuf@2.13.0': {}
+
   '@colors/colors@1.5.0':
     optional: true
 
@@ -1268,6 +1284,11 @@ snapshots:
       '@sinclair/typebox': 0.27.12
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@ortools-node/cp-sat@9.15.0-node.0-rc.0':
+    dependencies:
+      '@bufbuild/protobuf': 2.13.0
+      node-gyp-build: 4.8.4
 
   '@rollup/rollup-android-arm-eabi@4.62.2':
     optional: true
@@ -1818,6 +1839,8 @@ snapshots:
   nanoid@3.3.16: {}
 
   negotiator@0.6.3: {}
+
+  node-gyp-build@4.8.4: {}
 
   npm-run-path@5.3.0:
     dependencies:

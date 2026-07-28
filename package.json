@@ -14,6 +14,7 @@
   },
   "packageManager": "pnpm@9.0.0",
   "dependencies": {
+    "@ortools-node/cp-sat": "9.15.0-node.0-rc.0",
     "logic-solver": "^2.0.1",
     "xlsx": "^0.18.5"
   }
