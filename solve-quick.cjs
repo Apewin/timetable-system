@@ -12,6 +12,22 @@ const RULES_PATH = '/Users/apewin/Desktop/排课系统/rules.json';
 const DATA_PATH = '/Users/apewin/Desktop/排课系统/timetable.json';
 const ROUNDS = parseInt(process.argv[2]) || 3;
 
+// Post-anneal fill: ensure daily=10 for all students
+function postFill(assignments, students) {
+  students.forEach(stu => {
+    const daily = [0,0,0,0,0], occ = new Set();
+    assignments.filter(a => a.student_id === stu.id).forEach(a => { daily[parseInt(a.slot_id.charAt(1))-1]++; occ.add(a.slot_id); });
+    for (let d = 1; d <= 5; d++) {
+      while (daily[d-1] < 10) {
+        let f = false;
+        for (const p of [10,9,8,7,6]) { const sid = 'D'+d+'P'+p; if (!occ.has(sid)) { assignments.push({ task_id:'postfill_'+stu.id+'_'+sid, slot_id:sid, room_id:'R1', course_id:'SELF_STUDY', class_id:stu.id, class_type:'filler', teacher_id:null, student_id:stu.id }); daily[d-1]++; occ.add(sid); f=true; break; } }
+        if (!f) { for (const p of [5,4,3,2,1]) { const sid = 'D'+d+'P'+p; if (!occ.has(sid)) { assignments.push({ task_id:'postfill_'+stu.id+'_'+sid, slot_id:sid, room_id:'R1', course_id:'SELF_STUDY', class_id:stu.id, class_type:'filler', teacher_id:null, student_id:stu.id }); daily[d-1]++; occ.add(sid); f=true; break; } } }
+        if (!f) break;
+      }
+    }
+  });
+}
+
 function runOneRound(round) {
   console.log('\n' + '='.repeat(50));
   console.log('Round ' + round + '/' + ROUNDS);
@@ -29,6 +45,7 @@ function runOneRound(round) {
   const init10 = e10.generateInitial();
   const r10 = e10.anneal(init10, 20000);
   bestS10 = r10.score; best10 = r10.assignments;
+  postFill(best10, e10.students);
   const s10 = e10.students[0];
   const c10 = {};
   best10.filter(a => a.student_id === s10.id && a.course_id).forEach(a => { c10[a.course_id] = (c10[a.course_id] || 0) + 1; });
@@ -48,6 +65,7 @@ function runOneRound(round) {
   const init11 = e11.generateInitial();
   const r11 = e11.anneal(init11, 20000);
   bestS11 = r11.score; best11 = r11.assignments;
+  postFill(best11, e11.students);
   console.log('  Score=' + bestS11);
 
   // Write G10+G11
@@ -61,6 +79,7 @@ function runOneRound(round) {
   const init12 = e12.generateInitial();
   const r12 = e12.anneal(init12, 20000);
   bestS12 = r12.score; best12 = r12.assignments;
+  postFill(best12, e12.students);
   console.log('  Score=' + bestS12);
 
   // Write final
