@@ -12,7 +12,7 @@ class SchedulingEngine{
     // Fixed admin (no DUTY for G10)
     this.rules.rules.filter(r=>(r.fixed_slot||r.fixed_slots)&&(!r.grades||r.grades.includes(grade))).forEach(r=>{(r.fixed_slot?[r.fixed_slot]:r.fixed_slots).forEach(s=>{this._add(this.ac1,r.course,s,'AC1','admin','R1',null,A);this._add(this.ac2,r.course,s,'AC2','admin','R2',null,A)})});
     const adminT={GRAMMAR:'T_JIZHUREN',CHIN:'T_EXP_A',HIST:'T_EXP_B',GEOG:'T_EXP_C',ART:'T_EXP_D',GUIDANCE:'T_GUIDANCE'};
-    (this.rules.admin_pairs?.slots||[]).forEach(p=>{const origSlot=p.slot,origP=parseInt(origSlot.substring(3));const newP=origP<=5?origP:origP-4;const slot=origSlot.substring(0,2)+'P'+newP;this._add(this.ac1,p.ac1,slot,'AC1','admin','R1',adminT[p.ac1],A);this._add(this.ac2,p.ac2,slot,'AC2','admin','R2',adminT[p.ac2],A)});
+    (this.rules.admin_pairs?.slots||[]).forEach(p=>{const origSlot=p.slot,origP=parseInt(origSlot.substring(3));const newP=origP;const slot=origSlot.substring(0,2)+'P'+newP;this._add(this.ac1,p.ac1,slot,'AC1','admin','R1',adminT[p.ac1],A);this._add(this.ac2,p.ac2,slot,'AC2','admin','R2',adminT[p.ac2],A)});
     // SAT solve per TC
     const cT={MATH_PRECAL:'T_CUIXIAOPENG',AP_PHYS1:'T_XIEHAOYANG',CHEM_PRE:'T_ZHANGRAN',BIO_PRE:'T_LIYIXUAN',ENG_LS:'T_BIFEI',ENG_RW:'T_NIUYONGMEI',ENG_LIT:'T_RACHEL',ENG_SURVEY:'T_VINCENT',PE:'T_VINCENT'};
     const cH={MATH_PRECAL:6,AP_PHYS1:5,CHEM_PRE:5,BIO_PRE:5,ENG_LS:3,ENG_RW:3,ENG_LIT:4,ENG_SURVEY:2,PE:2};
