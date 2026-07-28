@@ -1,5 +1,5 @@
 /**
- * G12 高三引擎 — admin + batchAP + batchElectives + DistributedPlacer教学 + fill
+ * G12 高三引擎 — Min-Conflicts CSP求解器 + batch选修AP
  */
 const fs=require('fs');
 class G12Engine{
@@ -8,29 +8,45 @@ class G12Engine{
   teacherBusy(tid,sid){return this.globalTeacher[tid]?.has(sid)||false}
   generateInitial(){
     const A=[];
-    // Fixed
+    // Fixed admin
     this._add(this.ac5,'DUTY','D1P10','AC5','admin','R9',null,A);this._add(this.ac6,'DUTY','D1P10','AC6','admin','R10',null,A);
     this._add(this.ac5,'MEETING','D1P9','AC5','admin','R9',null,A);this._add(this.ac6,'MEETING','D1P9','AC6','admin','R10',null,A);
     this._add(this.ac5,'CLUB','D2P10','AC5','admin','R9',null,A);this._add(this.ac6,'CLUB','D2P10','AC6','admin','R10',null,A);
     this._add(this.ac5,'CLUB','D5P10','AC5','admin','R9',null,A);this._add(this.ac6,'CLUB','D5P10','AC6','admin','R10',null,A);
-    // Admin pairs
     [{s:'D1P2',a5:'CHIN',a6:'PE'},{s:'D1P3',a5:'PE',a6:'CHIN'},{s:'D2P2',a5:'CHIN',a6:'PE'},{s:'D2P3',a5:'PE',a6:'CHIN'}].forEach(p=>{this._add(this.ac5,p.a5,p.s,'AC5','admin','R9',p.a5==='CHIN'?'T_EXP_K':'T_EXP_L',A);this._add(this.ac6,p.a6,p.s,'AC6','admin','R10',p.a6==='CHIN'?'T_EXP_K':'T_EXP_L',A)});
-    // Batch AP (distribute across days)
+    // Batch AP
     const apCfg={AP_PHYSC:'T_BAIRUSHUANG',AP_CHEM:'T_YANGHONGXU',AP_BIO:'T_FANZHENGWEI',AP_CS:'T_SUNHUA',AP_ENVSCI:'T_ZHUJIE',AP_PSYCH:'T_XINLI',AP_ARTHIST:'T_ZHANGHUIHUI',AP_MACRO:'T_YUYUANYING'};
     Object.entries(apCfg).forEach(([cid,tid])=>{const stus=this.students.filter(s=>(s.ap_courses||[]).includes(cid));if(!stus.length)return;const nS=2,perS=Math.ceil(stus.length/nS),secs=[];for(let i=0;i<nS;i++)secs.push(stus.slice(i*perS,(i+1)*perS));secs.forEach((secStu,si)=>{let as=0;for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(secStu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)))continue;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;if(this.teacherBusy(tid,sid))continue;this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;if(this.teacherBusy(tid,sid))continue;secStu.forEach(s=>{const i=A.findIndex(x=>x.student_id===s.id&&x.slot_id===sid&&x.class_type!=='admin'&&x.class_type!=='ap');if(i>=0)A.splice(i,1)});this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}})});
     // Batch electives
     const eT={AP_LANG:'T_HANPENG',AP_LIT:'T_WEIWEI',HONOR_LIT:'T_ZHANGHUIHUI',LINEAR_ALG:'T_ZHANGZUOPING',BUSINESS:'T_QINXINXUAN',MECH_BASIS:'T_YUYUANYING',JAPANESE:'T_NIUYONGMEI',FRENCH:'T_BIFEI',GERMAN:'T_GLENN'};
-    [{c:['JAPANESE','FRENCH','GERMAN'],h:2,k:'group_c'},{c:['LINEAR_ALG','BUSINESS','MECH_BASIS'],h:4,k:'group_b'},{c:['AP_LANG','AP_LIT','HONOR_LIT'],h:5,k:'group_a'}].forEach(({c:courses,h:hrs,k:key})=>{const secs=courses.map(c=>this.students.filter(s=>(s.elective_choices||{})[key]===c));const placedDays=new Set();for(let assigned=0;assigned<hrs;){let placed=false;for(let d=1;d<=5&&!placed;d++){if(placedDays.has(d))continue;for(const p of[1,2,3,4,5,6,7,8,9,10]){if(placed)break;const sid='D'+d+'P'+p;if(secs.some(sec=>sec.some(s=>A.some(a=>a.student_id===s.id&&a.slot_id===sid))))continue;if(courses.some(c=>A.some(a=>a.teacher_id===eT[c]&&a.slot_id===sid)))continue;courses.forEach((c,i)=>{secs[i].forEach(s=>{this._add([s],c,sid,s.id,'elective','R8',eT[c],A)})});assigned++;placed=true;placedDays.add(d)}}if(!placed){for(let d=1;d<=5&&!placed;d++){for(const p of[1,2,3,4,5,6,7,8,9,10]){if(placed)break;const sid='D'+d+'P'+p;if(secs.some(sec=>sec.some(s=>A.some(a=>a.student_id===s.id&&a.slot_id===sid))))continue;if(courses.some(c=>A.some(a=>a.teacher_id===eT[c]&&a.slot_id===sid)))continue;courses.forEach((c,i)=>{secs[i].forEach(s=>{this._add([s],c,sid,s.id,'elective','R8',eT[c],A)})});assigned++;placed=true}}}if(!placed)break}});
-    // Teaching — DistributedPlacer
-    const{DistributedPlacer}=require('./solver/distributed-placer.cjs');
+    const batchOneGroup = (courses, hrs, key) => {
+      const secs = courses.map(c => this.students.filter(s => (s.elective_choices || {})[key] === c));
+      for (let assigned = 0; assigned < hrs; ) {
+        let placed = false;
+        for (let d = 1; d <= 5 && !placed; d++) {
+          for (const p of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+            if (placed) break;
+            const sid = 'D' + d + 'P' + p;
+            if (secs.some(sec => sec.some(s => A.some(a => a.student_id === s.id && a.slot_id === sid)))) continue;
+            if (courses.some(c => A.some(a => a.teacher_id === eT[c] && a.slot_id === sid))) continue;
+            courses.forEach((c, i) => { secs[i].forEach(s => { this._add([s], c, sid, s.id, 'elective', 'R8', eT[c], A); }); });
+            assigned++;
+            placed = true;
+          }
+        }
+        if (!placed) break;
+      }
+    };
+    batchOneGroup(['JAPANESE', 'FRENCH', 'GERMAN'], 2, 'group_c');
+    batchOneGroup(['LINEAR_ALG', 'BUSINESS', 'MECH_BASIS'], 4, 'group_b');
+    batchOneGroup(['AP_LANG', 'AP_LIT', 'HONOR_LIT'], 5, 'group_a');
+    // Min-Conflicts solve teaching per TC
+    const{MinConflictsSolver}=require('./solver/min-conflicts-solver.cjs');
     const tc=[['AP_STAT',5,'T_JAIME'],['ENG_CW',5,'T_LUKE'],['COLLEGE_APP',4,null],['SELF_STUDY',2,null]];
-    this.tcS.forEach((stu,ti)=>{const blocked=new Set();stu.forEach(s=>{A.filter(a=>a.student_id===s.id&&(a.class_type==='admin'||a.class_type==='ap'||a.class_type==='elective')).forEach(a=>blocked.add(a.slot_id))});DistributedPlacer.place(tc,blocked,(sid)=>!stu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)),(cid,sid)=>{const info=tc.find(c=>c[0]===cid);this._add(stu,cid,sid,this.tcI[ti],'teaching',this.tcR[ti],info?info[2]:null,A)})});
-    // Fill
-    this.students.forEach(stu=>{const room=stu.admin_class_id==='AC5'?'R9':'R10';const daily=[0,0,0,0,0],occ=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>{daily[parseInt(a.slot_id.charAt(1))-1]++;occ.add(a.slot_id)});for(let d=1;d<=5;d++){while(daily[d-1]<10){let f=false;for(const p of[10,9,8,7,6]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}if(!f){for(const p of[5,4,3,2,1]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}}if(!f)break;}}});
+    this.tcS.forEach((stu,ti)=>{const blocked=new Set();stu.forEach(s=>{A.filter(a=>a.student_id===s.id).forEach(a=>blocked.add(a.slot_id))});const solver=new MinConflictsSolver(tc,blocked,stu,(sid)=>!stu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)),(tid,sid)=>!!(tid&&(A.some(x=>x.teacher_id===tid&&x.slot_id===sid)||this.teacherBusy(tid,sid))));solver.solve();solver.getResult().forEach(([cid,sid])=>{const info=tc.find(c=>c[0]===cid);this._add(stu,cid,sid,this.tcI[ti],'teaching',this.tcR[ti],info?info[2]:null,A)})});
     return A;
   }
-  evaluate(A){let sc=0;const exp={AP_STAT:5,ENG_CW:5,COLLEGE_APP:4};this.tcS.forEach(stu=>{for(let i=0;i<Math.min(3,stu.length);i++){const s=stu[Math.floor(i*stu.length/Math.min(3,stu.length))];Object.entries(exp).forEach(([cid,hrs])=>{sc+=Math.abs(A.filter(a=>a.student_id===s.id&&a.course_id===cid).length-hrs)*100});const daily=[0,0,0,0,0];A.filter(a=>a.student_id===s.id).forEach(a=>daily[a.slot_id.charAt(1)-1]++);if(daily.some(d=>d!==10))sc+=1000;const ssAM=A.filter(a=>a.student_id===s.id&&a.course_id==='SELF_STUDY'&&parseInt(a.slot_id.substring(3))<=5).length;if(ssAM>0)sc+=ssAM*5000;const apIds=(s.ap_courses||[]);if(apIds.length>0){const apTotal=apIds.reduce((sum,cid)=>sum+A.filter(a=>a.student_id===s.id&&a.course_id===cid).length,0);sc+=Math.abs(apTotal-apIds.length*5)*100}}});const s5=this.ac5[0],s6=this.ac6[0];let pi=0;for(let d=1;d<=5;d++)for(let p=1;p<=10;p++){const sid='D'+d+'P'+p;if(A.some(a=>a.student_id===s5.id&&a.slot_id===sid&&a.class_type==='admin')!==A.some(a=>a.student_id===s6.id&&a.slot_id===sid&&a.class_type==='admin'))pi++}sc+=pi*100;// Distribution penalty
-this.tcS.forEach(stu=>{const s=stu[Math.floor(Math.random()*stu.length)];Object.keys(exp).forEach(cid=>{const hrs=exp[cid];const byDay=[0,0,0,0,0,0];const periods=[[],[],[],[],[],[]];A.filter(a=>a.student_id===s.id&&a.course_id===cid).forEach(a=>{const d=parseInt(a.slot_id.charAt(1));byDay[d]++;periods[d].push(parseInt(a.slot_id.substring(3)))});for(let d=1;d<=5;d++){if(hrs<=5&&byDay[d]>=2)sc+=5000;if(byDay[d]>=3)sc+=10000;if(hrs>5&&byDay[d]===2){const ps=periods[d].sort((a,b)=>a-b);if(Math.abs(ps[1]-ps[0])!==1)sc+=5000}}})});return sc}
-  anneal(initial,iters=100000){const cur=initial.map(a=>({...a}));let curS=this.evaluate(cur),best=cur.map(a=>({...a})),bestS=curS,temp=200;for(let i=0;i<iters&&temp>0.05;i++){const stu=this.students[Math.floor(Math.random()*this.students.length)];const sA=cur.filter(a=>a.student_id===stu.id&&a.class_type!=='admin');if(sA.length<2)continue;const[ai,aj]=[Math.floor(Math.random()*sA.length),Math.floor(Math.random()*sA.length)];if(ai===aj)continue;const[a1,a2]=[sA[ai],sA[aj]];if(a1.slot_id===a2.slot_id)continue;const[t1,t2,o1,o2]=[a1.teacher_id,a2.teacher_id,a1.slot_id,a2.slot_id];const tcId=a1.class_id?.startsWith('TC_')?a1.class_id:null;const affected=tcId?this.students.filter(s=>s.teaching_class_id===tcId):[stu];let ok=true;if(tcId){for(const a of cur)if(!affected.some(s=>s.id===a.student_id)&&((a.slot_id===o2&&a.teacher_id===t1)||(a.slot_id===o1&&a.teacher_id===t2))){ok=false;break}}else{for(const a of cur)if(a.student_id!==stu.id&&((a.slot_id===o2&&a.teacher_id===t1)||(a.slot_id===o1&&a.teacher_id===t2))){ok=false;break}}if(!ok)continue;const cid1=a1.course_id,cid2=a2.course_id;affected.forEach(s=>cur.forEach(a=>{if(a.student_id===s.id){if(a.slot_id===o1&&a.course_id===cid1)a.slot_id=o2;else if(a.slot_id===o2&&a.course_id===cid2)a.slot_id=o1}}));const ns=this.evaluate(cur);if(ns<curS||Math.random()<Math.exp(-(ns-curS)/temp)){curS=ns;if(ns<bestS){best=cur.map(a=>({...a}));bestS=ns}}else{affected.forEach(s=>cur.forEach(a=>{if(a.student_id===s.id){if(a.slot_id===o2&&a.course_id===cid1)a.slot_id=o1;else if(a.slot_id===o1&&a.course_id===cid2)a.slot_id=o2}}))}temp*=0.9995}return{assignments:best,score:bestS}}
+  evaluate(A){let sc=0;const exp={AP_STAT:5,ENG_CW:5,COLLEGE_APP:4};this.tcS.forEach(stu=>{for(let i=0;i<Math.min(3,stu.length);i++){const s=stu[Math.floor(i*stu.length/Math.min(3,stu.length))];Object.entries(exp).forEach(([cid,hrs])=>{sc+=Math.abs(A.filter(a=>a.student_id===s.id&&a.course_id===cid).length-hrs)*100});const daily=[0,0,0,0,0];A.filter(a=>a.student_id===s.id).forEach(a=>daily[a.slot_id.charAt(1)-1]++);if(daily.some(d=>d!==10))sc+=1000;const ssAM=A.filter(a=>a.student_id===s.id&&a.course_id==='SELF_STUDY'&&parseInt(a.slot_id.substring(3))<=5).length;if(ssAM>0)sc+=ssAM*5000;const apIds=(s.ap_courses||[]);if(apIds.length>0){const apTotal=apIds.reduce((sum,cid)=>sum+A.filter(a=>a.student_id===s.id&&a.course_id===cid).length,0);sc+=Math.abs(apTotal-apIds.length*5)*100}}});return sc}
+  anneal(initial,iters=5000){const cur=initial.map(a=>({...a}));let curS=this.evaluate(cur),best=cur.map(a=>({...a})),bestS=curS,temp=200;for(let i=0;i<iters&&temp>0.05;i++){const stu=this.students[Math.floor(Math.random()*this.students.length)];const sA=cur.filter(a=>a.student_id===stu.id&&a.class_type!=='admin');if(sA.length<2)continue;const[ai,aj]=[Math.floor(Math.random()*sA.length),Math.floor(Math.random()*sA.length)];if(ai===aj)continue;const[a1,a2]=[sA[ai],sA[aj]];if(a1.slot_id===a2.slot_id)continue;const[t1,t2,o1,o2]=[a1.teacher_id,a2.teacher_id,a1.slot_id,a2.slot_id];let ok=true;for(const a of cur)if(a.student_id!==stu.id&&((a.slot_id===o2&&a.teacher_id===t1)||(a.slot_id===o1&&a.teacher_id===t2))){ok=false;break}if(!ok)continue;cur.forEach(a=>{if(a.student_id===stu.id){if(a.slot_id===o1)a.slot_id=o2;else if(a.slot_id===o2)a.slot_id=o1}});const ns=this.evaluate(cur);if(ns<curS||Math.random()<Math.exp(-(ns-curS)/temp)){curS=ns;if(ns<bestS){best=cur.map(a=>({...a}));bestS=ns}}else{cur.forEach(a=>{if(a.student_id===stu.id){if(a.slot_id===o2)a.slot_id=o1;else if(a.slot_id===o1)a.slot_id=o2}})}temp*=0.9995}return{assignments:best,score:bestS}}
 }
 module.exports={G12Engine};

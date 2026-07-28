@@ -54,20 +54,22 @@ class SchedulingEngine {
       this._add(this.ac2, p.ac2, slot, 'AC2', 'admin', 'R2', adminT[p.ac2], A);
     });
 
-    // Teaching — use DistributedPlacer for constraint-aware placement
-    const { DistributedPlacer } = require('./solver/distributed-placer.cjs');
-    for (let ti = 0; ti < 3; ti++) {
-      const stu = this.tcS[ti], tcId = this.tcI[ti], room = this.tcR[ti];
-      // Build blocked slots from admin entries for all TC students
-      const blocked = new Set();
-      stu.forEach(s => { A.filter(a => a.student_id === s.id && a.class_type === 'admin').forEach(a => blocked.add(a.slot_id)); });
+    // Teaching
+    (this.rules.course_priority?.order || Object.keys(courseHrs)).forEach(cid => {
+      const hrs = courseHrs[cid], tid = courseTeacher[cid];
+      const fb = this.teacherRestrictions[tid] ? [...this.teacherRestrictions[tid]] : [];
+      const periods = [1, 2, 3, 4, 5, 8, 9, 10, 6, 7].filter(p => !fb.includes(p));
 
-      const courses = Object.entries(courseHrs).map(([cid, hrs]) => [cid, hrs, courseTeacher[cid]]);
-      DistributedPlacer.place(courses, blocked,
-        (sid) => !stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid)),
-        (cid, sid) => { this._add(stu, cid, sid, tcId, 'teaching', room, courseTeacher[cid], A); }
-      );
-    }
+      for (let ti = 0; ti < 3; ti++) {
+        const stu = this.tcS[ti]; let as = 0;
+        for (let d = 1; d <= 5 && as < Math.min(hrs, 5); d++) {
+          const p = periods[(as + ti * 2) % periods.length];
+          const sid = 'D' + d + 'P' + p;
+          if (!stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid)) && !(tid && A.some(x => x.teacher_id === tid && x.slot_id === sid))) { this._add(stu, cid, sid, this.tcI[ti], 'teaching', this.tcR[ti], tid, A); as++; }
+        }
+        for (let d = 1; d <= 5 && as < hrs; d++) for (const p of periods) { if (as >= hrs) break; const sid = 'D' + d + 'P' + p; if (stu.some(s => A.some(x => x.student_id === s.id && x.slot_id === sid))) continue; if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid)) continue; this._add(stu, cid, sid, this.tcI[ti], 'teaching', this.tcR[ti], tid, A); as++; break; }
+      }
+    });
 
     // Guarantee: all courses have exact hours (overwrite self-study if needed)
     this.tcS.forEach((stu, ti) => {
@@ -156,7 +158,7 @@ class SchedulingEngine {
   }
 
   // 模拟退火优化
-  anneal(initial, iterations = 100000) {
+  anneal(initial, iterations = 5000) {
     const cur = initial.map(a => ({ ...a }));
     let curScore = this.evaluate(cur);
     let best = cur.map(a => ({ ...a })), bestScore = curScore;
@@ -208,16 +210,7 @@ class SchedulingEngine {
         const daily = [0, 0, 0, 0, 0]; A.filter(a => a.student_id === s.id).forEach(a => daily[a.slot_id.charAt(1) - 1]++);
         if (daily.some(d => d !== 10)) sc += 1000;
         const seen = new Set(); A.filter(a => a.student_id === s.id).forEach(a => { if (seen.has(a.slot_id)) sc += 500; seen.add(a.slot_id); });
-        // Distribution penalty: ≤5hr max 1/day; >5hr max 2/day consecutive
-        [...Object.entries(exp),['SELF_STUDY',2]].forEach(([cid, hrs]) => {
-          const byDay = [0,0,0,0,0,0]; const periods = [[],[],[],[],[],[]];
-          A.filter(a => a.student_id === s.id && a.course_id === cid).forEach(a => { const d=parseInt(a.slot_id.charAt(1)); byDay[d]++; periods[d].push(parseInt(a.slot_id.substring(3))); });
-          for(let d=1;d<=5;d++){
-            if(hrs<=5 && byDay[d]>=2) sc += 5000; // ≤5hr: max 1/day
-            if(byDay[d]>=3) sc += 10000; // never 3+ on same day
-            if(hrs>5 && byDay[d]===2){ const ps=periods[d].sort((a,b)=>a-b); if(Math.abs(ps[1]-ps[0])!==1) sc += 5000; } // >5hr: must be consecutive
-          }
-        });
+        Object.entries(exp).forEach(([cid, hrs]) => { if (hrs > 5) return; const d = [0, 0, 0, 0, 0]; A.filter(a => a.student_id === s.id && a.course_id === cid).forEach(a => d[a.slot_id.charAt(1) - 1]++); d.forEach(c => { if (c >= 2) sc += (this.getRule('no_cluster')?.penalty || 3); }); });
         const ssAM = A.filter(a => a.student_id === s.id && a.course_id === 'SELF_STUDY' && parseInt(a.slot_id.substring(3)) <= 5).length;
         if (ssAM > 0) sc += ssAM * (this.getRule('no_self_study_morning')?.penalty || 1000);
       });
