@@ -71,3 +71,10 @@ state.meta = state.meta || {};
 state.meta.updated_at = new Date().toISOString();
 fs.writeFileSync(DATA_PATH, JSON.stringify(state, null, 2), 'utf-8');
 console.log('\n✅ Written to ' + DATA_PATH);
+
+// === 全量自动检查 ===
+const { PostChecker } = require('./packages/core/src/solver/post-check.cjs');
+const finalState = JSON.parse(fs.readFileSync(DATA_PATH, 'utf-8'));
+const result = PostChecker.check(finalState);
+PostChecker.report(result);
+if (!result.pass) process.exit(1);

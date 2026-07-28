@@ -106,10 +106,14 @@ class G12Engine {
     // Elective assignment handled by batchAssign below (all sections share slots)
 
     // === NUCLEAR REBUILD ===
-    // Step 0: clear only teaching + SELF_STUDY (preserve AP batch + elective batch assignments)
+    // Step 0: clear teaching + filler + SELF_STUDY (keep admin, AP, elective)
     this.students.forEach(stu => {
       const toRemove = [];
-      A.forEach((a, i) => { if (a.student_id === stu.id && (a.class_type === 'teaching' || a.class_type === 'filler' || (a.course_id === 'SELF_STUDY' && a.class_type !== 'admin'))) toRemove.push(i); });
+      A.forEach((a, i) => {
+        if (a.student_id !== stu.id) return;
+        if (a.class_type === 'admin' || a.class_type === 'ap' || a.class_type === 'elective') return;
+        toRemove.push(i);
+      });
       toRemove.sort((a, b) => b - a).forEach(i => A.splice(i, 1));
     });
 
