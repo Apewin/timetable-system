@@ -35,7 +35,7 @@ class SoftOptimizer {
     });
 
     let swaps = 0;
-    for (let pass = 0; pass < 5; pass++) {
+    for (let pass = 0; pass < 20; pass++) {
       let passSwaps = 0;
       students.forEach(stu => {
         const stuA = A.filter(a => a.student_id === stu.id);

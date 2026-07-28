@@ -35,7 +35,25 @@ class SchedulingEngine{
       for(const vm of varMap){for(const[sid,vname]of Object.entries(vm.slotVars)){if(trueVars.includes(vname)){const[cid,,tid]=courses.find(c=>c[0]===vm.cid)||[vm.cid,0,null];this._add(stu,vm.cid,sid,tcId,'teaching',room,tid,A);break}}}
     });
     // Fill remaining empty slots with SELF_STUDY
-    this.students.forEach(stu=>{const room=stu.admin_class_id==='AC1'?'R1':'R2';const daily=[0,0,0,0,0],occ=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>{daily[parseInt(a.slot_id.charAt(1))-1]++;occ.add(a.slot_id)});for(let d=1;d<=5;d++){while(daily[d-1]<10){let f=false;for(const p of[10,9,8,7,6]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}if(!f){for(const p of[5,4,3,2,1]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}}if(!f)break;}}});
+    // Smart fill: never put SELF_STUDY in morning. Instead, move afternoon courses to morning.
+    this.students.forEach(stu=>{const room=stu.admin_class_id==='AC1'?'R1':'R2';const daily=[0,0,0,0,0],occ=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>{daily[parseInt(a.slot_id.charAt(1))-1]++;occ.add(a.slot_id)});
+      // Fill afternoon with SELF_STUDY
+      for(let d=1;d<=5;d++){while(daily[d-1]<10){let f=false;for(const p of[10,9,8,7,6]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}if(!f)break;}}
+      // For remaining morning gaps: move afternoon courses to morning, then fill afternoon with SS
+      for(let d=1;d<=5;d++){while(daily[d-1]<10){
+        let moved=false;
+        for(const pp of[6,7,8,9,10]){const afterSid='D'+d+'P'+pp;
+          const moveA=A.find(a=>a.student_id===stu.id&&a.slot_id===afterSid&&a.class_type!=='admin'&&a.course_id!=='SELF_STUDY'&&!['DUTY','MEETING','CLUB'].includes(a.course_id));
+          if(!moveA)continue;
+          for(const mp of[5,4,3,2,1]){const morningSid='D'+d+'P'+mp;if(occ.has(morningSid))continue;
+            if(moveA.teacher_id&&A.some(a=>a.teacher_id===moveA.teacher_id&&a.slot_id===morningSid&&a.student_id!==stu.id))continue;
+            moveA.slot_id=morningSid;occ.add(morningSid);occ.delete(afterSid);
+            this._add([stu],'SELF_STUDY',afterSid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(afterSid);moved=true;break;
+          }if(moved)break;
+        }
+        if(!moved)break;
+      }}
+    });
     return A;
   }
   evaluate(A){let sc=0;const exp={MATH_PRECAL:6,AP_PHYS1:5,CHEM_PRE:5,BIO_PRE:5,ENG_LS:3,ENG_RW:3,ENG_LIT:4,ENG_SURVEY:2,PE:2};this.tcS.forEach(stu=>{const s=stu[0];Object.entries(exp).forEach(([cid,hrs])=>{sc+=Math.abs(A.filter(a=>a.student_id===s.id&&a.course_id===cid).length-hrs)*100});const daily=[0,0,0,0,0];A.filter(a=>a.student_id===s.id).forEach(a=>daily[a.slot_id.charAt(1)-1]++);if(daily.some(d=>d!==10))sc+=1000});const s1=this.ac1[0],s2=this.ac2[0];let pi=0;for(let d=1;d<=5;d++)for(let p=1;p<=10;p++){const sid='D'+d+'P'+p;if(A.some(a=>a.student_id===s1.id&&a.slot_id===sid&&a.class_type==='admin')!==A.some(a=>a.student_id===s2.id&&a.slot_id===sid&&a.class_type==='admin'))pi++}sc+=pi*100;return sc}
