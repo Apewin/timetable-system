@@ -9,7 +9,8 @@ class G11Engine{
     const A=[];
     this._add(this.ac3,'DUTY','D1P10','AC3','admin','R5',null,A);this._add(this.ac4,'DUTY','D1P10','AC4','admin','R6',null,A);
     this.rules.rules.filter(r=>(r.fixed_slot||r.fixed_slots)&&(r.course==='MEETING'||r.course==='CLUB')).forEach(r=>{(r.fixed_slot?[r.fixed_slot]:r.fixed_slots).forEach(s=>{this._add(this.ac3,r.course,s,'AC3','admin','R5',null,A);this._add(this.ac4,r.course,s,'AC4','admin','R6',null,A)})});
-    const pairs=[{s:'D1P2',a3:'MATH_CN',a4:'CHIN'},{s:'D1P3',a3:'CHIN',a4:'MATH_CN'},{s:'D1P4',a3:'POL',a4:'GUIDANCE'},{s:'D2P2',a3:'GUIDANCE',a4:'POL'},{s:'D2P3',a3:'PE',a4:'IT'},{s:'D2P4',a3:'IT',a4:'PE'},{s:'D3P2',a3:'MATH_CN',a4:'CHIN'},{s:'D3P3',a3:'CHIN',a4:'MATH_CN'},{s:'D3P4',a3:'POL',a4:'GUIDANCE'},{s:'D4P2',a3:'GUIDANCE',a4:'POL'},{s:'D4P3',a3:'PE',a4:'SELF_STUDY'},{s:'D5P2',a3:'SELF_STUDY',a4:'PE'},{s:'D5P3',a3:'SELF_STUDY',a4:'SELF_STUDY'}];
+    // Pairs with SELF_STUDY moved to P7-P8 (afternoon) to avoid morning SS
+    const pairs=[{s:'D1P2',a3:'MATH_CN',a4:'CHIN'},{s:'D1P3',a3:'CHIN',a4:'MATH_CN'},{s:'D1P4',a3:'POL',a4:'GUIDANCE'},{s:'D2P2',a3:'GUIDANCE',a4:'POL'},{s:'D2P3',a3:'PE',a4:'IT'},{s:'D2P4',a3:'IT',a4:'PE'},{s:'D3P2',a3:'MATH_CN',a4:'CHIN'},{s:'D3P3',a3:'CHIN',a4:'MATH_CN'},{s:'D3P4',a3:'POL',a4:'GUIDANCE'},{s:'D4P2',a3:'GUIDANCE',a4:'POL'},{s:'D4P7',a3:'PE',a4:'SELF_STUDY'},{s:'D5P7',a3:'SELF_STUDY',a4:'PE'},{s:'D5P8',a3:'SELF_STUDY',a4:'SELF_STUDY'}];
     const aT={MATH_CN:'T_EXP_E',CHIN:'T_EXP_F',POL:'T_EXP_G',IT:'T_EXP_J',GUIDANCE:'T_GUIDANCE',PE:'T_EXP_H1',SELF_STUDY:null};
     pairs.forEach(p=>{this._add(this.ac3,p.a3,p.s,'AC3','admin','R5',p.a3==='PE'?'T_EXP_H1':aT[p.a3],A);this._add(this.ac4,p.a4,p.s,'AC4','admin','R6',p.a4==='PE'?'T_EXP_H2':aT[p.a4],A)});
     // AP courses handled by per-student SAT below (not batch)
