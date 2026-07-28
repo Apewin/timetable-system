@@ -13,13 +13,9 @@ class G12Engine{
     this._add(this.ac5,'CLUB','D2P10','AC5','admin','R9',null,A);this._add(this.ac6,'CLUB','D2P10','AC6','admin','R10',null,A);
     this._add(this.ac5,'CLUB','D5P10','AC5','admin','R9',null,A);this._add(this.ac6,'CLUB','D5P10','AC6','admin','R10',null,A);
     [{s:'D1P2',a5:'CHIN',a6:'PE'},{s:'D1P3',a5:'PE',a6:'CHIN'},{s:'D2P2',a5:'CHIN',a6:'PE'},{s:'D2P3',a5:'PE',a6:'CHIN'}].forEach(p=>{this._add(this.ac5,p.a5,p.s,'AC5','admin','R9',p.a5==='CHIN'?'T_EXP_K':'T_EXP_L',A);this._add(this.ac6,p.a6,p.s,'AC6','admin','R10',p.a6==='CHIN'?'T_EXP_K':'T_EXP_L',A)});
-    // Batch AP
+    // AP + electives handled by per-student SAT below
     const apCfg={AP_PHYSC:'T_BAIRUSHUANG',AP_CHEM:'T_YANGHONGXU',AP_BIO:'T_FANZHENGWEI',AP_CS:'T_SUNHUA',AP_ENVSCI:'T_ZHUJIE',AP_PSYCH:'T_XINLI',AP_ARTHIST:'T_ZHANGHUIHUI',AP_MACRO:'T_YUYUANYING'};
-    Object.entries(apCfg).forEach(([cid,tid])=>{const stus=this.students.filter(s=>(s.ap_courses||[]).includes(cid));if(!stus.length)return;const nS=2,perS=Math.ceil(stus.length/nS),secs=[];for(let i=0;i<nS;i++)secs.push(stus.slice(i*perS,(i+1)*perS));secs.forEach((secStu,si)=>{let as=0;for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(secStu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)))continue;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;if(this.teacherBusy(tid,sid))continue;this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;if(this.teacherBusy(tid,sid))continue;secStu.forEach(s=>{const i=A.findIndex(x=>x.student_id===s.id&&x.slot_id===sid&&x.class_type!=='admin'&&x.class_type!=='ap');if(i>=0)A.splice(i,1)});this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}})});
-    // Batch elective
     const eT={AP_LANG:'T_HANPENG',AP_LIT:'T_WEIWEI',HONOR_LIT:'T_ZHANGHUIHUI',LINEAR_ALG:'T_ZHANGZUOPING',BUSINESS:'T_QINXINXUAN',MECH_BASIS:'T_YUYUANYING',JAPANESE:'T_NIUYONGMEI',FRENCH:'T_BIFEI',GERMAN:'T_GLENN'};
-    const batchElective=(courses,hrs,key)=>{const secs=courses.map(c=>this.students.filter(s=>(s.elective_choices||{})[key]===c));for(let assigned=0;assigned<hrs;){let placed=false;for(let d=1;d<=5&&!placed;d++){for(const p of[1,2,3,4,5,6,7,8,9,10]){if(placed)break;const sid='D'+d+'P'+p;if(secs.some(sec=>sec.some(s=>A.some(a=>a.student_id===s.id&&a.slot_id===sid))))continue;if(courses.some(c=>A.some(a=>a.teacher_id===eT[c]&&a.slot_id===sid)))continue;courses.forEach((c,i)=>{secs[i].forEach(s=>{this._add([s],c,sid,s.id,'elective','R8',eT[c],A)})});assigned++;placed=true}}if(!placed)break}};
-    batchElective(['JAPANESE','FRENCH','GERMAN'],2,'group_c');batchElective(['LINEAR_ALG','BUSINESS','MECH_BASIS'],4,'group_b');batchElective(['AP_LANG','AP_LIT','HONOR_LIT'],5,'group_a');
     // SAT per TC
     const tc=[['AP_STAT',5,'T_JAIME'],['ENG_CW',5,'T_LUKE'],['COLLEGE_APP',4,null],['SELF_STUDY',2,null]];
     this.tcS.forEach((stu,ti)=>{
@@ -32,6 +28,26 @@ class G12Engine{
       const solution=solver.solve();if(!solution)return;
       const trueVars=solution.getTrueVars();
       for(const vm of varMap){for(const[sid,vname]of Object.entries(vm.slotVars)){if(trueVars.includes(vname)){const[cid,,tid]=tc.find(c=>c[0]===vm.cid)||[vm.cid,0,null];this._add(stu,vm.cid,sid,this.tcI[ti],'teaching',this.tcR[ti],tid,A);break}}}
+    });
+    // Per-student SAT for AP + electives
+    this.students.forEach(stu=>{
+      const stuCourses=[];
+      (stu.ap_courses||[]).forEach(cid=>stuCourses.push([cid,5,apCfg[cid]]));
+      const ec=stu.elective_choices||{};
+      if(ec.group_a)stuCourses.push([ec.group_a,5,eT[ec.group_a]]);
+      if(ec.group_b)stuCourses.push([ec.group_b,4,eT[ec.group_b]]);
+      if(ec.group_c)stuCourses.push([ec.group_c,2,eT[ec.group_c]]);
+      if(!stuCourses.length)return;
+      const blocked=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>blocked.add(a.slot_id));
+      const allSlots=[];for(let d=1;d<=5;d++)for(let p=1;p<=10;p++){const sid='D'+d+'P'+p;if(!blocked.has(sid))allSlots.push(sid)}
+      if(allSlots.length<stuCourses.reduce((s,c)=>s+c[1],0))return;
+      const solver=new Logic.Solver();const varMap=[];
+      for(const[cid,hrs,tid]of stuCourses){for(let h=0;h<hrs;h++){const sv={};for(const sid of allSlots){if(tid&&(A.some(x=>x.teacher_id===tid&&x.slot_id===sid&&x.student_id!==stu.id)||this.teacherBusy(tid,sid)))continue;sv[sid]=`st_${cid}_${h}_${sid}`}varMap.push({cid,h,slotVars:sv});solver.require(Logic.exactlyOne(Object.values(sv)))}}
+      for(const sid of allSlots){const sv=[];for(const vm of varMap){const vname=vm.slotVars[sid];if(vname)sv.push(vname)}if(sv.length>1)solver.require(Logic.atMostOne(sv))}
+      for(const[cid,hrs]of stuCourses){if(hrs>5)continue;for(let d=1;d<=5;d++){const dv=[];for(const vm of varMap){if(vm.cid!==cid)continue;for(const[sid,vname]of Object.entries(vm.slotVars)){if(sid.startsWith('D'+d))dv.push(vname)}}if(dv.length>1)solver.require(Logic.atMostOne(dv))}}
+      const solution=solver.solve();if(!solution)return;
+      const trueVars=solution.getTrueVars();
+      for(const vm of varMap){for(const[sid,vname]of Object.entries(vm.slotVars)){if(trueVars.includes(vname)){const[cid,,tid]=stuCourses.find(c=>c[0]===vm.cid)||[vm.cid,0,null];this._add([stu],vm.cid,sid,stu.id,'ap',tid==='T_JAIME'||tid==='T_LUKE'?'teaching':'ap','R8',tid,A);break}}}
     });
     // Fill
     this.students.forEach(stu=>{const room=stu.admin_class_id==='AC5'?'R9':'R10';const daily=[0,0,0,0,0],occ=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>{daily[parseInt(a.slot_id.charAt(1))-1]++;occ.add(a.slot_id)});for(let d=1;d<=5;d++){while(daily[d-1]<10){let f=false;for(const p of[10,9,8,7,6]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}if(!f){for(const p of[5,4,3,2,1]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}}if(!f)break;}}});

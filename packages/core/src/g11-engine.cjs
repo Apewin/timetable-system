@@ -12,9 +12,8 @@ class G11Engine{
     const pairs=[{s:'D1P2',a3:'MATH_CN',a4:'CHIN'},{s:'D1P3',a3:'CHIN',a4:'MATH_CN'},{s:'D1P4',a3:'POL',a4:'GUIDANCE'},{s:'D2P2',a3:'GUIDANCE',a4:'POL'},{s:'D2P3',a3:'PE',a4:'IT'},{s:'D2P4',a3:'IT',a4:'PE'},{s:'D3P2',a3:'MATH_CN',a4:'CHIN'},{s:'D3P3',a3:'CHIN',a4:'MATH_CN'},{s:'D3P4',a3:'POL',a4:'GUIDANCE'},{s:'D4P2',a3:'GUIDANCE',a4:'POL'},{s:'D4P3',a3:'PE',a4:'SELF_STUDY'},{s:'D5P2',a3:'SELF_STUDY',a4:'PE'},{s:'D5P3',a3:'SELF_STUDY',a4:'SELF_STUDY'}];
     const aT={MATH_CN:'T_EXP_E',CHIN:'T_EXP_F',POL:'T_EXP_G',IT:'T_EXP_J',GUIDANCE:'T_GUIDANCE',PE:'T_EXP_H1',SELF_STUDY:null};
     pairs.forEach(p=>{this._add(this.ac3,p.a3,p.s,'AC3','admin','R5',p.a3==='PE'?'T_EXP_H1':aT[p.a3],A);this._add(this.ac4,p.a4,p.s,'AC4','admin','R6',p.a4==='PE'?'T_EXP_H2':aT[p.a4],A)});
-    // Batch AP
+    // AP courses handled by per-student SAT below (not batch)
     const apCfg={AP_PHYS2:'T_ZHANGZUOPING',AP_CHEM:'T_YANGHONGXU',AP_BIO:'T_FANZHENGWEI',AP_CS:'T_SUNHUA',AP_PSYCH:'T_FUXIAOMENG',AP_ENVSCI:'T_ZHUJIE',AP_MACRO:'T_QINXINXUAN',AP_ARTHIST:'T_ZHANGHUIHUI',AP_MICRO:'T_GLENN'};
-    Object.entries(apCfg).forEach(([cid,tid])=>{const stus=this.students.filter(s=>(s.ap_courses||[]).includes(cid));if(!stus.length)return;const nS=2,perS=Math.ceil(stus.length/nS),secs=[];for(let i=0;i<nS;i++)secs.push(stus.slice(i*perS,(i+1)*perS));secs.forEach((secStu,si)=>{let as=0;for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(secStu.some(s=>A.some(x=>x.student_id===s.id&&x.slot_id===sid)))continue;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}for(let d=1;d<=5&&as<5;d++)for(const p of[1,2,3,4,5,8,9,10,6,7]){if(as>=5)break;const sid='D'+d+'P'+p;if(A.some(x=>x.teacher_id===tid&&x.slot_id===sid))continue;secStu.forEach(s=>{const i=A.findIndex(x=>x.student_id===s.id&&x.slot_id===sid&&x.class_type!=='admin'&&x.class_type!=='ap');if(i>=0)A.splice(i,1)});this._add(secStu,cid,sid,cid+'_S'+(si+1),'ap','R8',tid,A);as++;break}})});
     // SAT per TC
     const common=[['AP_CALC_BC',5,'T_WANGLILI'],['ENG_COMP',4,'T_YULIN'],['PRE_AP_LIT',2,'T_RACHEL'],['PHYS_CN',2,'T_BAIRUSHUANG']];
     const l12=[['TOEFL',3,'T_WEIWEI'],['HONOR_LC',2,'T_LUKE']],l3=[['AP_LC',5,'T_HANPENG']];
@@ -29,6 +28,22 @@ class G11Engine{
       const solution=solver.solve();if(!solution)return;
       const trueVars=solution.getTrueVars();
       for(const vm of varMap){for(const[sid,vname]of Object.entries(vm.slotVars)){if(trueVars.includes(vname)){const[cid,,tid]=courses.find(c=>c[0]===vm.cid)||[vm.cid,0,null];this._add(stu,vm.cid,sid,ti===2?'TC_G11_3':ti===0?'TC_G11_1':'TC_G11_2','teaching',ti===2?'R6':'R5',tid,A);break}}}
+    });
+    // Per-student SAT for AP courses (use admin+teaching as blocked)
+    this.students.forEach(stu=>{
+      const apList=(stu.ap_courses||[]).filter(c=>c!=='AP_CALC_BC');
+      if(!apList.length)return;
+      const apCourses=apList.map(cid=>{const tid=apCfg[cid];return[cid,5,tid]});
+      const blocked=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>blocked.add(a.slot_id));
+      const allSlots=[];for(let d=1;d<=5;d++)for(let p=1;p<=10;p++){const sid='D'+d+'P'+p;if(!blocked.has(sid))allSlots.push(sid)}
+      if(allSlots.length<apCourses.reduce((s,c)=>s+c[1],0))return; // not enough slots
+      const solver=new Logic.Solver();const varMap=[];
+      for(const[cid,hrs,tid]of apCourses){for(let h=0;h<hrs;h++){const sv={};for(const sid of allSlots){if(tid&&A.some(x=>x.teacher_id===tid&&x.slot_id===sid&&x.student_id!==stu.id))continue;sv[sid]=`ap_${cid}_${h}_${sid}`}varMap.push({cid,h,slotVars:sv});solver.require(Logic.exactlyOne(Object.values(sv)))}}
+      for(const sid of allSlots){const sv=[];for(const vm of varMap){const vname=vm.slotVars[sid];if(vname)sv.push(vname)}if(sv.length>1)solver.require(Logic.atMostOne(sv))}
+      for(const[cid,hrs]of apCourses){for(let d=1;d<=5;d++){const dv=[];for(const vm of varMap){if(vm.cid!==cid)continue;for(const[sid,vname]of Object.entries(vm.slotVars)){if(sid.startsWith('D'+d))dv.push(vname)}}if(dv.length>1)solver.require(Logic.atMostOne(dv))}}
+      const solution=solver.solve();if(!solution)return;
+      const trueVars=solution.getTrueVars();
+      for(const vm of varMap){for(const[sid,vname]of Object.entries(vm.slotVars)){if(trueVars.includes(vname)){const[cid,,tid]=apCourses.find(c=>c[0]===vm.cid)||[vm.cid,0,null];this._add([stu],vm.cid,sid,stu.id,'ap','R8',tid,A);break}}}
     });
     // Fill
     this.students.forEach(stu=>{const room=stu.admin_class_id==='AC3'?'R5':'R6';const daily=[0,0,0,0,0],occ=new Set();A.filter(a=>a.student_id===stu.id).forEach(a=>{daily[parseInt(a.slot_id.charAt(1))-1]++;occ.add(a.slot_id)});for(let d=1;d<=5;d++){while(daily[d-1]<10){let f=false;for(const p of[10,9,8,7,6]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}if(!f){for(const p of[5,4,3,2,1]){const sid='D'+d+'P'+p;if(!occ.has(sid)){this._add([stu],'SELF_STUDY',sid,stu.id,'filler',room,null,A);daily[d-1]++;occ.add(sid);f=true;break}}}if(!f)break;}}});
