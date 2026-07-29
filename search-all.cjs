@@ -14,11 +14,11 @@ grades.forEach(grade => {
   console.log(`\n=== 排课: 高${grade === 10 ? '一' : grade === 11 ? '二' : '三'} ===`);
   let engine, prefix;
   if (grade === 10) {
-    const { SchedulingEngine } = require('./packages/core/src/engine.cjs');
+    const { SchedulingEngine } = require('./archive/engine.cjs');
     engine = new SchedulingEngine(R, D);
     prefix = '';
   } else if (grade === 11) {
-    const { G11Engine } = require('./packages/core/src/g11-engine.cjs');
+    const { G11Engine } = require('./archive/g11-engine.cjs');
     // Update data with existing G10 assignments (cross-grade)
     data.assignments = (data.assignments || []).filter(a => {
       const s = data.students.find(x => x.id === a.student_id);
@@ -27,7 +27,7 @@ grades.forEach(grade => {
     engine = new G11Engine(R, D);
     prefix = 'G11';
   } else {
-    const { G12Engine } = require('./packages/core/src/g12-engine.cjs');
+    const { G12Engine } = require('./archive/g12-engine.cjs');
     data.assignments = (data.assignments || []).filter(a => {
       const s = data.students.find(x => x.id === a.student_id);
       return s?.grade !== 12;

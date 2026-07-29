@@ -2,9 +2,9 @@
  * 综合排课求解器 v4 - 串行排课 G10→G11→G12，传递教师课表
  */
 const fs = require('fs');
-const { SchedulingEngine } = require('./packages/core/src/engine.cjs');
-const { G11Engine } = require('./packages/core/src/g11-engine.cjs');
-const { G12Engine } = require('./packages/core/src/g12-engine.cjs');
+const { SchedulingEngine } = require('./archive/engine.cjs');
+const { G11Engine } = require('./archive/g11-engine.cjs');
+const { G12Engine } = require('./archive/g12-engine.cjs');
 
 const RULES_PATH = './rules.json';
 const DATA_PATH = './timetable.json';

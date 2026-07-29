@@ -194,6 +194,7 @@ class PostChecker {
   }
 
   static _getSpecs() {
+    // P1-5 fix: SPEC 与 validate-against-excel.cjs 对齐，补全 G11 teaching 课程
     return {
       G10: {
         courses: {
@@ -203,6 +204,9 @@ class PostChecker {
       },
       G11: {
         courses: {
+          // P1-5 fix: 补全 teaching 课程（之前缺失 ENG_COMP, AP_CALC_BC, PRE_AP_LIT, PHYS_CN 等）
+          ENG_COMP:4, AP_CALC_BC:5, PRE_AP_LIT:2, PHYS_CN:2,
+          // TC1&2 layered: HONOR_LC(2)+TOEFL(3); TC3: AP_LC(5) — verified per-student below
           DUTY:1,MEETING:1,CLUB:2,MATH_CN:2,CHIN:2,POL:2,PE:2,IT:1,GUIDANCE:2,SELF_STUDY:2,
         }
       },

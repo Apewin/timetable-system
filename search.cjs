@@ -2,7 +2,7 @@
  * 搜索层 v2 - 模拟退火
  */
 const fs = require('fs');
-const { SchedulingEngine } = require('./packages/core/src/engine.cjs');
+const { SchedulingEngine } = require('./archive/engine.cjs');
 
 const RULES = __dirname + '/rules.json';
 const DATA = __dirname + '/timetable.json';

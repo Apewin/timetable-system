@@ -6,6 +6,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+packages/web/.env.local
 
 # Build output
 dist/

@@ -103,8 +103,8 @@ function validate(state) {
     console.log('\n=== ' + spec.name + ' (G' + grade + ') ===');
     console.log('  学生: ' + gStudents.length + ', 分配: ' + gAs.length);
 
-    // Sample 5 students for detailed check
-    const sample = gStudents.slice(0, 5);
+    // Check ALL students (was only sampling 5 — P0-4 fix)
+    const sample = gStudents;
     const issues = {};
 
     sample.forEach(stu => {
@@ -234,6 +234,7 @@ function validate(state) {
     if (conflicts.length > 0) {
       console.log('  ❌ 教师冲突: ' + conflicts.length + ' 处 (同时段不同课程)');
       conflicts.slice(0, 5).forEach(([k, c]) => console.log('    ' + k + ': ' + [...c].join(', ')));
+      errors.push({ grade, count: conflicts.length, type: 'teacher_conflict' }); // P0-3 fix: 计入 errors
     } else {
       console.log('  ✅ 教师无冲突');
     }
@@ -263,7 +264,7 @@ console.log('\n=== 总结 ===');
 let totalErrors = 0;
 Object.entries(result.stats).forEach(([grade, s]) => {
   console.log(grade + ': ' + s.errors + ' 个错误, 早上自习=' + s.ssAM + ', 教师冲突=' + s.teacherConflicts);
-  totalErrors += s.errors;
+  totalErrors += s.errors + s.teacherConflicts; // P0-3 fix: 教师冲突计入 totalErrors
 });
 
 if (totalErrors === 0) {

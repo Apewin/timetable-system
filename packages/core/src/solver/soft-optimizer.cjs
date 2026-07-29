@@ -47,6 +47,7 @@ class SoftOptimizer {
         const afternoonCourses = stuA.filter(a =>
           a.course_id !== 'SELF_STUDY' &&
           a.class_type !== 'admin' &&
+          a.class_type !== 'teaching' &&  // P1-3 fix: teaching 课不可单生交换（防教学班撕裂）
           !['DUTY', 'MEETING', 'CLUB'].includes(a.course_id) &&
           parseInt(a.slot_id.substring(3)) >= 6
         );

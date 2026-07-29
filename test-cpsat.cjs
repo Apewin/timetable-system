@@ -2,8 +2,8 @@
  * CP-SAT 排课测试 — G10 only
  * 对比 CP-SAT vs logic-solver 的效果和性能
  */
-const { CpSatEngine } = require('./packages/core/src/cpsat-engine.cjs');
-const { SchedulingEngine } = require('./packages/core/src/engine.cjs');
+const { CpSatEngine } = require('./archive/cpsat-engine.cjs');
+const { SchedulingEngine } = require('./archive/engine.cjs');
 const { PostChecker } = require('./packages/core/src/solver/post-check.cjs');
 
 const RULES_PATH = './rules.json';

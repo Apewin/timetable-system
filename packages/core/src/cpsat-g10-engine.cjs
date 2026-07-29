@@ -42,11 +42,25 @@ class CpSatG10Engine {
     for (let d = 1; d <= 5; d++)
       for (let p = 1; p <= 10; p++)
         this.allSlots.push('D' + d + 'P' + p);
+    // P2-10 fix: 读其他年级教师占用（支持单独重跑 G10）
+    this.globalTeacher = {};
+    (this.data.assignments || []).forEach(a => {
+      if (a.teacher_id && this.students.every(s => s.id !== a.student_id)) {
+        if (!this.globalTeacher[a.teacher_id]) this.globalTeacher[a.teacher_id] = new Set();
+        this.globalTeacher[a.teacher_id].add(a.slot_id);
+      }
+    });
+    this._rand = Math.random; // 可替换为 seeded PRNG
   }
+
+  teacherBusy(tid, sid) { return this.globalTeacher[tid]?.has(sid) || false; }
+
+  /** 设置可播种随机数生成器（用于可复现求解） */
+  setRandom(rng) { this._rand = rng; }
 
   _add(stu, cid, sid, cls, ctype, room, tid, A) {
     for (const s of stu) A.push({
-      task_id: cls + '_' + cid + '_' + s.id,
+      task_id: cls + '_' + cid + '_' + s.id + '_' + sid, // P1-4 fix: 拼 slot 保证唯一
       slot_id: sid, room_id: room, course_id: cid,
       class_id: cls, class_type: ctype, teacher_id: tid,
       student_id: s.id
@@ -334,6 +348,13 @@ class CpSatG10Engine {
                 a.teacher_id === moveA.teacher_id &&
                 a.slot_id === morningSid && a.student_id !== stu.id
               )) continue;
+              // P1-2 fix: 检查日分布约束 — ≤5hr 课程同一天最多1节
+              const moveCourseHrs = A.filter(a => a.student_id === stu.id && a.course_id === moveA.course_id).length;
+              if (moveCourseHrs <= 5) {
+                const sameDayOther = A.some(a => a.student_id === stu.id && a.course_id === moveA.course_id
+                  && a.slot_id.startsWith('D' + d) && a !== moveA);
+                if (sameDayOther) continue;
+              }
               moveA.slot_id = morningSid;
               occ.add(morningSid); occ.delete(afterSid);
               this._add([stu], 'SELF_STUDY', afterSid, stu.id, 'filler', room, null, A);
@@ -349,6 +370,16 @@ class CpSatG10Engine {
 
   evaluate(A) {
     let sc = 0;
+
+    // P1-1 fix: 教师冲突硬惩罚（权重必须大于任何软目标）
+    const tMap = {};
+    A.forEach(a => {
+      if (!a.teacher_id) return;
+      const k = a.teacher_id + '@' + a.slot_id;
+      (tMap[k] = tMap[k] || new Set()).add(a.course_id);
+    });
+    Object.values(tMap).forEach(courses => { if (courses.size > 1) sc += 100000; });
+
     const exp = {
       MATH_PRECAL: 6, AP_PHYS1: 5, CHEM_PRE: 5, BIO_PRE: 5,
       ENG_LS: 3, ENG_RW: 3, ENG_LIT: 4, ENG_SURVEY: 2, PE: 2
@@ -368,11 +399,11 @@ class CpSatG10Engine {
   anneal(initial, iters = 3000) {
     const cur = initial.map(a => ({ ...a }));
     let curS = this.evaluate(cur), best = cur.map(a => ({ ...a })), bestS = curS, temp = 200;
-    for (let i = 0; i < iters && temp > 0.05; i++) {
-      const stu = this.students[Math.floor(Math.random() * this.students.length)];
+    for (let i = 0; i < iters; i++) {
+      const stu = this.students[Math.floor(this._rand() * this.students.length)];
       const sA = cur.filter(a => a.student_id === stu.id && (a.class_type === 'teaching' || a.class_type === 'filler'));
       if (sA.length < 2) continue;
-      const [ai, aj] = [Math.floor(Math.random() * sA.length), Math.floor(Math.random() * sA.length)];
+      const [ai, aj] = [Math.floor(this._rand() * sA.length), Math.floor(this._rand() * sA.length)];
       if (ai === aj) continue;
       const [a1, a2] = [sA[ai], sA[aj]];
       if (a1.slot_id === a2.slot_id) continue;
@@ -393,7 +424,7 @@ class CpSatG10Engine {
         }
       }));
       const ns = this.evaluate(cur);
-      if (ns < curS || Math.random() < Math.exp(-(ns - curS) / temp)) {
+      if (ns < curS || this._rand() < Math.exp(-(ns - curS) / temp)) {
         curS = ns;
         if (ns < bestS) { best = cur.map(a => ({ ...a })); bestS = ns; }
       } else {

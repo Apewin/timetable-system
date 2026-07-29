@@ -78,9 +78,40 @@ export async function translateRule(naturalLanguage, apiKey) {
 export function applyRules(newRules) {
   if (!fs.existsSync(RULES_PATH)) return { ok: false, error: 'rules.json not found' };
 
+  // P1-7 fix: LLM 生成规则做 schema 校验（只允许已知字段）
+  const ALLOWED_FIELDS = ['id', 'type', 'description', 'scope', 'teachers', 'forbidden_periods', 'penalty',
+    'condition', 'course', 'fixed_slot', 'fixed_slots', 'grades', 'forbidden_slots'];
+  const ALLOWED_TYPES = ['hard', 'soft'];
+  const ALLOWED_SCOPES = ['teacher', 'course', 'global'];
+
+  const validated = [];
+  const rejected = [];
+  for (const rule of newRules) {
+    if (!rule.id || typeof rule.id !== 'string') { rejected.push({ rule, reason: '缺少 id' }); continue; }
+    if (rule.type && !ALLOWED_TYPES.includes(rule.type)) { rejected.push({ rule, reason: '无效 type: ' + rule.type }); continue; }
+    if (rule.scope && !ALLOWED_SCOPES.includes(rule.scope)) { rejected.push({ rule, reason: '无效 scope: ' + rule.scope }); continue; }
+    // 剥离不允许的字段
+    const clean = {};
+    for (const k of ALLOWED_FIELDS) { if (rule[k] !== undefined) clean[k] = rule[k]; }
+    validated.push(clean);
+  }
+
+  if (rejected.length > 0) {
+    console.warn('LLM 规则校验拒绝 ' + rejected.length + ' 条:');
+    rejected.forEach(r => console.warn('  - ' + r.rule.id + ': ' + r.reason));
+  }
+
+  if (validated.length === 0) {
+    return { ok: false, error: '所有规则未通过校验', rejected: rejected.length };
+  }
+
+  // P1-7 fix: 写入前备份
+  const bakPath = RULES_PATH + '.bak';
+  fs.copyFileSync(RULES_PATH, bakPath);
+
   const rules = JSON.parse(fs.readFileSync(RULES_PATH, 'utf-8'));
 
-  newRules.forEach(newRule => {
+  validated.forEach(newRule => {
     const idx = rules.rules.findIndex(r => r.id === newRule.id);
     if (idx >= 0) {
       rules.rules[idx] = { ...rules.rules[idx], ...newRule };
@@ -90,9 +121,12 @@ export function applyRules(newRules) {
   });
 
   rules.version = String(parseFloat(rules.version || '1.0') + 0.1);
-  fs.writeFileSync(RULES_PATH, JSON.stringify(rules, null, 2));
+  // P0-5 fix: 原子写入
+  const tmpPath = RULES_PATH + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(rules, null, 2));
+  fs.renameSync(tmpPath, RULES_PATH);
 
-  return { ok: true, added: newRules.length, total: rules.rules.length };
+  return { ok: true, added: validated.length, rejected: rejected.length, total: rules.rules.length };
 }
 
 export function getRules() {
