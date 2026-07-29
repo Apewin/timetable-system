@@ -40,18 +40,6 @@ class G12Engine{
     const minorStudents=this.students.filter(s=>{const ec=s.elective_choices||{};return minorGroup.includes(ec.group_b)});
     if(minorStudents.length>0){const slots=this._pickBatchSlots(minorStudents,4,A);minorStudents.forEach(s=>{const cid=s.elective_choices.group_b;slots.forEach(sid=>this._add([s],cid,sid,s.id,'batch','R8',eT[cid],A))})}
 
-    // Batch: T_ZHANGHUIHUI shared courses (AP_ARTHIST + HONOR_LIT) — 5+5=10 slots, use ALL periods not just afternoon
-    const zhStudents=this.students.filter(s=>(s.ap_courses||[]).includes('AP_ARTHIST')||(s.elective_choices||{}).group_a==='HONOR_LIT');
-    if(zhStudents.length>0){
-      const zhSlots=[],zhBlocked=new Set();
-      zhStudents.forEach(s=>{A.filter(a=>a.student_id===s.id).forEach(a=>zhBlocked.add(a.slot_id))});
-      // Use all periods (1-10), pick 10 slots on 5 days (2 per day)
-      for(let d=1;d<=5;d++){let dayPicked=0;for(const p of[1,2,3,4,5,6,7,8,9,10]){if(dayPicked>=2)break;const sid='D'+d+'P'+p;if(!zhBlocked.has(sid)&&zhSlots.length<10){zhSlots.push(sid);dayPicked++}}}
-      if(zhSlots.length===10){const aSlots=zhSlots.slice(0,5),hSlots=zhSlots.slice(5,10);
-        zhStudents.forEach(s=>{if((s.ap_courses||[]).includes('AP_ARTHIST'))aSlots.forEach(sid=>this._add([s],'AP_ARTHIST',sid,s.id,'batch','R8','T_ZHANGHUIHUI',A))});
-        zhStudents.forEach(s=>{if((s.elective_choices||{}).group_a==='HONOR_LIT')hSlots.forEach(sid=>this._add([s],'HONOR_LIT',sid,s.id,'batch','R8','T_ZHANGHUIHUI',A))})}
-    }
-
     // ===== Phase 3: TC SAT (per teaching class) =====
     const tc=[['AP_STAT',5,'T_JAIME'],['ENG_CW',5,'T_LUKE'],['COLLEGE_APP',4,null],['SELF_STUDY',2,null]];
     this.tcS.forEach((stu,ti)=>{
@@ -70,9 +58,9 @@ class G12Engine{
     // ===== Phase 4: Per-student SAT for AP + remaining electives =====
     this.students.forEach(stu=>{
       const stuCourses=[];
-      (stu.ap_courses||[]).forEach(cid=>{if(cid!=='AP_ARTHIST')stuCourses.push([cid,5,apCfg[cid]])});
+      (stu.ap_courses||[]).forEach(cid=>stuCourses.push([cid,5,apCfg[cid]]));
       const ec=stu.elective_choices||{};
-      if(ec.group_a&&ec.group_a!=='HONOR_LIT')stuCourses.push([ec.group_a,5,eT[ec.group_a]]);
+      if(ec.group_a)stuCourses.push([ec.group_a,5,eT[ec.group_a]]);
       if(ec.group_b&&!minorGroup.includes(ec.group_b))stuCourses.push([ec.group_b,4,eT[ec.group_b]]);
       if(ec.group_c&&!langGroup.includes(ec.group_c))stuCourses.push([ec.group_c,2,eT[ec.group_c]]);
       if(!stuCourses.length)return;
