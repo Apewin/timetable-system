@@ -61,6 +61,11 @@ async function bestOfN(engine, iters, label) {
   // P2-5 fix: best 判空，避免 [...null] TypeError
   if (!best) {
     console.error('  ERROR: All ' + iters + ' iterations failed for ' + label);
+    // Follow-up #5: 打印未排课程明细
+    if (engine.unscheduled && engine.unscheduled.length) {
+      console.error('  未排课程明细 (' + engine.unscheduled.length + ' 项):');
+      engine.unscheduled.forEach(u => console.error('    - ' + JSON.stringify(u)));
+    }
     return { assignments: [], score: Infinity, failed: true };
   }
   return { assignments: best, score: bestScore };

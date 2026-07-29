@@ -11,6 +11,7 @@
 const fs = require('fs');
 const Logic = require('logic-solver');
 const { CpModel, CpSolver, CpSolverStatus } = require('@ortools-node/cp-sat');
+const { makeTaskId } = require('./constants.cjs');
 
 function sumVars(vars) {
   let s = vars[0];
@@ -52,7 +53,7 @@ class CpSatG12Engine {
 
   _add(stu, cid, sid, cls, ctype, room, tid, A) {
     for (const s of stu) A.push({
-      task_id: cls + '_' + cid + '_' + s.id + '_' + sid, // P1-4 fix: 拼 slot 保证唯一
+      task_id: makeTaskId(cls, cid, s.id, sid),
       slot_id: sid, room_id: room, course_id: cid,
       class_id: cls, class_type: ctype, teacher_id: tid,
       student_id: s.id

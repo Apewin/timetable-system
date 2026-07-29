@@ -17,6 +17,7 @@
  */
 const fs = require('fs');
 const { CpModel, CpSolver, CpSolverStatus } = require('@ortools-node/cp-sat');
+const { makeTaskId } = require('./constants.cjs');
 
 function sumVars(vars) {
   if (vars.length === 0) throw new Error('Empty var list');
@@ -60,7 +61,7 @@ class CpSatG10Engine {
 
   _add(stu, cid, sid, cls, ctype, room, tid, A) {
     for (const s of stu) A.push({
-      task_id: cls + '_' + cid + '_' + s.id + '_' + sid, // P1-4 fix: 拼 slot 保证唯一
+      task_id: makeTaskId(cls, cid, s.id, sid),
       slot_id: sid, room_id: room, course_id: cid,
       class_id: cls, class_type: ctype, teacher_id: tid,
       student_id: s.id
@@ -124,6 +125,8 @@ class CpSatG10Engine {
             : this.allSlots.filter(sid => !blocked.has(sid));
 
           for (const sid of candidateSlots) {
+            // Follow-up #1: G10 CP-SAT 排除跨年级教师占用
+            if (tid && this.teacherBusy(tid, sid)) continue;
             sv[sid] = model.newBoolVar(`TC${ti}_${cid}_h${h}_${sid}`);
           }
 

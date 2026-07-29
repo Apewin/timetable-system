@@ -19,4 +19,16 @@ const DAYS_PER_WEEK = 5;
 const PERIODS_PER_DAY = 10;
 const TOTAL_SLOTS = 50;
 
-module.exports = { CLASS_TYPES, FIXED_COURSES, GRADE_NAMES, DAYS_PER_WEEK, PERIODS_PER_DAY, TOTAL_SLOTS };
+/**
+ * Follow-up #4: 统一 task_id 生成逻辑，引擎与测试共享同一实现
+ * @param {string} cls - class_id
+ * @param {string} cid - course_id
+ * @param {string} studentId - student.id
+ * @param {string} slotId - slot_id (e.g. 'D1P3')
+ * @returns {string} unique task_id
+ */
+function makeTaskId(cls, cid, studentId, slotId) {
+  return cls + '_' + cid + '_' + studentId + '_' + slotId;
+}
+
+module.exports = { CLASS_TYPES, FIXED_COURSES, GRADE_NAMES, DAYS_PER_WEEK, PERIODS_PER_DAY, TOTAL_SLOTS, makeTaskId };

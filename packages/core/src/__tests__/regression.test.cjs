@@ -4,6 +4,7 @@
  * 用法: node packages/core/src/__tests__/regression.test.cjs
  */
 const { PostChecker } = require('../solver/post-check.cjs');
+const { makeTaskId } = require('../constants.cjs');
 
 let passed = 0, failed = 0;
 
@@ -94,16 +95,15 @@ assert(r3.stats.distributionViolations === 0, '单课时不应有分布违规');
 assert(r3.stats.duplicateViolations === 0, '不应有重复时段');
 PostChecker._getSpecs = origGetSpecs;
 
-// ===== Test 4: task_id 唯一性（P1-4 回归） =====
-console.log('\n=== Test 4: task_id 唯一性验证 ===');
+// ===== Test 4: task_id 唯一性（P1-4 回归，Follow-up #4: 共用 constants.cjs 实现）=====
+console.log('\n=== Test 4: task_id 唯一性验证（共用 constants.cjs makeTaskId）===');
 
-// 模拟 _add 输出 — task_id 应拼 slot_id
-function makeTaskId(cls, cid, sid, slot) { return cls + '_' + cid + '_' + sid + '_' + slot; }
 const t1 = makeTaskId('TC1', 'MATH', 'S1', 'D1P1');
 const t2 = makeTaskId('TC1', 'MATH', 'S1', 'D1P2'); // same course/student, different slot
 assert(t1 !== t2, 'task_id 拼 slot 后不同时段应唯一: ' + t1 + ' vs ' + t2);
 const t3 = makeTaskId('TC1', 'MATH', 'S1', 'D1P1');
 assert(t1 === t3, '相同参数应生成相同 task_id: ' + t1);
+assert(typeof makeTaskId('X', 'Y', 'Z', 'W') === 'string', 'makeTaskId 应返回字符串');
 
 // ===== Test 5: 空堂检测 =====
 console.log('\n=== Test 5: 空堂检测 ===');

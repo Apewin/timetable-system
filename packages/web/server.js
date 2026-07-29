@@ -21,13 +21,14 @@ app.use(cors({ origin: /^https?:\/\/localhost(:\d+)?$/ }));
 
 app.use(express.json());
 
-// P1-7 fix: API token 鉴权中间件（短期方案）
+// Follow-up #2 fix: 静态文件必须在鉴权之前，否则浏览器加载 JS/CSS 无 Authorization 头 → 401
+app.use(express.static(__dirname, { dotfiles: 'deny', index: 'index.html' }));
+
+// P1-7 fix: API token 鉴权中间件（只拦 API，静态文件已在上方绕过）
 const API_TOKEN = process.env.API_TOKEN;
-const AUTH_WHITELIST = ['/api/status', '/']; // 公开端点
 app.use((req, res, next) => {
-  if (AUTH_WHITELIST.some(p => req.path === p) || req.path.startsWith('/index.html')) {
-    return next();
-  }
+  // 非 API 路径放行（静态文件已在 static 中间件处理，这里是兜底）
+  if (!req.path.startsWith('/api/')) return next();
   if (API_TOKEN && req.headers.authorization !== 'Bearer ' + API_TOKEN) {
     return res.status(401).json({ ok: false, errors: [{ code: 'UNAUTHORIZED', msg: '需要 API Token 鉴权' }] });
   }
@@ -36,9 +37,6 @@ app.use((req, res, next) => {
 
 // 文件上传配置
 const upload = multer({ storage: multer.memoryStorage() });
-
-// 提供静态文件（deny dotfiles 防止 .env.local 等敏感文件泄露）
-app.use(express.static(__dirname, { dotfiles: 'deny', index: 'index.html' }));
 
 // DeepSeek API 配置
 global.DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
