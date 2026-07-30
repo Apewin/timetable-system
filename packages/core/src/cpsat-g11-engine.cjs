@@ -7,6 +7,7 @@
 const fs = require('fs');
 const Logic = require('logic-solver');
 const { CpModel, CpSolver, CpSolverStatus } = require('@ortools-node/cp-sat');
+const { makeTaskId } = require('./constants.cjs');
 
 function sumVars(vars) {
   let s = vars[0];
@@ -31,11 +32,27 @@ class CpSatG11Engine {
     for (let d = 1; d <= 5; d++)
       for (let p = 1; p <= 10; p++)
         this.allSlots.push('D' + d + 'P' + p);
+    // Follow-up #1 fix: 跨年级教师占用快照（照搬 G12 模式）
+    this.globalTeacher = {};
+    (this.data.assignments || []).forEach(a => {
+      if (a.teacher_id && this.students.every(s => s.id !== a.student_id)) {
+        if (!this.globalTeacher[a.teacher_id]) this.globalTeacher[a.teacher_id] = new Set();
+        this.globalTeacher[a.teacher_id].add(a.slot_id);
+      }
+    });
+    // Follow-up #3 fix: unscheduled 记录
+    this.unscheduled = [];
+    this._rand = Math.random; // 可替换为 seeded PRNG
   }
+
+  /** 设置可播种随机数生成器（用于可复现求解） */
+  setRandom(rng) { this._rand = rng; }
+
+  teacherBusy(tid, sid) { return this.globalTeacher[tid]?.has(sid) || false; }
 
   _add(stu, cid, sid, cls, ctype, room, tid, A) {
     for (const s of stu) A.push({
-      task_id: cls + '_' + cid + '_' + s.id,
+      task_id: makeTaskId(cls, cid, s.id, sid),
       slot_id: sid, room_id: room, course_id: cid,
       class_id: cls, class_type: ctype, teacher_id: tid,
       student_id: s.id
@@ -93,8 +110,11 @@ class CpSatG11Engine {
         const svList = [];
         for (let h = 0; h < hrs; h++) {
           const sv = {};
-          for (const sid of availSlots)
+          for (const sid of availSlots) {
+            // Follow-up #1: 排除其他年级教师已占用的时段
+            if (tid && this.teacherBusy(tid, sid)) continue;
             sv[sid] = model.newBoolVar(`TC${ti}_${cid}_h${h}_${sid}`);
+          }
           svList.push({ h, slotVars: sv });
           model.addEquality(sumVars(Object.values(sv)), 1n);
         }
@@ -193,7 +213,8 @@ class CpSatG11Engine {
         for (let h = 0; h < hrs; h++) {
           const sv = {};
           for (const sid of allSlots) {
-            if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid && x.student_id !== stu.id)) continue;
+            // Follow-up #1: G11 SAT 路径检查跨年级教师占用
+            if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid && x.student_id !== stu.id) || this.teacherBusy(tid, sid))) continue;
             sv[sid] = `ap_${cid}_${h}_${sid}`;
           }
           varMap.push({ cid, h, slotVars: sv });
@@ -219,11 +240,12 @@ class CpSatG11Engine {
           for (const [sid, vname] of Object.entries(vm.slotVars)) {
             if (trueVars.includes(vname)) {
               const [cid, , tid] = apCourses.find(c => c[0] === vm.cid) || [vm.cid, 0, null];
-              this._add([stu], vm.cid, sid, stu.id, 'ap', 'R8', tid, A); break;
+              this._add([stu], vm.cid, sid, stu.id, 'ap', null, tid, A); break;
             }
           }
         }
       } else {
+        // P0-2 fix: greedy fallback 必须检查教师占用
         apCourses.forEach(([cid, hrs, tid]) => {
           let a = 0; const dc = [0, 0, 0, 0, 0, 0];
           for (let d = 1; d <= 5 && a < hrs; d++) {
@@ -231,8 +253,10 @@ class CpSatG11Engine {
               if (a >= hrs) break; const sid = 'D' + d + 'P' + p;
               if (blocked.has(sid)) continue;
               if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
+              // Follow-up #1: 检查跨年级教师占用
+              if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid && x.student_id !== stu.id) || this.teacherBusy(tid, sid))) continue;
               if (dc[d] >= 1) continue;
-              this._add([stu], cid, sid, stu.id, 'ap', 'R8', tid, A); blocked.add(sid); dc[d]++; a++; break;
+              this._add([stu], cid, sid, stu.id, 'ap', null, tid, A); blocked.add(sid); dc[d]++; a++; break;
             }
           }
           for (let d = 1; d <= 5 && a < hrs; d++) {
@@ -240,8 +264,15 @@ class CpSatG11Engine {
               if (a >= hrs) break; const sid = 'D' + d + 'P' + p;
               if (blocked.has(sid)) continue;
               if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
-              this._add([stu], cid, sid, stu.id, 'ap', 'R8', tid, A); blocked.add(sid); a++; break;
+              // Follow-up #1: 第二轮也检查跨年级教师占用
+              if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid && x.student_id !== stu.id) || this.teacherBusy(tid, sid))) continue;
+              this._add([stu], cid, sid, stu.id, 'ap', null, tid, A); blocked.add(sid); a++; break;
             }
+          }
+          // Follow-up #3: G11 fallback 排不下时记录 unscheduled
+          if (a < hrs) {
+            console.warn('  G11 fallback: 学生 ' + stu.id + ' 课程 ' + cid + ' 仅排 ' + a + '/' + hrs + ' 节');
+            this.unscheduled.push({ student: stu.id, course: cid, scheduled: a, needed: hrs, reason: 'fallback_insufficient' });
           }
         });
       }
@@ -263,7 +294,7 @@ class CpSatG11Engine {
       const solver = new Logic.Solver(); const varMap = [];
       for (const [cid, hrs, tid] of courses) {
         for (let h = 0; h < hrs; h++) {
-          const sv = {}; for (const sid of allSlots) { if (tid && A.some(x => x.teacher_id === tid && x.slot_id === sid && !stu.some(s => s.id === x.student_id))) continue; sv[sid] = `${cid}_${h}_${sid}`; }
+          const sv = {}; for (const sid of allSlots) { if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid && !stu.some(s => s.id === x.student_id)) || this.teacherBusy(tid, sid))) continue; sv[sid] = `${cid}_${h}_${sid}`; }
           varMap.push({ cid, h, slotVars: sv }); solver.require(Logic.exactlyOne(Object.values(sv)));
         }
       }
@@ -296,6 +327,16 @@ class CpSatG11Engine {
 
   evaluate(A) {
     let sc = 0;
+
+    // P1-1 fix: 教师冲突硬惩罚（权重必须大于任何软目标）
+    const tMap = {};
+    A.forEach(a => {
+      if (!a.teacher_id) return;
+      const k = a.teacher_id + '@' + a.slot_id;
+      (tMap[k] = tMap[k] || new Set()).add(a.course_id);
+    });
+    Object.values(tMap).forEach(courses => { if (courses.size > 1) sc += 100000; });
+
     const exp = { ENG_COMP: 4, AP_CALC_BC: 5, PRE_AP_LIT: 2, PHYS_CN: 2 };
     this.tcS.forEach(stu => {
       const s = stu[0]; const te = { ...exp };
@@ -315,11 +356,11 @@ class CpSatG11Engine {
   anneal(initial, iters = 3000) {
     const cur = initial.map(a => ({ ...a }));
     let curS = this.evaluate(cur), best = cur.map(a => ({ ...a })), bestS = curS, temp = 200;
-    for (let i = 0; i < iters && temp > 0.05; i++) {
-      const stu = this.students[Math.floor(Math.random() * this.students.length)];
+    for (let i = 0; i < iters; i++) {
+      const stu = this.students[Math.floor(this._rand() * this.students.length)];
       const sA = cur.filter(a => a.student_id === stu.id && (a.class_type === 'teaching' || a.class_type === 'filler'));
       if (sA.length < 2) continue;
-      const [ai, aj] = [Math.floor(Math.random() * sA.length), Math.floor(Math.random() * sA.length)];
+      const [ai, aj] = [Math.floor(this._rand() * sA.length), Math.floor(this._rand() * sA.length)];
       if (ai === aj) continue;
       const [a1, a2] = [sA[ai], sA[aj]];
       if (a1.slot_id === a2.slot_id) continue;
@@ -331,7 +372,7 @@ class CpSatG11Engine {
       if (!ok) continue;
       tcStu.forEach(s => cur.forEach(a => { if (a.student_id === s.id) { if (a.slot_id === o1) a.slot_id = o2; else if (a.slot_id === o2) a.slot_id = o1; } }));
       const ns = this.evaluate(cur);
-      if (ns < curS || Math.random() < Math.exp(-(ns - curS) / temp)) { curS = ns; if (ns < bestS) { best = cur.map(a => ({ ...a })); bestS = ns; } }
+      if (ns < curS || this._rand() < Math.exp(-(ns - curS) / temp)) { curS = ns; if (ns < bestS) { best = cur.map(a => ({ ...a })); bestS = ns; } }
       else { tcStu.forEach(s => cur.forEach(a => { if (a.student_id === s.id) { if (a.slot_id === o2) a.slot_id = o1; else if (a.slot_id === o1) a.slot_id = o2; } })); }
       temp *= 0.9995;
     }

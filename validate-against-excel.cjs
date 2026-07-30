@@ -11,7 +11,7 @@ const SPEC = {
     teaching: {
       ENG_LS:   { hrs: 3, teacher: 'T_BIFEI', name: '中教Listening&Speaking' },
       ENG_RW:   { hrs: 3, teacher: 'T_NIUYONGMEI', name: '中教Reading&Writing' },
-      ENG_LIT:  { hrs: 4, teacher: 'T_RACHEL', name: '外教L&S&Lit Reading' },
+      ENG_LIT:  { hrs: 4, teacher: 'T_RACHEL', name: '外教Listening&Speaking&Literature Reading' },
       ENG_SURVEY:{hrs: 2, teacher: 'T_VINCENT', name: '英美概况' },
       MATH_PRECAL:{hrs:6, teacher: 'T_CUIXIAOPENG', name: '中方数学+Pre-Calculus' },
       AP_PHYS1: { hrs: 5, teacher: 'T_XIEHAOYANG', name: 'AP Physics 1+中方物理' },
@@ -37,13 +37,13 @@ const SPEC = {
   G11: {
     name: '高二',
     teaching: {
-      ENG_COMP:   { hrs: 4, teacher: 'T_YULIN', name: '综合英语' },
+      ENG_COMP:   { hrs: 4, teacher: 'T_YULIN', name: 'Comprehensive English' },
       AP_CALC_BC: { hrs: 5, teacher: 'T_WANGLILI', name: 'AP Calculus BC' },
-      PRE_AP_LIT: { hrs: 2, teacher: 'T_RACHEL', name: 'Pre AP-Lit' },
+      PRE_AP_LIT: { hrs: 2, teacher: 'T_RACHEL', name: 'Pre AP-Literature and Composition' },
       PHYS_CN:    { hrs: 2, teacher: 'T_BAIRUSHUANG', name: '中方物理' },
       // Layered (varies by TC):
-      // TC1&2: HONOR_LC(2)+TOEFL(3)
-      // TC3: AP_LC(5)
+      // TC1&2: HONOR_LC(2, Luke)+TOEFL(3, 韦玮)
+      // TC3: AP_LC(5, 韩鹏)
     },
     admin: {
       MATH_CN:  { hrs: 2, teacher: 'T_EXP_E', name: '中方数学' },
@@ -77,9 +77,12 @@ const SPEC = {
       CLUB:    { hrs: 2, teacher: null, name: '社团' },
     },
     electives: {
-      group_a: { hrs: 5, choices: ['AP_LANG','AP_LIT','HONOR_LIT'] },
-      group_b: { hrs: 4, choices: ['LINEAR_ALG','BUSINESS','MECH_BASIS'] },
-      group_c: { hrs: 2, choices: ['JAPANESE','FRENCH','GERMAN'] },
+      group_a: { hrs: 5, choices: ['AP_LANG','AP_LIT','HONOR_LIT'],
+                 names: {AP_LANG:'AP Language and Composition', AP_LIT:'AP Literature and Composition', HONOR_LIT:'Honor 英美文学史及选读'} },
+      group_b: { hrs: 4, choices: ['LINEAR_ALG','BUSINESS','MECH_BASIS'],
+                 names: {LINEAR_ALG:'线性代数', BUSINESS:'商业', MECH_BASIS:'力学基础'} },
+      group_c: { hrs: 2, choices: ['JAPANESE','FRENCH','GERMAN'],
+                 names: {JAPANESE:'日语', FRENCH:'法语', GERMAN:'德语'} },
     },
     fixed_slots: { DUTY: ['D1P10'], MEETING: ['D1P9'], CLUB: ['D2P10','D5P10'] },
     total: 50,
@@ -103,8 +106,8 @@ function validate(state) {
     console.log('\n=== ' + spec.name + ' (G' + grade + ') ===');
     console.log('  学生: ' + gStudents.length + ', 分配: ' + gAs.length);
 
-    // Sample 5 students for detailed check
-    const sample = gStudents.slice(0, 5);
+    // Check ALL students (was only sampling 5 — P0-4 fix)
+    const sample = gStudents;
     const issues = {};
 
     sample.forEach(stu => {
@@ -234,6 +237,7 @@ function validate(state) {
     if (conflicts.length > 0) {
       console.log('  ❌ 教师冲突: ' + conflicts.length + ' 处 (同时段不同课程)');
       conflicts.slice(0, 5).forEach(([k, c]) => console.log('    ' + k + ': ' + [...c].join(', ')));
+      errors.push({ grade, count: conflicts.length, type: 'teacher_conflict' }); // P0-3 fix: 计入 errors
     } else {
       console.log('  ✅ 教师无冲突');
     }
@@ -263,7 +267,7 @@ console.log('\n=== 总结 ===');
 let totalErrors = 0;
 Object.entries(result.stats).forEach(([grade, s]) => {
   console.log(grade + ': ' + s.errors + ' 个错误, 早上自习=' + s.ssAM + ', 教师冲突=' + s.teacherConflicts);
-  totalErrors += s.errors;
+  totalErrors += s.errors + s.teacherConflicts; // P0-3 fix: 教师冲突计入 totalErrors
 });
 
 if (totalErrors === 0) {

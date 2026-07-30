@@ -11,6 +11,7 @@
 const fs = require('fs');
 const Logic = require('logic-solver');
 const { CpModel, CpSolver, CpSolverStatus } = require('@ortools-node/cp-sat');
+const { makeTaskId } = require('./constants.cjs');
 
 function sumVars(vars) {
   let s = vars[0];
@@ -43,11 +44,16 @@ class CpSatG12Engine {
     for (let d = 1; d <= 5; d++)
       for (let p = 1; p <= 10; p++)
         this.allSlots.push('D' + d + 'P' + p);
+    this._rand = Math.random; // 可替换为 seeded PRNG
+    this.unscheduled = [];     // P0-2/P2-3: 记录未排课的学生
   }
+
+  /** 设置可播种随机数生成器（用于可复现求解） */
+  setRandom(rng) { this._rand = rng; }
 
   _add(stu, cid, sid, cls, ctype, room, tid, A) {
     for (const s of stu) A.push({
-      task_id: cls + '_' + cid + '_' + s.id,
+      task_id: makeTaskId(cls, cid, s.id, sid),
       slot_id: sid, room_id: room, course_id: cid,
       class_id: cls, class_type: ctype, teacher_id: tid,
       student_id: s.id
@@ -92,9 +98,9 @@ class CpSatG12Engine {
     // ===== Phase 2: Batch (第二外语 + 小选修) =====
     const langGroup = ['JAPANESE', 'FRENCH', 'GERMAN'], minorGroup = ['BUSINESS', 'MECH_BASIS', 'LINEAR_ALG'];
     const langStudents = this.students.filter(s => { const ec = s.elective_choices || {}; return langGroup.includes(ec.group_c); });
-    if (langStudents.length > 0) { const slots = this._pickBatchSlots(langStudents, 2, A); langStudents.forEach(s => { const cid = s.elective_choices.group_c; slots.forEach(sid => this._add([s], cid, sid, s.id, 'batch', 'R8', eT[cid], A)); }); }
+    if (langStudents.length > 0) { const slots = this._pickBatchSlots(langStudents, 2, A); langStudents.forEach(s => { const cid = s.elective_choices.group_c; slots.forEach(sid => this._add([s], cid, sid, s.id, 'batch', null, eT[cid], A)); }); }
     const minorStudents = this.students.filter(s => { const ec = s.elective_choices || {}; return minorGroup.includes(ec.group_b); });
-    if (minorStudents.length > 0) { const slots = this._pickBatchSlots(minorStudents, 4, A); minorStudents.forEach(s => { const cid = s.elective_choices.group_b; slots.forEach(sid => this._add([s], cid, sid, s.id, 'batch', 'R8', eT[cid], A)); }); }
+    if (minorStudents.length > 0) { const slots = this._pickBatchSlots(minorStudents, 4, A); minorStudents.forEach(s => { const cid = s.elective_choices.group_b; slots.forEach(sid => this._add([s], cid, sid, s.id, 'batch', null, eT[cid], A)); }); }
 
     // ===== Phase 3: CP-SAT for TC courses (3 TCs joint) =====
     const tc = [['AP_STAT', 5, 'T_JAIME'], ['ENG_CW', 5, 'T_LUKE'], ['COLLEGE_APP', 4, null], ['SELF_STUDY', 2, null]];
@@ -211,7 +217,11 @@ class CpSatG12Engine {
       A.filter(a => a.student_id === stu.id).forEach(a => blocked.add(a.slot_id));
       const allSlots = [];
       for (let d = 1; d <= 5; d++) for (let p = 1; p <= 10; p++) { const sid = 'D' + d + 'P' + p; if (!blocked.has(sid)) allSlots.push(sid); }
-      if (allSlots.length < stuCourses.reduce((s, c) => s + c[1], 0)) return;
+      if (allSlots.length < stuCourses.reduce((s, c) => s + c[1], 0)) {
+        console.warn('  G12 Phase 4: 空位不足，学生 ' + stu.id + ' 所需 ' + stuCourses.reduce((s, c) => s + c[1], 0) + ' 课时，仅剩 ' + allSlots.length + ' 空位');
+        this.unscheduled.push({ student: stu.id, reason: 'insufficient_slots', needed: stuCourses.map(c => c[0]) });
+        return;
+      }
 
       const lsolver = new Logic.Solver(); const varMap = [];
       for (const [cid, hrs, tid] of stuCourses) {
@@ -237,27 +247,41 @@ class CpSatG12Engine {
           for (const [sid, vname] of Object.entries(vm.slotVars)) {
             if (trueVars.includes(vname)) {
               const [cid, , tid] = stuCourses.find(c => c[0] === vm.cid) || [vm.cid, 0, null];
-              this._add([stu], vm.cid, sid, stu.id, 'ap', 'R8', tid, A); break;
+              this._add([stu], vm.cid, sid, stu.id, 'ap', null, tid, A); break;
             }
           }
         }
       } else {
+        // P0-2 fix: greedy fallback 必须检查教师占用
         stuCourses.forEach(([cid, hrs, tid]) => {
           let a = 0; const dc = [0, 0, 0, 0, 0, 0];
           for (let d = 1; d <= 5 && a < hrs; d++) {
             for (const p of [1, 2, 3, 4, 5, 8, 9, 10, 6, 7]) {
               if (a >= hrs) break; const sid = 'D' + d + 'P' + p;
-              if (blocked.has(sid)) continue; if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
+              if (blocked.has(sid)) continue;
+              if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
+              // P0-2 fix: 检查教师占用（与 SAT 路径对齐）
+              if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid && x.student_id !== stu.id)
+                        || this.teacherBusy(tid, sid))) continue;
               if (dc[d] >= 1 && hrs <= 5) continue;
-              this._add([stu], cid, sid, stu.id, 'ap', 'R8', tid, A); blocked.add(sid); dc[d]++; a++; break;
+              this._add([stu], cid, sid, stu.id, 'ap', null, tid, A); blocked.add(sid); dc[d]++; a++; break;
             }
           }
           for (let d = 1; d <= 5 && a < hrs; d++) {
             for (const p of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
               if (a >= hrs) break; const sid = 'D' + d + 'P' + p;
-              if (blocked.has(sid)) continue; if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
-              this._add([stu], cid, sid, stu.id, 'ap', 'R8', tid, A); blocked.add(sid); a++; break;
+              if (blocked.has(sid)) continue;
+              if (A.some(x => x.student_id === stu.id && x.slot_id === sid)) continue;
+              // P0-2 fix: 第二轮也检查教师占用
+              if (tid && (A.some(x => x.teacher_id === tid && x.slot_id === sid && x.student_id !== stu.id)
+                        || this.teacherBusy(tid, sid))) continue;
+              this._add([stu], cid, sid, stu.id, 'ap', null, tid, A); blocked.add(sid); a++; break;
             }
+          }
+          // P0-2 fix: 如果仍排不下，记录未排课程
+          if (a < hrs) {
+            console.warn('  G12 Phase 4 fallback: 学生 ' + stu.id + ' 课程 ' + cid + ' 仅排 ' + a + '/' + hrs + ' 节');
+            this.unscheduled.push({ student: stu.id, course: cid, scheduled: a, needed: hrs, reason: 'fallback_insufficient' });
           }
         });
       }
@@ -312,6 +336,13 @@ class CpSatG12Engine {
             for (const mp of [5, 4, 3, 2, 1]) {
               const morningSid = 'D' + d + 'P' + mp; if (occ.has(morningSid)) continue;
               if (moveA.teacher_id && A.some(a => a.teacher_id === moveA.teacher_id && a.slot_id === morningSid && a.student_id !== stu.id)) continue;
+              // P1-2 fix: 检查日分布约束 — ≤5hr 课程同一天最多1节
+              const moveCourseHrs = A.filter(a => a.student_id === stu.id && a.course_id === moveA.course_id).length;
+              if (moveCourseHrs <= 5) {
+                const sameDayOther = A.some(a => a.student_id === stu.id && a.course_id === moveA.course_id
+                  && a.slot_id.startsWith('D' + d) && a !== moveA);
+                if (sameDayOther) continue;
+              }
               moveA.slot_id = morningSid; occ.add(morningSid); occ.delete(afterSid);
               this._add([stu], 'SELF_STUDY', afterSid, stu.id, 'filler', room, null, A); daily[d - 1]++; occ.add(afterSid); moved = true; break;
             }
@@ -325,6 +356,16 @@ class CpSatG12Engine {
 
   evaluate(A) {
     let sc = 0;
+
+    // P1-1 fix: 教师冲突硬惩罚（权重必须大于任何软目标）
+    const tMap = {};
+    A.forEach(a => {
+      if (!a.teacher_id) return;
+      const k = a.teacher_id + '@' + a.slot_id;
+      (tMap[k] = tMap[k] || new Set()).add(a.course_id);
+    });
+    Object.values(tMap).forEach(courses => { if (courses.size > 1) sc += 100000; });
+
     const exp = { AP_STAT: 5, ENG_CW: 5, COLLEGE_APP: 4 };
     this.tcS.forEach(stu => {
       const s = stu[0];
@@ -347,11 +388,11 @@ class CpSatG12Engine {
   anneal(initial, iters = 3000) {
     const cur = initial.map(a => ({ ...a }));
     let curS = this.evaluate(cur), best = cur.map(a => ({ ...a })), bestS = curS, temp = 200;
-    for (let i = 0; i < iters && temp > 0.05; i++) {
-      const stu = this.students[Math.floor(Math.random() * this.students.length)];
+    for (let i = 0; i < iters; i++) {
+      const stu = this.students[Math.floor(this._rand() * this.students.length)];
       const sA = cur.filter(a => a.student_id === stu.id && (a.class_type === 'teaching' || a.class_type === 'filler'));
       if (sA.length < 2) continue;
-      const [ai, aj] = [Math.floor(Math.random() * sA.length), Math.floor(Math.random() * sA.length)];
+      const [ai, aj] = [Math.floor(this._rand() * sA.length), Math.floor(this._rand() * sA.length)];
       if (ai === aj) continue;
       const [a1, a2] = [sA[ai], sA[aj]];
       if (a1.slot_id === a2.slot_id) continue;
@@ -361,7 +402,7 @@ class CpSatG12Engine {
       if (!ok) continue;
       cur.forEach(a => { if (a.student_id === stu.id) { if (a.slot_id === o1) a.slot_id = o2; else if (a.slot_id === o2) a.slot_id = o1; } });
       const ns = this.evaluate(cur);
-      if (ns < curS || Math.random() < Math.exp(-(ns - curS) / temp)) { curS = ns; if (ns < bestS) { best = cur.map(a => ({ ...a })); bestS = ns; } }
+      if (ns < curS || this._rand() < Math.exp(-(ns - curS) / temp)) { curS = ns; if (ns < bestS) { best = cur.map(a => ({ ...a })); bestS = ns; } }
       else { cur.forEach(a => { if (a.student_id === stu.id) { if (a.slot_id === o2) a.slot_id = o1; else if (a.slot_id === o1) a.slot_id = o2; } }); }
       temp *= 0.9995;
     }

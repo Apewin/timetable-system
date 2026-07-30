@@ -386,7 +386,8 @@ window.testAIConnection = async function() {
 
     if (result.ok) {
       resultDiv.className = 'ai-test-result success';
-      resultDiv.innerHTML = `✅ 连接成功！<br>响应时间: ${latency}ms<br>AI回复: ${result.data.response}`;
+      // P1-7 fix: textContent 防 LLM 输出 XSS 注入
+      resultDiv.textContent = `✅ 连接成功！响应时间: ${latency}ms AI回复: ${result.data.response}`;
     } else {
       resultDiv.className = 'ai-test-result error';
       resultDiv.textContent = `❌ 连接失败: ${result.errors?.[0]?.msg || '未知错误'}`;
@@ -5409,7 +5410,8 @@ window.testSettingsConnection = async function() {
 
     if (result.ok) {
       resultDiv.className = 'settings-test-result success';
-      resultDiv.innerHTML = `✅ 连接成功！<br>响应时间: ${latency}ms<br>AI回复: ${result.data.response}`;
+      // P1-7 fix: textContent 防 LLM 输出 XSS 注入
+      resultDiv.textContent = `✅ 连接成功！响应时间: ${latency}ms AI回复: ${result.data.response}`;
       document.getElementById('settings-ai-status').textContent = '✅ 正常';
       document.getElementById('settings-ai-status').style.color = '#2e7d32';
     } else {

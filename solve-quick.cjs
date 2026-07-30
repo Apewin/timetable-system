@@ -2,9 +2,9 @@
  * 快速验证求解器 — 少量迭代，验证课时正确性
  */
 const fs = require('fs');
-const { SchedulingEngine } = require('./packages/core/src/engine.cjs');
-const { G11Engine } = require('./packages/core/src/g11-engine.cjs');
-const { G12Engine } = require('./packages/core/src/g12-engine.cjs');
+const { SchedulingEngine } = require('./archive/engine.cjs');
+const { G11Engine } = require('./archive/g11-engine.cjs');
+const { G12Engine } = require('./archive/g12-engine.cjs');
 const { SoftOptimizer } = require('./packages/core/src/solver/soft-optimizer.cjs');
 
 const RULES_PATH = '/Users/apewin/Desktop/排课系统/rules.json';

@@ -2,7 +2,7 @@
  * 高二排课搜索
  */
 const fs = require('fs');
-const { G11Engine } = require('./packages/core/src/g11-engine.cjs');
+const { G11Engine } = require('./archive/g11-engine.cjs');
 
 const engine = new G11Engine(__dirname + '/rules.json', __dirname + '/timetable.json');
 const ITER = parseInt(process.argv[2]) || 5000;

@@ -6,7 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
 import { getRules, applyRules, translateRule } from './llm-bridge.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -15,14 +15,28 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-app.use(cors());
+
+// P1-7 fix: CORS 收敛到 localhost
+app.use(cors({ origin: /^https?:\/\/localhost(:\d+)?$/ }));
+
 app.use(express.json());
+
+// Follow-up #2 fix: 静态文件必须在鉴权之前，否则浏览器加载 JS/CSS 无 Authorization 头 → 401
+app.use(express.static(__dirname, { dotfiles: 'deny', index: 'index.html' }));
+
+// P1-7 fix: API token 鉴权中间件（只拦 API，静态文件已在上方绕过）
+const API_TOKEN = process.env.API_TOKEN;
+app.use((req, res, next) => {
+  // 非 API 路径放行（静态文件已在 static 中间件处理，这里是兜底）
+  if (!req.path.startsWith('/api/')) return next();
+  if (API_TOKEN && req.headers.authorization !== 'Bearer ' + API_TOKEN) {
+    return res.status(401).json({ ok: false, errors: [{ code: 'UNAUTHORIZED', msg: '需要 API Token 鉴权' }] });
+  }
+  next();
+});
 
 // 文件上传配置
 const upload = multer({ storage: multer.memoryStorage() });
-
-// 提供静态文件
-app.use(express.static(__dirname));
 
 // DeepSeek API 配置
 global.DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
@@ -80,10 +94,12 @@ function readState() {
   return JSON.parse(content);
 }
 
-// 辅助函数：写入状态
+// 辅助函数：写入状态（P0-5 fix: 原子写入 — tmp + rename）
 function writeState(state) {
   state.meta.updated_at = new Date().toISOString();
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  const tmpPath = STATE_FILE + '.tmp';
+  writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
+  renameSync(tmpPath, STATE_FILE);
 }
 
 // API: 获取状态
@@ -2128,8 +2144,8 @@ app.post('/api/settings', (req, res) => {
       global.DEEPSEEK_MODEL = model;
     }
 
-    // 保存到配置文件（持久化）
-    const configPath = resolve(__dirname, '.env.local');
+    // 保存到配置文件（持久化）—— 写到项目根目录，不在静态服务范围内
+    const configPath = resolve(__dirname, '../../.env.local');
     let config = {};
 
     try {
@@ -2173,7 +2189,7 @@ app.post('/api/ai/test', async (req, res) => {
   try {
     const { message } = req.body;
 
-    if (!DEEPSEEK_API_KEY) {
+    if (!global.DEEPSEEK_API_KEY) {
       return res.json({
         ok: false,
         errors: [{ code: 'NO_API_KEY', msg: 'DeepSeek API Key 未配置' }]
@@ -3001,43 +3017,6 @@ function getTypeName(type) {
   };
   return names[type] || type;
 }
-
-// API: 一键排课(所有年级)
-app.post('/api/solve-all', async (req, res) => {
-  try {
-    const { execSync } = await import('child_process');
-    const result = execSync('node ' + resolve(__dirname, '../../search-all.cjs') + ' 3000 10 && node ' + resolve(__dirname, '../../search-all.cjs') + ' 5000 11 && node ' + resolve(__dirname, '../../search-all.cjs') + ' 5000 12', { timeout: 600000, encoding: 'utf-8' });
-    // Reload state after scheduling
-    const state = readState();
-    res.json({ ok: true, data: { result, summary: { g10: state.students.filter(s=>s.grade===10).length, g11: state.students.filter(s=>s.grade===11).length, g12: state.students.filter(s=>s.grade===12).length } } });
-  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
-});
-
-// API: 验证当前课表
-app.get('/api/validate-all', (req, res) => {
-  try {
-    const state = readState();
-    const issues = [];
-    [10,11,12].forEach(grade => {
-      const gStudents = state.students.filter(s => s.grade === grade);
-      const sample = gStudents[0];
-      if (!sample) return;
-      // Check daily
-      const daily = [0,0,0,0,0];
-      state.assignments.filter(a => a.student_id === sample.id).forEach(a => daily[a.slot_id.charAt(1)-1]++);
-      if (daily.some(d => d !== 10)) issues.push(`高${grade} sample daily≠10: ${daily.join(',')}`);
-      // Check self-study position
-      const ssAM = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'SELF_STUDY' && parseInt(a.slot_id.substring(3)) <= 5).length;
-      if (ssAM > 0) issues.push(`高${grade} sample 上午自习: ${ssAM}`);
-      // Check duty/meeting position
-      const duty = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'DUTY');
-      if (duty.length > 0 && !duty.every(a => a.slot_id === 'D1P10')) issues.push(`高${grade} 值日不在D1P10`);
-      const meeting = state.assignments.filter(a => a.student_id === sample.id && a.course_id === 'MEETING');
-      if (meeting.length > 0 && !meeting.every(a => a.slot_id === 'D1P9')) issues.push(`高${grade} 班会不在D1P9`);
-    });
-    res.json({ ok: issues.length === 0, data: { issues, count: issues.length } });
-  } catch (e) { res.status(500).json({ ok: false, errors: [{ msg: e.message }] }); }
-});
 
 // 启动服务器
 const PORT = process.env.PORT || 3001;
