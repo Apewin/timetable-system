@@ -30,7 +30,14 @@ export interface Course {
   prefer_morning?: boolean;  // 主课优先上午（软约束）
   consecutive?: { min: number; max: number };  // 连堂需求
   elective_group?: "A" | "B" | "C";  // 必修选修课的组别
-  section_count?: number;  // 平行班数量（选修课用）
+  // 平行班数量。跨年级且允许混班的课程可按年级记录多个需求，实际开班数取最大值。
+  section_count?: number | number[];
+  // 当不同年级不能混班，或同一门课需指定任课教师时，显式拆成独立开班要求。
+  section_requirements?: Array<{
+    grades: number[];
+    count: number;
+    teacher_id?: EntityId;
+  }>;
   no_teacher?: boolean;  // 是否不需要教师（班会、社团、自习等）
 }
 
@@ -47,6 +54,8 @@ export interface Room {
 export interface Student {
   id: EntityId;
   name: string;
+  english_name?: string;  // 英文名，用于辅助区分中文重名学生
+  pinyin_name?: string;  // 姓名拼音，供名单导入与搜索使用
   grade: 1 | 2 | 3;
   admin_class_id: EntityId;  // 行政班ID
   teaching_class_id: EntityId;  // 教学班ID
@@ -81,7 +90,10 @@ export interface TeachingAssignment {
   id: EntityId;
   teacher_id: EntityId;
   course_id: EntityId;
-  class_id: EntityId;
+  // 旧导入格式为单个 class_id；当前教务数据可用 class_ids 一次列出
+  // 多个平行班。排课前必须展开为每班一个独立教学任务。
+  class_id?: EntityId;
+  class_ids?: EntityId[];
   class_type: "admin" | "teaching";
   weekly_hours: number;
 }

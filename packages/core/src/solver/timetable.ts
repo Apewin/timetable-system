@@ -380,6 +380,9 @@ function greedyInitialSolution(
   // 按约束强度排序任务（AP/连堂/禁排多的先排）
   const taskPriority = tasks.map(task => {
     let priority = 0;
+    const teacher = state.teachers.find(item => item.id === task.teacher_id);
+    // 教务排课优先级：实验教师课程先安排，再处理 AP/连堂等一般约束。
+    if (task.teacher_id?.startsWith("T_EXP_") || /实验教师/.test(teacher?.name || "")) priority += 1000;
     if (task.source === "ap") priority += 10;
     const course = state.courses.find(c => c.id === task.course_id);
     if (course?.consecutive) priority += 5;

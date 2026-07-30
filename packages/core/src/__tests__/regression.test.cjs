@@ -143,6 +143,39 @@ assert(crossGradeSections[0].student_ids.length === 2, 'section 应包含 G11 �
 assert(crossGradeSections[0].student_ids.includes('S11_A') && crossGradeSections[0].student_ids.includes('S12_A'), 'section 不应按年级拆分');
 assert(crossGradeSections[0].teacher_id === 'T_BIO', 'section 应分配可教授该课程的教师');
 
+// ===== Test 7b: 教务规定的 section 数必须独立于教师数量 =====
+console.log('\n=== Test 7b: 选修 section 数不受教师人数截断 ===');
+const requiredSectionState = makeState([], Array.from({ length: 9 }, (_, index) =>
+  makeStudent(`S_SECTION_${index + 1}`, 12, ['AP_BIO'], {})
+));
+requiredSectionState.courses = [{ id: 'AP_BIO', type: 'ap', weekly_hours: 5, section_count: [1, 3] }];
+requiredSectionState.teachers = [{ id: 'T_BIO', can_teach: ['AP_BIO'] }];
+requiredSectionState.rooms = [{ id: 'R_BIO', type: 'biology', capacity: 30 }];
+const requiredSections = buildSections(requiredSectionState).filter(section => section.course_id === 'AP_BIO');
+assert(requiredSections.length === 3, '跨年级“选修 1 / 选修 3”必须按最大需求生成 3 个平行教学班，即使只有一名教师');
+assert(requiredSections.every(section => section.teacher_id === 'T_BIO'), '同一教师可以承担多个 section，排课时由时段互斥保证');
+
+// ===== Test 7c: 不同年级指定不同教师时不得混班 =====
+console.log('\n=== Test 7c: 按年级和教师拆分 section ===');
+const gradeBoundState = makeState([], [
+  makeStudent('S_G11_MACRO', 11, ['AP_MACRO'], {}),
+  makeStudent('S_G12_MACRO_A', 12, ['AP_MACRO'], {}),
+  makeStudent('S_G12_MACRO_B', 12, ['AP_MACRO'], {}),
+]);
+gradeBoundState.courses = [{ id: 'AP_MACRO', type: 'ap', weekly_hours: 5, section_requirements: [
+  { grades: [11], count: 1, teacher_id: 'T_G11_MACRO' },
+  { grades: [12], count: 2, teacher_id: 'T_G12_MACRO' },
+] }];
+gradeBoundState.teachers = [
+  { id: 'T_G11_MACRO', can_teach: ['AP_MACRO'] },
+  { id: 'T_G12_MACRO', can_teach: ['AP_MACRO'] },
+];
+gradeBoundState.rooms = [{ id: 'R_MACRO', type: 'general', capacity: 30 }];
+const macroSections = buildSections(gradeBoundState).filter(section => section.course_id === 'AP_MACRO');
+assert(macroSections.length === 3, '高二 1 班、高三 2 班的要求应生成共 3 个 Macro section');
+assert(macroSections.filter(section => section.teacher_id === 'T_G11_MACRO').every(section => section.student_ids.includes('S_G11_MACRO')), '高二 Macro 必须由指定教师且仅包含高二学生');
+assert(macroSections.filter(section => section.teacher_id === 'T_G12_MACRO').length === 2, '高三 Macro 必须保留两个指定教师的 section');
+
 // ===== Test 8: 行政班与教学班均应成为 section 成员关系 =====
 console.log('\n=== Test 8: 行政班与教学班 section 构建 ===');
 

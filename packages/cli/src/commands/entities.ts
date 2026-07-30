@@ -177,7 +177,7 @@ export const teachingAssignmentConfig: EntityConfig<TeachingAssignment> = {
     "ID": a.id,
     "教师": a.teacher_id,
     "课程": a.course_id,
-    "班级": a.class_id,
+    "班级": a.class_id || (a.class_ids || []).join(", "),
     "班级类型": a.class_type === "admin" ? "行政班" : "教学班",
     "周课时": String(a.weekly_hours),
   }),

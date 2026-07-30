@@ -11,7 +11,9 @@ const { makeTaskId } = require('../constants.cjs');
  */
 
 function configuredSectionCount(value) {
-  if (Array.isArray(value)) return value.length || 1;
+  // 跨年级课程可用 [高二需求, 高三需求] 记录开班要求；允许混班时
+  // 实际要开的平行班数取其中最大值，而不是数组长度。
+  if (Array.isArray(value)) return Math.max(1, ...value.filter(Number.isFinite));
   return Number.isInteger(value) && value > 0 ? value : 1;
 }
 
@@ -112,40 +114,62 @@ function buildSections(state) {
   }
 
   for (const [courseId, unsortedStudents] of [...selectedStudents.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const students = [...new Map(unsortedStudents.map(student => [student.id, student])).values()]
+    const allStudents = [...new Map(unsortedStudents.map(student => [student.id, student])).values()]
       .sort((a, b) => a.id.localeCompare(b.id));
     const course = coursesById.get(courseId);
-    const teacher = teacherForCourse(state, courseId);
-    if (!teacher) throw new Error(`课程 ${courseId} 没有可用教师，无法创建 section`);
+    const requirements = course.section_requirements?.length
+      ? course.section_requirements
+      : [{ grades: null, count: configuredSectionCount(course.section_count), teacher_id: null }];
+    const claimedStudents = new Set();
 
-    const allRooms = courseRoomCandidates(state, course, 1);
-    if (!allRooms.length) throw new Error(`课程 ${courseId} 没有可用教室`);
-    const maxCapacity = Math.max(...allRooms.map(room => room.capacity));
-    // section_count represents the school-defined class split. Capacity is a
-    // lower bound: if enrolment exceeds every room, additional sections are
-    // still required even when the input count is too small.
-    const count = Math.max(configuredSectionCount(course.section_count), Math.ceil(students.length / maxCapacity));
-    const perSection = Math.ceil(students.length / count);
+    for (const requirement of requirements) {
+      const students = allStudents.filter(student => !requirement.grades || requirement.grades.includes(student.grade));
+      if (!students.length) continue;
+      for (const student of students) {
+        if (claimedStudents.has(student.id)) throw new Error(`课程 ${courseId} 的分班要求重复包含学生 ${student.id}`);
+        claimedStudents.add(student.id);
+      }
+      const teacher = requirement.teacher_id
+        ? state.teachers.find(item => item.id === requirement.teacher_id)
+        : teacherForCourse(state, courseId);
+      if (!teacher || !(teacher.can_teach || []).includes(courseId)) {
+        throw new Error(`课程 ${courseId} 没有可教授该年级组的教师`);
+      }
+      const allRooms = courseRoomCandidates(state, course, 1);
+      if (!allRooms.length) throw new Error(`课程 ${courseId} 没有可用教室`);
+      const maxCapacity = Math.max(...allRooms.map(room => room.capacity));
+      // 教务规定的开班数是下限；容量不足时才追加 section。一个老师可承担
+      // 多个 section，后续共享排课模型会强制这些课时不重叠。
+      const count = Math.max(requirement.count, Math.ceil(students.length / maxCapacity));
+      const perSection = Math.ceil(students.length / count);
+      const cohortKey = requirement.grades ? `_G${[...requirement.grades].sort((a, b) => a - b).join('_G')}` : '';
+      const cohortId = `${courseId}:${cohortKey || 'ALL'}`;
 
-    for (let index = 0; index < count; index++) {
-      const members = students.slice(index * perSection, (index + 1) * perSection);
-      if (!members.length) continue;
-      const room = courseRoomCandidates(state, course, members.length)
-        .sort((a, b) => (roomLoad.get(a.id) - roomLoad.get(b.id)) || a.id.localeCompare(b.id))[0];
-      if (!room) throw new Error(`课程 ${courseId} 第 ${index + 1} 个 section 没有容量足够的教室`);
-      sections.push({
-        id: `SEC_${course.type === 'ap' ? 'AP' : 'ELECTIVE'}_${courseId}_${index + 1}`,
-        course_id: courseId,
-        teacher_id: teacher.id,
-        student_ids: members.map(student => student.id),
-        eligible_student_ids: students.map(student => student.id),
-        weekly_hours: course.weekly_hours,
-        room_id: room.id,
-        capacity: room.capacity,
-        class_type: course.type === 'ap' ? 'ap' : 'elective',
-        source: course.type,
-      });
-      roomLoad.set(room.id, (roomLoad.get(room.id) || 0) + course.weekly_hours);
+      for (let index = 0; index < count; index++) {
+        const members = students.slice(index * perSection, (index + 1) * perSection);
+        if (!members.length) continue;
+        const room = courseRoomCandidates(state, course, members.length)
+          .sort((a, b) => (roomLoad.get(a.id) - roomLoad.get(b.id)) || a.id.localeCompare(b.id))[0];
+        if (!room) throw new Error(`课程 ${courseId} 第 ${index + 1} 个 section 没有容量足够的教室`);
+        sections.push({
+          id: `SEC_${course.type === 'ap' ? 'AP' : 'ELECTIVE'}_${courseId}${cohortKey}_${index + 1}`,
+          course_id: courseId,
+          teacher_id: teacher.id,
+          student_ids: members.map(student => student.id),
+          eligible_student_ids: students.map(student => student.id),
+          cohort_id: cohortId,
+          weekly_hours: course.weekly_hours,
+          room_id: room.id,
+          capacity: room.capacity,
+          class_type: course.type === 'ap' ? 'ap' : 'elective',
+          source: course.type,
+        });
+        roomLoad.set(room.id, (roomLoad.get(room.id) || 0) + course.weekly_hours);
+      }
+    }
+    if (claimedStudents.size !== allStudents.length) {
+      const omitted = allStudents.filter(student => !claimedStudents.has(student.id)).map(student => student.id).join(', ');
+      throw new Error(`课程 ${courseId} 的分班要求未覆盖学生: ${omitted}`);
     }
   }
   return sections;
@@ -263,9 +287,10 @@ async function assignStudentsToSections(state, sections, meetings) {
 
   const byCourse = new Map();
   for (const section of candidateSections) {
-    const values = byCourse.get(section.course_id) || [];
+    const cohortKey = `${section.course_id}@${section.cohort_id || 'ALL'}`;
+    const values = byCourse.get(cohortKey) || [];
     values.push(section);
-    byCourse.set(section.course_id, values);
+    byCourse.set(cohortKey, values);
   }
   for (const sectionsForCourse of byCourse.values()) {
     const students = [...new Set(sectionsForCourse.flatMap(section => section.eligible_student_ids))];
@@ -318,6 +343,9 @@ async function solveSectionTimetable(state, options = {}) {
         : section.weekly_hours === 5 ? slots.filter(slotId => slotDay(slotId) === occurrence + 1)
         : section.course_id === 'SELF_STUDY' ? slots.filter(slotId => Number(slotId.split('P')[1]) >= 6) : slots;
       for (const slotId of allowedSlots) {
+        if (section.student_ids.some(studentId => options.blockedSlotsByStudent?.get(studentId)?.has(slotId))) continue;
+        if (section.teacher_id && options.blockedSlotsByTeacher?.get(section.teacher_id)?.has(slotId)) continue;
+        if (section.room_id && options.blockedSlotsByRoom?.get(section.room_id)?.has(slotId)) continue;
         variables[slotId] = model.newBoolVar(`${section.id}_H${occurrence}_${slotId}`);
       }
       model.addEquality(sumVars(Object.values(variables)), 1n);
@@ -343,6 +371,15 @@ async function solveSectionTimetable(state, options = {}) {
       for (const slotId of slots) {
         const variables = enrolled.map(item => item.variables[slotId]).filter(Boolean);
         if (variables.length > 1) model.addLessOrEqual(sumVars(variables), 1n);
+      }
+      const dailyLimit = options.maxLessonsPerDayByStudent?.get(studentId);
+      if (dailyLimit !== undefined) {
+        for (let day = 1; day <= 5; day++) {
+          const variables = enrolled.flatMap(item => slots
+            .filter(slotId => slotDay(slotId) === day)
+            .map(slotId => item.variables[slotId]).filter(Boolean));
+          if (variables.length > 1) model.addLessOrEqual(sumVars(variables), BigInt(dailyLimit));
+        }
       }
     }
   }
@@ -470,6 +507,256 @@ function expandAssignments(sections, meetings) {
 }
 
 /**
+ * Solve the optional/AP layer after the administrative and teaching-class
+ * timetable has been fixed.  This keeps the mandatory part of a student's
+ * timetable out of the attendance product variables, while still deciding
+ * every optional section's meeting time and every student's parallel-section
+ * membership in one model.
+ */
+async function solveSelectionsOnCore(state, core, candidateSections, options = {}) {
+  const slots = allSlots();
+  const model = new CpModel();
+  const occurrences = [];
+  const candidateBusyByTeacherSlot = new Map(), candidateBusyByRoomSlot = new Map();
+  const coreByTeacher = new Map(), coreByRoom = new Map(), coreByStudent = new Map();
+  const addCore = (map, id, slotId) => {
+    if (!id) return;
+    const values = map.get(id) || new Set(); values.add(slotId); map.set(id, values);
+  };
+  const coreById = new Map(core.sections.map(section => [section.id, section]));
+  for (const meeting of core.meetings) {
+    const section = coreById.get(meeting.section_id);
+    addCore(coreByTeacher, section.teacher_id, meeting.slot_id);
+    addCore(coreByRoom, section.room_id, meeting.slot_id);
+    for (const studentId of section.student_ids) addCore(coreByStudent, studentId, meeting.slot_id);
+  }
+
+  for (const section of candidateSections) {
+    const fixedSlots = fixedSlotsFor(section, options.rules);
+    for (let occurrence = 0; occurrence < section.weekly_hours; occurrence++) {
+      const allowed = occurrence < fixedSlots.length ? [fixedSlots[occurrence]]
+        : section.weekly_hours === 5 ? slots.filter(slotId => slotDay(slotId) === occurrence + 1)
+        : section.course_id === 'SELF_STUDY' ? slots.filter(slotId => slotPeriod(slotId) >= 6) : slots;
+      const variables = {};
+      for (const slotId of allowed) {
+        if (section.teacher_id && coreByTeacher.get(section.teacher_id)?.has(slotId)) continue;
+        if (section.room_id && coreByRoom.get(section.room_id)?.has(slotId)) continue;
+        variables[slotId] = model.newBoolVar(`SEL_TIME_${section.id}_${occurrence}_${slotId}`);
+      }
+      model.addEquality(sumVars(Object.values(variables)), 1n);
+      for (const [slotId, variable] of Object.entries(variables)) {
+        if (section.teacher_id) {
+          const key = `${section.teacher_id}@${slotId}`;
+          const values = candidateBusyByTeacherSlot.get(key) || []; values.push(variable); candidateBusyByTeacherSlot.set(key, values);
+        }
+        if (section.room_id) {
+          const key = `${section.room_id}@${slotId}`;
+          const values = candidateBusyByRoomSlot.get(key) || []; values.push(variable); candidateBusyByRoomSlot.set(key, values);
+        }
+      }
+      occurrences.push({ section, occurrence, variables });
+    }
+  }
+
+  for (const section of candidateSections) {
+    const own = occurrences.filter(item => item.section.id === section.id);
+    for (const slotId of slots) {
+      const vars = own.map(item => item.variables[slotId]).filter(Boolean);
+      if (vars.length > 1) model.addLessOrEqual(sumVars(vars), 1n);
+    }
+    for (let day = 1; day <= 5; day++) {
+      const vars = own.flatMap(item => slots.filter(slotId => slotDay(slotId) === day).map(slotId => item.variables[slotId]).filter(Boolean));
+      if (section.weekly_hours <= 5 && vars.length > 1) model.addLessOrEqual(sumVars(vars), 1n);
+      if (section.weekly_hours > 5 && vars.length > 1) model.addLessOrEqual(sumVars(vars), 2n);
+    }
+  }
+  for (const slotId of slots) {
+    const byTeacher = new Map(), byRoom = new Map();
+    for (const item of occurrences) {
+      const variable = item.variables[slotId]; if (!variable) continue;
+      if (item.section.teacher_id) { const vars = byTeacher.get(item.section.teacher_id) || []; vars.push(variable); byTeacher.set(item.section.teacher_id, vars); }
+      if (item.section.room_id) { const vars = byRoom.get(item.section.room_id) || []; vars.push(variable); byRoom.set(item.section.room_id, vars); }
+    }
+    for (const vars of byTeacher.values()) if (vars.length > 1) model.addLessOrEqual(sumVars(vars), 1n);
+    for (const vars of byRoom.values()) if (vars.length > 1) model.addLessOrEqual(sumVars(vars), 1n);
+  }
+
+  const membership = new Map(), choicesByStudent = new Map();
+  for (const section of candidateSections) {
+    for (const studentId of section.eligible_student_ids) {
+      const variable = model.newBoolVar(`SEL_MEMBER_${studentId}_${section.id}`);
+      membership.set(`${studentId}@${section.id}`, variable);
+      const choices = choicesByStudent.get(studentId) || [];
+      choices.push({ section, variable }); choicesByStudent.set(studentId, choices);
+    }
+  }
+  for (const choices of choicesByStudent.values()) {
+    const byCourse = new Map();
+    for (const choice of choices) { const vars = byCourse.get(choice.section.course_id) || []; vars.push(choice.variable); byCourse.set(choice.section.course_id, vars); }
+    for (const vars of byCourse.values()) model.addEquality(sumVars(vars), 1n);
+  }
+  const sectionsByCourse = new Map();
+  for (const section of candidateSections) {
+    const cohortKey = `${section.course_id}@${section.cohort_id || 'ALL'}`;
+    const list = sectionsByCourse.get(cohortKey) || []; list.push(section); sectionsByCourse.set(cohortKey, list);
+  }
+  for (const list of sectionsByCourse.values()) {
+    const enrolled = [...new Set(list.flatMap(section => section.eligible_student_ids))];
+    const min = Math.floor(enrolled.length / list.length), max = Math.ceil(enrolled.length / list.length);
+    for (const section of list) {
+      const vars = section.eligible_student_ids.map(studentId => membership.get(`${studentId}@${section.id}`));
+      model.addGreaterOrEqual(sumVars(vars), BigInt(min));
+      model.addLessOrEqual(sumVars(vars), BigInt(Math.min(max, section.capacity || max)));
+    }
+  }
+
+  const attendedByStudentSlot = new Map();
+  const addAttendance = (studentId, slotId, variable) => {
+    const key = `${studentId}@${slotId}`; const vars = attendedByStudentSlot.get(key) || []; vars.push(variable); attendedByStudentSlot.set(key, vars);
+  };
+  for (const item of occurrences) {
+    for (const studentId of item.section.eligible_student_ids) {
+      const member = membership.get(`${studentId}@${item.section.id}`);
+      for (const [slotId, time] of Object.entries(item.variables)) {
+        if (coreByStudent.get(studentId)?.has(slotId)) {
+          model.addLessOrEqual(member.add(time), 1n);
+          continue;
+        }
+        const attended = model.newBoolVar(`SEL_ATTEND_${studentId}_${item.section.id}_${item.occurrence}_${slotId}`);
+        model.addLessOrEqual(attended, member);
+        model.addLessOrEqual(attended, time);
+        model.addGreaterOrEqual(attended, member.add(time).sub(1n));
+        addAttendance(studentId, slotId, attended);
+      }
+    }
+  }
+  for (const vars of attendedByStudentSlot.values()) if (vars.length > 1) model.addLessOrEqual(sumVars(vars), 1n);
+
+  // The next phase must still be able to place every fixed-membership core
+  // section.  Reserve enough common free slots for its whole roster here;
+  // without this bridge, a perfectly valid elective timetable can leave a
+  // teaching class with no time at which all of its students are available.
+  for (const coreSection of core.sections || []) {
+    const freeBySlot = new Map();
+    for (const slotId of slots) {
+      const busy = [
+        ...coreSection.student_ids.flatMap(studentId => attendedByStudentSlot.get(`${studentId}@${slotId}`) || []),
+        ...(coreSection.teacher_id ? candidateBusyByTeacherSlot.get(`${coreSection.teacher_id}@${slotId}`) || [] : []),
+        ...(coreSection.room_id ? candidateBusyByRoomSlot.get(`${coreSection.room_id}@${slotId}`) || [] : []),
+      ];
+      const free = model.newBoolVar(`CORE_FREE_${coreSection.id}_${slotId}`);
+      for (const variable of busy) model.addLessOrEqual(free.add(variable), 1n);
+      if (busy.length) model.addGreaterOrEqual(sumVars([...busy, free]), 1n);
+      freeBySlot.set(slotId, free);
+    }
+    model.addGreaterOrEqual(sumVars([...freeBySlot.values()]), BigInt(coreSection.weekly_hours));
+    if (coreSection.weekly_hours === 5) {
+      for (let day = 1; day <= 5; day++) {
+        const dayFree = slots.filter(slotId => slotDay(slotId) === day).map(slotId => freeBySlot.get(slotId));
+        model.addGreaterOrEqual(sumVars(dayFree), 1n);
+      }
+    }
+  }
+
+  const solver = new CpSolver();
+  solver.parameters.maxTimeInSeconds = options.maxTimeSeconds || 120;
+  solver.parameters.numSearchWorkers = options.numSearchWorkers || 8;
+  if (options.seed !== undefined) { solver.parameters.randomSeed = options.seed; solver.parameters.randomizeSearch = true; }
+  const status = await solver.solve(model);
+  const ok = status === CpSolverStatus.OPTIMAL || status === CpSolverStatus.FEASIBLE;
+  if (!ok) return { ok: false, status, sections: candidateSections, meetings: [] };
+  const allocated = candidateSections.map(section => ({ ...section, student_ids: [] }));
+  const allocatedById = new Map(allocated.map(section => [section.id, section]));
+  for (const section of candidateSections) for (const studentId of section.eligible_student_ids) {
+    if (solver.booleanValue(membership.get(`${studentId}@${section.id}`))) allocatedById.get(section.id).student_ids.push(studentId);
+  }
+  const meetings = occurrences.map(item => ({ section_id: item.section.id, slot_id: Object.keys(item.variables).find(slotId => solver.booleanValue(item.variables[slotId])) }));
+  return { ok: true, status, sections: allocated, meetings };
+}
+
+async function solveCoreThenSelections(state, options = {}) {
+  const sections = buildSections(state);
+  const coreSections = sections.filter(section => section.class_type === 'admin' || section.class_type === 'teaching');
+  const candidates = sections.filter(section => section.class_type === 'ap' || section.class_type === 'elective');
+  const fiveHourCoursesByStudent = new Map();
+  for (const section of candidates.filter(section => section.weekly_hours === 5)) {
+    for (const studentId of section.eligible_student_ids) {
+      const courses = fiveHourCoursesByStudent.get(studentId) || new Set();
+      courses.add(section.course_id); fiveHourCoursesByStudent.set(studentId, courses);
+    }
+  }
+  // Every five-hour selected course meets once per day.  The core schedule
+  // must leave that many daily spaces free before the optional layer is
+  // solved; otherwise a random core timetable can be globally impossible.
+  const maxCorePerDayByStudent = new Map(state.students.map(student => [
+    student.id,
+    10 - (fiveHourCoursesByStudent.get(student.id)?.size || 0),
+  ]));
+  const attempts = options.attempts || 12;
+  let last;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const seed = (options.seed || 20260730) + attempt * 7919;
+    const core = await solveSectionTimetable(state, { ...options, sections: coreSections, randomSeed: seed, maxTimeSeconds: options.coreMaxTimeSeconds || 20, maxLessonsPerDayByStudent: maxCorePerDayByStudent });
+    if (!core.ok) { last = core; continue; }
+    const selections = await solveSelectionsOnCore(state, core, candidates, { ...options, seed, maxTimeSeconds: options.selectionMaxTimeSeconds || 120 });
+    if (!selections.ok) { last = { ...selections, attempt: attempt + 1 }; continue; }
+    const allSections = [...core.sections, ...selections.sections];
+    const meetings = [...core.meetings, ...selections.meetings];
+    return { ok: true, status: selections.status, sections: allSections, meetings, assignments: expandAssignments(allSections, meetings), attempts: attempt + 1,
+      warnings: core.warnings };
+  }
+  return { ok: false, ...last, attempts };
+}
+
+/**
+ * Reverse decomposition for the present school data.  G11 students have
+ * exactly three daily AP periods, so a random core timetable leaves AP with
+ * a brittle set of holes.  We first solve all optional section times and
+ * memberships together, then fit the fixed-membership core classes into the
+ * remaining student, teacher, and room availability.
+ */
+async function solveSelectionsThenCore(state, options = {}) {
+  const sections = buildSections(state);
+  const coreSections = sections.filter(section => section.class_type === 'admin' || section.class_type === 'teaching');
+  const candidates = sections.filter(section => section.class_type === 'ap' || section.class_type === 'elective');
+  const fixedCore = {
+    sections: coreSections,
+    meetings: coreSections.flatMap(section => fixedSlotsFor(section, options.rules)
+      .map(slot_id => ({ section_id: section.id, slot_id }))),
+  };
+  const attempts = options.attempts || 12;
+  let last;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const seed = (options.seed || 20260730) + attempt * 7919;
+    const selections = await solveSelectionsOnCore(state, fixedCore, candidates, { ...options, seed, maxTimeSeconds: options.selectionMaxTimeSeconds || 90 });
+    if (!selections.ok) { last = selections; continue; }
+    const blockedSlotsByStudent = new Map(), blockedSlotsByTeacher = new Map(), blockedSlotsByRoom = new Map();
+    const sectionsById = new Map(selections.sections.map(section => [section.id, section]));
+    const add = (map, id, slotId) => { if (!id) return; const values = map.get(id) || new Set(); values.add(slotId); map.set(id, values); };
+    for (const meeting of selections.meetings) {
+      const section = sectionsById.get(meeting.section_id);
+      add(blockedSlotsByTeacher, section.teacher_id, meeting.slot_id);
+      add(blockedSlotsByRoom, section.room_id, meeting.slot_id);
+      for (const studentId of section.student_ids) add(blockedSlotsByStudent, studentId, meeting.slot_id);
+    }
+    const core = await solveSectionTimetable(state, {
+      ...options,
+      sections: coreSections,
+      randomSeed: seed,
+      maxTimeSeconds: options.coreMaxTimeSeconds || 30,
+      blockedSlotsByStudent,
+      blockedSlotsByTeacher,
+      blockedSlotsByRoom,
+    });
+    if (!core.ok) { last = core; continue; }
+    const allSections = [...core.sections, ...selections.sections];
+    const meetings = [...core.meetings, ...selections.meetings];
+    return { ok: true, status: core.status, sections: allSections, meetings, assignments: expandAssignments(allSections, meetings), attempts: attempt + 1, warnings: core.warnings };
+  }
+  return { ok: false, ...last, attempts };
+}
+
+/**
  * Full school pipeline: place all real sections with shared teacher/room
  * constraints, then solve the membership of students in the already-defined
  * multi-section elective classes.
@@ -589,7 +876,10 @@ async function solveWholeSchool(state, options = {}) {
     for (const vars of byCourse.values()) model.addEquality(sumVars(vars), 1n);
   }
   const byCourse = new Map();
-  for (const section of candidateSections) { const list = byCourse.get(section.course_id) || []; list.push(section); byCourse.set(section.course_id, list); }
+  for (const section of candidateSections) {
+    const cohortKey = `${section.course_id}@${section.cohort_id || 'ALL'}`;
+    const list = byCourse.get(cohortKey) || []; list.push(section); byCourse.set(cohortKey, list);
+  }
   for (const list of byCourse.values()) {
     const enrolled = [...new Set(list.flatMap(section => section.eligible_student_ids))];
     const min = Math.floor(enrolled.length / list.length), max = Math.ceil(enrolled.length / list.length);
@@ -641,4 +931,4 @@ async function solveWholeSchool(state, options = {}) {
   return { ok: true, status, sections: allocated, meetings, assignments: expandAssignments(allocated, meetings), warnings };
 }
 
-module.exports = { buildSections, solveSectionTimetable, assignStudentsToSections, solveWholeSchool, solveTwoStageWholeSchool };
+module.exports = { buildSections, solveSectionTimetable, assignStudentsToSections, solveWholeSchool, solveTwoStageWholeSchool, solveCoreThenSelections, solveSelectionsOnCore, solveSelectionsThenCore };

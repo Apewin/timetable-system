@@ -303,6 +303,9 @@ async function loadViewData(viewName) {
     case 'formal-timetable':
       await loadFormalSolvePage();
       break;
+    case 'manual-timetable':
+      await loadManualTimetable();
+      break;
     case 'temp-timetable':
       await loadTempTimetablePage();
       break;
@@ -310,6 +313,128 @@ async function loadViewData(viewName) {
       await loadSettingsPage();
       break;
   }
+}
+
+const MANUAL_TIMETABLE_STORAGE_KEY = 'timetable.manual-drafts.v1';
+
+function readManualDrafts() {
+  try { return JSON.parse(localStorage.getItem(MANUAL_TIMETABLE_STORAGE_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function writeManualDrafts(drafts) {
+  localStorage.setItem(MANUAL_TIMETABLE_STORAGE_KEY, JSON.stringify(drafts));
+}
+
+function manualSlotId(day, period) { return `D${day}P${period}`; }
+
+function manualCurrentClassId() {
+  return document.getElementById('manual-class-select')?.value || '';
+}
+
+function manualCourseLabel(course) {
+  return `${course.name || course.id}${course.weekly_hours ? ` · ${course.weekly_hours} 节/周` : ''}`;
+}
+
+function renderManualCoursePool() {
+  const pool = document.getElementById('manual-course-pool');
+  const count = document.getElementById('manual-course-count');
+  if (!pool) return;
+  const keyword = (document.getElementById('manual-course-search')?.value || '').trim().toLowerCase();
+  const courses = (window._manualCourses || []).filter(course =>
+    !keyword || `${course.id} ${course.name || ''}`.toLowerCase().includes(keyword));
+  count.textContent = `${courses.length} 门`;
+  pool.innerHTML = courses.map(course => `
+    <div class="manual-course-card" draggable="true" data-course-id="${course.id}">
+      <div class="manual-course-name">${course.name || course.id}</div>
+      <div class="manual-course-meta">${course.id} · ${course.weekly_hours || 0} 节/周</div>
+    </div>
+  `).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
+  pool.querySelectorAll('.manual-course-card').forEach(card => {
+    card.addEventListener('dragstart', event => {
+      event.dataTransfer.effectAllowed = 'copy';
+      event.dataTransfer.setData('application/x-manual-course', card.dataset.courseId);
+    });
+  });
+}
+
+function saveManualCourseToSlot(slotId, courseId) {
+  const classId = manualCurrentClassId();
+  if (!classId || !courseId) return;
+  const drafts = readManualDrafts();
+  drafts[classId] = { ...(drafts[classId] || {}), [slotId]: courseId };
+  writeManualDrafts(drafts);
+  renderManualTimetableGrid();
+}
+
+function removeManualCourseFromSlot(slotId) {
+  const classId = manualCurrentClassId();
+  const drafts = readManualDrafts();
+  if (!drafts[classId]?.[slotId]) return;
+  delete drafts[classId][slotId];
+  writeManualDrafts(drafts);
+  renderManualTimetableGrid();
+}
+
+function renderManualTimetableGrid() {
+  const grid = document.getElementById('manual-timetable-grid');
+  const classId = manualCurrentClassId();
+  if (!grid || !classId) return;
+  const drafts = readManualDrafts();
+  const draft = drafts[classId] || {};
+  const courseById = new Map((window._manualCourses || []).map(course => [course.id, course]));
+  const days = ['周一', '周二', '周三', '周四', '周五'];
+  let html = '<div class="manual-grid-head">节次</div>' + days.map(day => `<div class="manual-grid-head">${day}</div>`).join('');
+  for (let period = 1; period <= 10; period++) {
+    html += `<div class="manual-grid-period">第 ${period} 节</div>`;
+    for (let day = 1; day <= 5; day++) {
+      const slotId = manualSlotId(day, period);
+      const course = courseById.get(draft[slotId]);
+      html += `<div class="manual-slot ${course ? 'has-course' : ''}" data-slot-id="${slotId}">
+        ${course ? `<div class="manual-slot-course"><span>${manualCourseLabel(course)}</span><button type="button" class="manual-slot-remove" data-slot-id="${slotId}" aria-label="删除课程">×</button></div>` : '<span class="manual-slot-placeholder">拖入课程</span>'}
+      </div>`;
+    }
+  }
+  grid.innerHTML = html;
+  grid.querySelectorAll('.manual-slot').forEach(slot => {
+    slot.addEventListener('dragover', event => { event.preventDefault(); slot.classList.add('drag-over'); });
+    slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
+    slot.addEventListener('drop', event => {
+      event.preventDefault();
+      slot.classList.remove('drag-over');
+      saveManualCourseToSlot(slot.dataset.slotId, event.dataTransfer.getData('application/x-manual-course'));
+    });
+  });
+  grid.querySelectorAll('.manual-slot-remove').forEach(button => {
+    button.addEventListener('click', () => removeManualCourseFromSlot(button.dataset.slotId));
+  });
+}
+
+async function loadManualTimetable() {
+  const [teachingClasses, adminClasses, courses] = await Promise.all([
+    api('/teaching_classes'), api('/admin_classes'), api('/courses'),
+  ]);
+  window._manualCourses = [...courses].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN'));
+  const selector = document.getElementById('manual-class-select');
+  const classes = [
+    ...teachingClasses.map(item => ({ ...item, label: `教学班 · ${item.name}` })),
+    ...adminClasses.map(item => ({ ...item, label: `行政班 · ${item.name}` })),
+  ].sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  const previous = selector.value;
+  selector.innerHTML = classes.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
+  if (classes.some(item => item.id === previous)) selector.value = previous;
+  selector.onchange = renderManualTimetableGrid;
+  document.getElementById('manual-course-search').oninput = renderManualCoursePool;
+  document.getElementById('manual-clear-class').onclick = () => {
+    const classId = manualCurrentClassId();
+    if (!classId || !confirm('清空当前班级的手动课表草稿吗？')) return;
+    const drafts = readManualDrafts();
+    delete drafts[classId];
+    writeManualDrafts(drafts);
+    renderManualTimetableGrid();
+  };
+  renderManualCoursePool();
+  renderManualTimetableGrid();
 }
 
 // 加载欢迎页面
@@ -745,6 +870,8 @@ function applyStudentFilters(data) {
       // 搜索基本信息
       const matchBasic = s.id.toLowerCase().includes(keyword) ||
                          s.name.toLowerCase().includes(keyword) ||
+                         (s.english_name || '').toLowerCase().includes(keyword) ||
+                         (s.pinyin_name || '').toLowerCase().includes(keyword) ||
                          s.admin_class_id.toLowerCase().includes(keyword) ||
                          s.teaching_class_id.toLowerCase().includes(keyword);
 
@@ -813,7 +940,8 @@ function renderStudentsList(data, hasFilter = false) {
         <thead>
           <tr>
             <th>ID</th>
-            <th>姓名</th>
+            <th>中文姓名</th>
+            <th>英文名</th>
             <th>年级</th>
             <th>行政班</th>
             <th>教学班</th>
@@ -827,6 +955,7 @@ function renderStudentsList(data, hasFilter = false) {
             <tr>
               <td>${s.id}</td>
               <td>${s.name}</td>
+              <td>${s.english_name || '-'}</td>
               <td>${s.grade}</td>
               <td>${s.admin_class_id}</td>
               <td>${s.teaching_class_id}</td>
@@ -1730,7 +1859,7 @@ window.editSection = function(sectionId) {
             const student = window._studentsData?.find(s => s.id === id);
             return `<div style="padding: 4px 0; display: flex; justify-content: space-between; align-items: center;">
               <span>${student?.name || id}</span>
-              <button type="button" class="btn btn-danger btn-sm" onclick="removeStudentFromSection('${section.id}', '${id}')">移除</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="moveStudentToSection('${section.id}', '${id}')">转至平行班</button>
             </div>`;
           }).join('')}
         </div>
@@ -1752,7 +1881,7 @@ window.editSection = function(sectionId) {
     try {
       await api(`/elective-sections/${sectionId}`, {
         method: 'PUT',
-        body: JSON.stringify(updates)
+        body: JSON.stringify({ ...updates, replan: true })
       });
       hideModal();
       showToast('保存成功');
@@ -1773,7 +1902,8 @@ window.viewSectionStudents = function(sectionId) {
         <thead>
           <tr>
             <th>学生ID</th>
-            <th>姓名</th>
+            <th>中文姓名</th>
+            <th>英文名</th>
             <th>年级</th>
             <th>行政班</th>
             <th>操作</th>
@@ -1786,10 +1916,11 @@ window.viewSectionStudents = function(sectionId) {
               <tr>
                 <td>${id}</td>
                 <td>${student?.name || '-'}</td>
+                <td>${student?.english_name || '-'}</td>
                 <td>${student?.grade || '-'}</td>
                 <td>${student?.admin_class_id || '-'}</td>
                 <td>
-                  <button class="btn btn-danger btn-sm" onclick="removeStudentFromSection('${section.id}', '${id}')">移除</button>
+                  <button class="btn btn-secondary btn-sm" onclick="moveStudentToSection('${section.id}', '${id}')">转至平行班</button>
                 </td>
               </tr>
             `;
@@ -1827,6 +1958,54 @@ window.removeStudentFromSection = async function(sectionId, studentId) {
   }
 };
 
+// A selected course must always retain exactly one section for every student.
+// Therefore the UI exposes an atomic transfer instead of a bare "remove",
+// which would create an invalid timetable roster.
+window.moveStudentToSection = function(sourceSectionId, studentId) {
+  const source = window._sectioningData?.find(section => section.id === sourceSectionId);
+  const student = window._studentsData?.find(item => item.id === studentId);
+  if (!source) return;
+  const targets = (window._sectioningData || []).filter(section =>
+    section.id !== source.id
+      && section.course_id === source.course_id
+      && (section.eligible_student_ids || []).includes(studentId)
+      && (!section.capacity || section.student_ids.length < section.capacity));
+  if (!targets.length) {
+    showToast('没有可转入的同课程平行班', 'error');
+    return;
+  }
+  showModal(`转班 - ${student?.name || studentId}`, `
+    <form id="form-move-student-section">
+      <p>将 <strong>${student?.name || studentId}</strong> 从 ${source.id} 转到：</p>
+      <div class="form-group">
+        <label>目标平行班</label>
+        <select name="target_section_id" class="select">
+          ${targets.map(section => `<option value="${section.id}">${section.id}（${section.student_ids.length} 人）</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+        <button type="submit" class="btn btn-primary">确认转班</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('form-move-student-section').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const targetSectionId = new FormData(event.target).get('target_section_id');
+    try {
+      await api(`/elective-sections/${targetSectionId}/move-student`, {
+        method: 'POST',
+        body: JSON.stringify({ student_id: studentId, replan: true }),
+      });
+      hideModal();
+      showToast('已转班；系统已重新排课并通过完整硬约束校验');
+      loadSectioning();
+    } catch (error) {
+      showToast('无法转班: ' + error.message, 'error');
+    }
+  });
+};
+
 // 加载约束列表
 async function loadConstraints() {
   const data = await api('/constraints');
@@ -1840,6 +2019,107 @@ async function loadConstraints() {
            (item.target_id && item.target_id.toLowerCase().includes(keyword));
   });
 }
+
+const ruleTypeHints = {
+  fixed_slots: '指定 section 必须出现在给定时段；exact 表示其全部课时都只能在这些时段。',
+  forbid_slots: '禁止目标在给定时段上课。',
+  preferred_slots: '偏好目标在给定时段上课；通常设为软规则。',
+  max_occurrences_per_day: '限制同一目标每天最多出现几节。',
+  max_consecutive_lessons: '限制同一目标一天中连续课时的最大长度；本校“连续不超过三节”应设为 student 范围。',
+  max_consecutive_days_in_period: '限制目标连续几天出现在同一节次。',
+  priority: '仅影响求解变量的优先顺序，不改变硬约束。',
+};
+
+function constraintParamsFromForm(formData, type) {
+  const selectorText = formData.get('selector_json').trim();
+  let selector = {};
+  if (selectorText) {
+    try { selector = JSON.parse(selectorText); }
+    catch { throw new Error('高级筛选必须是合法 JSON 对象'); }
+    if (!selector || typeof selector !== 'object' || Array.isArray(selector)) throw new Error('高级筛选必须是 JSON 对象');
+  }
+  const params = Object.keys(selector).length ? { selector } : {};
+  const slots = formData.get('slots').split(/[,，\s]+/).filter(Boolean);
+  if (['fixed_slots', 'forbid_slots', 'preferred_slots'].includes(type)) {
+    if (!slots.length) throw new Error('该规则需要至少一个时段，例如 D1P1,D2P3');
+    params.slots = slots;
+    if (type === 'fixed_slots') params.mode = formData.get('slot_mode');
+  }
+  if (['max_occurrences_per_day', 'max_consecutive_lessons'].includes(type)) {
+    params.max = Number(formData.get('max'));
+  }
+  if (type === 'max_consecutive_days_in_period') {
+    params.max = Number(formData.get('max'));
+    params.period = Number(formData.get('period'));
+  }
+  if (type === 'priority') params.rank = Number(formData.get('rank'));
+  return params;
+}
+
+window.openConstraintDialog = function(existing = null) {
+  const rule = existing || {
+    id: '', type: 'max_occurrences_per_day', scope: 'course', hard: true, weight: 10,
+    target_id: '', params: { max: 1 },
+  };
+  const params = rule.params || {};
+  showModal(existing ? `编辑约束 - ${rule.id}` : '添加约束', `
+    <form id="form-constraint">
+      <div class="form-group"><label>ID</label>
+        <input name="id" value="${rule.id}" ${existing ? 'readonly' : ''} required placeholder="如 course_once_per_day"></div>
+      <div class="form-group"><label>规则类型</label>
+        <select name="type" class="select">${Object.entries(ruleTypeHints).map(([id, hint]) => `<option value="${id}" ${id === rule.type ? 'selected' : ''}>${id} — ${hint}</option>`).join('')}</select></div>
+      <div class="form-group"><label>作用范围</label>
+        <select name="scope" class="select">${['global', 'teacher', 'room', 'course', 'class', 'section', 'student'].map(scope => `<option value="${scope}" ${scope === rule.scope ? 'selected' : ''}>${scope}</option>`).join('')}</select></div>
+      <div class="form-group"><label>目标 ID（可留空，表示该范围内的全部对象）</label>
+        <input name="target_id" value="${rule.target_id || ''}" placeholder="如 AP_BIO 或 T_EXP_A"></div>
+      <div class="form-group"><label>时段（固定、禁排、偏好规则必填）</label>
+        <input name="slots" value="${(params.slots || []).join(',')}" placeholder="D1P1,D2P3"></div>
+      <div class="form-group"><label>固定时段模式</label>
+        <select name="slot_mode" class="select"><option value="contains" ${params.mode !== 'exact' ? 'selected' : ''}>contains（包含这些时段）</option><option value="exact" ${params.mode === 'exact' ? 'selected' : ''}>exact（全部课时恰为这些时段）</option></select></div>
+      <div class="form-group"><label>最大次数/最大连续节数</label>
+        <input type="number" min="1" name="max" value="${params.max || 1}"></div>
+      <div class="form-group"><label>指定节次（仅“连续天同一节次”使用）</label>
+        <input type="number" min="1" max="10" name="period" value="${params.period || 1}"></div>
+      <div class="form-group"><label>优先级 rank（仅 priority 使用，数字越小越先安排）</label>
+        <input type="number" name="rank" value="${params.rank ?? 0}"></div>
+      <div class="form-group"><label><input type="checkbox" name="hard" ${rule.hard ? 'checked' : ''}> 硬约束（不勾选即软约束）</label></div>
+      <div class="form-group"><label><input type="checkbox" name="requires_approval_to_relax" ${rule.requires_approval_to_relax ? 'checked' : ''}> 软规则仅在教务明确批准后才可破坏</label>
+        <div style="font-size:12px;color:var(--gray-500);margin-top:4px;">未获批准时，系统会先把它当作硬规则；无解只会报告原因，不会自行放宽。</div></div>
+      <div class="form-group"><label>软约束权重</label>
+        <input type="number" min="1" name="weight" value="${rule.weight || 10}"></div>
+      <div class="form-group"><label>高级筛选（可选 JSON；例：{&quot;grades&quot;:[11,12]}）</label>
+        <textarea name="selector_json" rows="3" placeholder='{"teacher_ids":["T1"]}'>${params.selector ? JSON.stringify(params.selector) : ''}</textarea></div>
+      <p style="font-size:12px;color:var(--gray-500);">保存后现有课表会标记为待重排；求解器与独立校验器使用同一条规则。</p>
+      <div class="form-actions"><button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button><button type="submit" class="btn btn-primary">保存约束</button></div>
+    </form>
+  `);
+  document.getElementById('form-constraint').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const formData = new FormData(event.target);
+      const type = formData.get('type');
+      const hard = formData.has('hard');
+      const next = {
+        id: formData.get('id').trim(), type, scope: formData.get('scope'), hard,
+        params: constraintParamsFromForm(formData, type),
+      };
+      const targetId = formData.get('target_id').trim();
+      if (targetId) next.target_id = targetId;
+      if (!hard) {
+        next.weight = Number(formData.get('weight'));
+        next.requires_approval_to_relax = formData.has('requires_approval_to_relax');
+      }
+      await api(existing ? `/constraints/${rule.id}` : '/constraints', {
+        method: existing ? 'PUT' : 'POST', body: JSON.stringify(next),
+      });
+      hideModal();
+      showToast('约束已保存；重新求解后生效', 'success');
+      loadConstraints();
+    } catch (error) {
+      showToast('无法保存约束: ' + error.message, 'error');
+    }
+  });
+};
 
 function renderConstraintsList(data) {
   const content = document.getElementById('constraints-list');
@@ -1868,9 +2148,10 @@ function renderConstraintsList(data) {
               <td>${c.type}</td>
               <td>${c.scope}</td>
               <td>${c.target_id || '-'}</td>
-              <td>${c.hard ? '硬' : '软'}</td>
+              <td>${c.hard ? '硬' : (c.requires_approval_to_relax ? '软（需批准）' : '软')}</td>
               <td>${c.weight || '-'}</td>
               <td>
+                <button class="btn btn-secondary btn-sm" onclick="openConstraintDialog(window._constraintsData.find(item => item.id === '${c.id}'))">编辑</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteEntity('constraints', '${c.id}')">删除</button>
               </td>
             </tr>
@@ -1887,10 +2168,16 @@ async function loadStudentSelect() {
   window._studentsData = data; // 缓存数据供搜索使用
   const select = document.getElementById('select-student');
   select.innerHTML = '<option value="">选择学生</option>' +
-    data.map(s => `<option value="${s.id}">${s.id} - ${s.name}</option>`).join('');
+    data.map(s => `<option value="${s.id}">${s.id} - ${s.name}${s.english_name ? ` (${s.english_name})` : ''}</option>`).join('');
 
   // 初始化搜索
-  initSearchFilter('search-student', 'select-student', data, (item) => `${item.id} ${item.name}`);
+  initSearchFilter(
+    'search-student',
+    'select-student',
+    data,
+    (item) => `${item.id} ${item.name} ${item.english_name || ''} ${item.pinyin_name || ''}`,
+    (item) => `${item.id} - ${item.name}${item.english_name ? ` (${item.english_name})` : ''}`,
+  );
 }
 
 // 加载教师选择框
@@ -1934,7 +2221,7 @@ async function loadRoomSelect() {
 }
 
 // 初始化搜索过滤功能
-function initSearchFilter(searchId, selectId, data, getSearchText) {
+function initSearchFilter(searchId, selectId, data, getSearchText, getOptionLabel = (item) => `${item.id} - ${item.name}`) {
   const searchInput = document.getElementById(searchId);
   const select = document.getElementById(selectId);
 
@@ -1950,7 +2237,7 @@ function initSearchFilter(searchId, selectId, data, getSearchText) {
     if (!keyword) {
       // 如果搜索框为空，显示所有选项
       select.innerHTML = '<option value="">请选择</option>' +
-        data.map(item => `<option value="${item.id}">${item.id} - ${item.name}</option>`).join('');
+        data.map(item => `<option value="${item.id}">${getOptionLabel(item)}</option>`).join('');
       return;
     }
 
@@ -1962,7 +2249,7 @@ function initSearchFilter(searchId, selectId, data, getSearchText) {
 
     // 更新下拉框选项
     select.innerHTML = '<option value="">选择匹配项</option>' +
-      filtered.map(item => `<option value="${item.id}">${item.id} - ${item.name}</option>`).join('');
+      filtered.map(item => `<option value="${item.id}">${getOptionLabel(item)}</option>`).join('');
 
     // 如果只有一个匹配项，自动选中
     if (filtered.length === 1) {
@@ -2083,6 +2370,7 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
       <div class="timetable-header">
         <h3>${title}</h3>
         <p>${subtitle}</p>
+        ${data.stale ? '<div class="validation-result warning">⚠️ 当前输入已修改：以下为上一版历史课表。请重新排课后再据此调整。</div>' : ''}
       </div>
       <div class="timetable-grid">
         <div class="header-cell">节次</div>
@@ -2290,7 +2578,7 @@ window.editEntity = async function(entity, id) {
               <input type="text" name="id" value="${item.id}" readonly style="background-color: var(--gray-100);">
             </div>
             <div class="form-group">
-              <label>姓名</label>
+              <label>中文姓名</label>
               <input type="text" name="name" value="${item.name}" required>
             </div>
             <div class="form-group">
@@ -2393,15 +2681,19 @@ window.editEntity = async function(entity, id) {
               <input type="text" name="id" value="${item.id}" readonly style="background-color: var(--gray-100);">
             </div>
             <div class="form-group">
-              <label>姓名</label>
+              <label>中文姓名</label>
               <input type="text" name="name" value="${item.name}" required>
+            </div>
+            <div class="form-group">
+              <label>英文名</label>
+              <input type="text" name="english_name" value="${item.english_name || ''}" placeholder="用于区分中文重名学生">
             </div>
             <div class="form-group">
               <label>年级</label>
               <select name="grade">
-                <option value="1" ${item.grade === 1 ? 'selected' : ''}>高一</option>
-                <option value="2" ${item.grade === 2 ? 'selected' : ''}>高二</option>
-                <option value="3" ${item.grade === 3 ? 'selected' : ''}>高三</option>
+                <option value="10" ${item.grade === 10 ? 'selected' : ''}>高一</option>
+                <option value="11" ${item.grade === 11 ? 'selected' : ''}>高二</option>
+                <option value="12" ${item.grade === 12 ? 'selected' : ''}>高三</option>
               </select>
             </div>
             <div class="form-group">
@@ -2788,6 +3080,23 @@ async function aiSolve() {
   }
 }
 
+// A protected soft rule is never waived as a side effect of clicking solve.
+// The second request is sent only after the operator explicitly confirms the
+// exact rule ids the first attempt could not preserve.
+async function solveWithRequiredApproval(body = {}) {
+  let result = await api('/solve', { method: 'POST', body: JSON.stringify(body) });
+  if (result.solved || result.status !== 'NEEDS_APPROVAL_TO_RELAX') return result;
+  const blocked = result.blocked_by || [];
+  const labels = blocked.map(rule => `${rule.id}（${rule.scope}/${rule.type}）`).join('\n');
+  const confirmed = confirm(`在不破坏以下受保护软规则的前提下无法排课：\n${labels}\n\n${result.diagnostic || ''}\n\n是否明确批准本次排课放宽这些规则？`);
+  if (!confirmed) return result;
+  result = await api('/solve', {
+    method: 'POST',
+    body: JSON.stringify({ ...body, approved_rule_relaxations: blocked.map(rule => rule.id) }),
+  });
+  return result;
+}
+
 // 执行排课
 async function executeSchedule() {
   if (!confirm('确定要执行排课吗？这将覆盖当前的排课结果。')) {
@@ -2801,7 +3110,11 @@ async function executeSchedule() {
     const sectionResult = await api('/solve-sections', { method: 'POST' });
 
     // 调用排课引擎
-    const solveResult = await api('/solve', { method: 'POST' });
+    const solveResult = await solveWithRequiredApproval();
+    if (!solveResult.solved) {
+      showToast(solveResult.reason || '未生成课表；未自动放宽受保护规则', 'warning');
+      return;
+    }
 
     showToast('✅ 排课完成！', 'success');
 
@@ -3044,8 +3357,8 @@ async function refreshCurrentTimetable() {
         renderDetailedTimetable(
           'student-timetable-content',
           data,
-          `${student?.name || studentSelect.value} 的课表`,
-          `学生ID: ${studentSelect.value} | 年级: ${student?.grade || '-'}`
+          `${student?.name || studentSelect.value}${student?.english_name ? ` (${student.english_name})` : ''} 的课表`,
+          `学生ID: ${studentSelect.value} | 英文名: ${student?.english_name || '-'} | 年级: ${student?.grade || '-'}`
         );
       }
       break;
@@ -3159,8 +3472,8 @@ function init() {
       renderDetailedTimetable(
         'student-timetable-content',
         data,
-        `${student?.name || e.target.value} 的课表`,
-        `学生ID: ${e.target.value} | 年级: ${student?.grade || '-'}`
+        `${student?.name || e.target.value}${student?.english_name ? ` (${student.english_name})` : ''} 的课表`,
+        `学生ID: ${e.target.value} | 英文名: ${student?.english_name || '-'} | 年级: ${student?.grade || '-'}`
       );
     }
   });
@@ -3228,6 +3541,8 @@ function init() {
     const data = await api('/build-tasks', { method: 'POST' });
     showToast(`已生成 ${data.tasks_generated} 个教学任务`);
   });
+
+  document.getElementById('btn-add-constraint').addEventListener('click', () => openConstraintDialog());
 
   // 添加教师按钮
   document.getElementById('btn-add-teacher').addEventListener('click', async () => {
@@ -3400,15 +3715,19 @@ function init() {
           <input type="text" name="id" required>
         </div>
         <div class="form-group">
-          <label>姓名</label>
+          <label>中文姓名</label>
           <input type="text" name="name" required>
+        </div>
+        <div class="form-group">
+          <label>英文名</label>
+          <input type="text" name="english_name" placeholder="用于区分中文重名学生">
         </div>
         <div class="form-group">
           <label>年级</label>
           <select name="grade">
-            <option value="1">高一</option>
-            <option value="2">高二</option>
-            <option value="3">高三</option>
+            <option value="10">高一</option>
+            <option value="11">高二</option>
+            <option value="12">高三</option>
           </select>
         </div>
         <div class="form-group">
@@ -3432,6 +3751,7 @@ function init() {
       const data = {
         id: formData.get('id'),
         name: formData.get('name'),
+        english_name: formData.get('english_name')?.trim() || '',
         grade: parseInt(formData.get('grade')),
         admin_class_id: formData.get('admin_class_id'),
         teaching_class_id: formData.get('teaching_class_id'),
@@ -3445,6 +3765,9 @@ function init() {
 
   // 初始化导入功能
   initImportHandlers();
+  initStudentImportHandlers();
+  initApSelectionImportHandlers();
+  initElectiveSelectionImportHandlers();
 
   // 初始化拖拽功能
   initDragAndDrop();
@@ -3455,6 +3778,659 @@ function init() {
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', init);
+
+// ==================== 高三 A/B/C 其他选课导入 ====================
+
+let pendingElectiveSelectionImport = null;
+
+function initElectiveSelectionImportHandlers() {
+  const uploadArea = document.getElementById('elective-selection-upload-area');
+  const fileInput = document.getElementById('elective-selection-file-input');
+  const selectButton = document.getElementById('btn-select-elective-selection-file');
+  if (!uploadArea || !fileInput || !selectButton || uploadArea.dataset.initialized === 'true') return;
+  uploadArea.dataset.initialized = 'true';
+  selectButton.addEventListener('click', event => {
+    event.stopPropagation();
+    fileInput.click();
+  });
+  uploadArea.addEventListener('click', event => {
+    if (!event.target.closest('button')) fileInput.click();
+  });
+  fileInput.addEventListener('change', event => {
+    handleElectiveSelectionImportFile(event.target.files?.[0]);
+    fileInput.value = '';
+  });
+  uploadArea.addEventListener('dragover', event => {
+    event.preventDefault();
+    uploadArea.classList.add('drag-over');
+  });
+  uploadArea.addEventListener('dragleave', event => {
+    if (!uploadArea.contains(event.relatedTarget)) uploadArea.classList.remove('drag-over');
+  });
+  uploadArea.addEventListener('drop', event => {
+    event.preventDefault();
+    uploadArea.classList.remove('drag-over');
+    handleElectiveSelectionImportFile(event.dataTransfer.files?.[0]);
+  });
+}
+
+async function handleElectiveSelectionImportFile(file) {
+  if (!file) return;
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  if (!['xlsx', 'xls'].includes(extension)) {
+    showToast('高三 A/B/C 选课表只支持 .xlsx 或 .xls 文件', 'warning');
+    return;
+  }
+  showToast('正在识别高三 A/B/C 选课并核对学生...', 'info');
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('/api/elective-selections/import/preview', { method: 'POST', body: formData });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.errors?.[0]?.msg || '高三选课表识别失败');
+    pendingElectiveSelectionImport = result.data;
+    renderElectiveSelectionImportPreview();
+    showToast(
+      result.data.can_confirm
+        ? `已识别 ${result.data.unique_students} 名学生的 A/B/C 选课`
+        : `识别完成，但有 ${result.data.issue_count} 个问题需要处理`,
+      result.data.can_confirm ? 'success' : 'warning',
+    );
+  } catch (error) {
+    pendingElectiveSelectionImport = null;
+    renderElectiveSelectionImportPreview();
+    showToast(error.message, 'error');
+  }
+}
+
+function electiveChoiceSummary(names) {
+  return ['A', 'B', 'C']
+    .map(group => `${group}：${names?.[group] || '—'}`)
+    .join('；');
+}
+
+function renderElectiveSelectionImportPreview() {
+  const container = document.getElementById('elective-selection-import-preview');
+  if (!container) return;
+  const data = pendingElectiveSelectionImport;
+  if (!data) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+  const issues = [
+    ...(data.invalid || []).map(item => ({
+      location: `${item.sheet_name} 第 ${item.excel_row || '-'} 行`,
+      student: item.chinese_name || item.student_id || '-',
+      detail: item.reason,
+    })),
+    ...(data.unmatched || []).map(item => ({
+      location: `${item.sheet_name} 第 ${item.excel_row || '-'} 行`,
+      student: item.chinese_name || item.student_id || '-',
+      detail: '学生数据库中没有找到对应的高三学生',
+    })),
+    ...(data.ambiguous || []).map(item => ({
+      location: `${item.sheet_name} 第 ${item.excel_row || '-'} 行`,
+      student: item.chinese_name || item.student_id || '-',
+      detail: `匹配到多个学生：${(item.candidate_ids || []).join('、')}`,
+    })),
+  ];
+  const usedAi = data.recognition_method === 'ai';
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div class="student-import-summary">
+      <span>文件：${escapeImportHtml(data.filename)}</span>
+      <span>工作表：${data.total_sheets}</span>
+      <span>A 组：${data.group_counts?.A || 0}</span>
+      <span>B 组：${data.group_counts?.B || 0}</span>
+      <span>C 组：${data.group_counts?.C || 0}</span>
+      <span>涉及学生：${data.unique_students}</span>
+      <span>需处理：${data.issue_count}</span>
+      <span class="${usedAi ? 'ai-recognition-badge' : ''}">${usedAi ? `模型辅助：${escapeImportHtml(data.ai?.model || '已启用')}` : '规则直接识别'}</span>
+    </div>
+    ${usedAi ? `
+      <div class="ai-recognition-notice">
+        模型只负责把非标准表格转换成候选结构；以下结果仍经过学生、年级、课程组硬校验，并需要人工确认。
+        ${data.ai?.confidence !== undefined ? `模型结构置信度：${Math.round(data.ai.confidence * 100)}%。` : ''}
+      </div>
+    ` : ''}
+    <div class="student-import-file">
+      <div class="student-import-file-header">
+        <strong>工作表识别结果</strong>
+        <span class="${data.can_confirm ? 'ap-import-status-ok' : 'ap-import-status-warning'}">
+          ${data.can_confirm ? '✓ 校验通过，可以更新' : '⚠ 存在问题，暂不能更新'}
+        </span>
+      </div>
+      <div class="student-import-preview-table">
+        <table>
+          <thead><tr><th>工作表</th><th>识别格式</th><th>数据行</th><th>已匹配</th><th>问题</th><th>状态</th></tr></thead>
+          <tbody>
+            ${(data.sheets || []).map(sheet => `
+              <tr>
+                <td>${escapeImportHtml(sheet.sheet_name)}</td>
+                <td>${escapeImportHtml(({ wide: 'A/B/C 三列表', long: '组别长表', roster: '课程名单' })[sheet.layout] || '未识别')}</td>
+                <td>${sheet.rows || 0}</td>
+                <td>${sheet.matched || 0}</td>
+                <td>${sheet.issues || 0}</td>
+                <td>${sheet.status === 'recognized' ? '已识别' : escapeImportHtml(sheet.reason || '已忽略')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    ${issues.length ? `
+      <div class="student-import-file">
+        <strong>需要修正的问题</strong>
+        <div class="student-import-errors">确认更新已锁定。请修正表格后重新上传，系统不会猜测学生或课程。</div>
+        <div class="student-import-preview-table">
+          <table>
+            <thead><tr><th>位置</th><th>学生</th><th>问题</th></tr></thead>
+            <tbody>${issues.map(issue => `
+              <tr>
+                <td>${escapeImportHtml(issue.location)}</td>
+                <td>${escapeImportHtml(issue.student)}</td>
+                <td>${escapeImportHtml(issue.detail)}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+    <div class="student-import-file">
+      <div class="student-import-file-header">
+        <strong>完整更新预览（${data.changes.length} 人，可向下滚动核对）</strong>
+        <span>文件未出现的组别保持原值</span>
+      </div>
+      <div class="student-import-preview-table">
+        <table>
+          <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>本次组别</th><th>当前选课</th><th>导入后选课</th></tr></thead>
+          <tbody>${data.changes.map(change => `
+            <tr>
+              <td>${escapeImportHtml(change.student_id)}</td>
+              <td>${escapeImportHtml(change.student_name)}</td>
+              <td>${escapeImportHtml(change.english_name || '—')}</td>
+              <td>${escapeImportHtml((change.imported_groups || []).join('、'))}</td>
+              <td>${escapeImportHtml(electiveChoiceSummary(change.previous_choice_names))}</td>
+              <td>${escapeImportHtml(electiveChoiceSummary(change.choice_names))}</td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="student-import-preview-actions">
+      <button type="button" class="btn btn-secondary" onclick="clearElectiveSelectionImport()">清空预览</button>
+      <button type="button" class="btn btn-primary" onclick="confirmElectiveSelectionImport()" ${data.can_confirm ? '' : 'disabled'}>
+        确认更新 ${data.unique_students} 名学生
+      </button>
+    </div>
+  `;
+}
+
+window.clearElectiveSelectionImport = function() {
+  pendingElectiveSelectionImport = null;
+  renderElectiveSelectionImportPreview();
+};
+
+window.confirmElectiveSelectionImport = async function() {
+  const data = pendingElectiveSelectionImport;
+  if (!data?.can_confirm) {
+    showToast('选课表仍有未通过校验的问题，不能更新', 'warning');
+    return;
+  }
+  if (!confirm(`确定更新 ${data.unique_students} 名高三学生的 A/B/C 选课吗？文件中没有出现的组别会保持原值。`)) return;
+  try {
+    const result = await api('/elective-selections/import/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        changes: data.changes.map(change => ({
+          student_id: change.student_id,
+          imported_groups: change.imported_groups,
+          choices: change.choices,
+        })),
+      }),
+    });
+    pendingElectiveSelectionImport = null;
+    renderElectiveSelectionImportPreview();
+    showToast(`已更新 ${result.updated_students} 名学生的 A/B/C 选课`, 'success');
+    await loadElectiveSelections();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// ==================== AP 选课表多工作表导入 ====================
+
+let pendingApSelectionImport = null;
+
+function initApSelectionImportHandlers() {
+  const uploadArea = document.getElementById('ap-selection-upload-area');
+  const fileInput = document.getElementById('ap-selection-file-input');
+  const selectButton = document.getElementById('btn-select-ap-selection-file');
+  if (!uploadArea || !fileInput || !selectButton || uploadArea.dataset.initialized === 'true') return;
+  uploadArea.dataset.initialized = 'true';
+
+  selectButton.addEventListener('click', event => {
+    event.stopPropagation();
+    fileInput.click();
+  });
+  uploadArea.addEventListener('click', event => {
+    if (!event.target.closest('button')) fileInput.click();
+  });
+  fileInput.addEventListener('change', event => {
+    handleApSelectionImportFile(event.target.files?.[0]);
+    fileInput.value = '';
+  });
+  uploadArea.addEventListener('dragover', event => {
+    event.preventDefault();
+    uploadArea.classList.add('drag-over');
+  });
+  uploadArea.addEventListener('dragleave', event => {
+    if (!uploadArea.contains(event.relatedTarget)) uploadArea.classList.remove('drag-over');
+  });
+  uploadArea.addEventListener('drop', event => {
+    event.preventDefault();
+    uploadArea.classList.remove('drag-over');
+    handleApSelectionImportFile(event.dataTransfer.files?.[0]);
+  });
+}
+
+async function handleApSelectionImportFile(file) {
+  if (!file) return;
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  if (!['xlsx', 'xls'].includes(extension)) {
+    showToast('AP 选课表只支持 .xlsx 或 .xls 文件', 'warning');
+    return;
+  }
+  showToast('正在读取所有工作表并匹配学生...', 'info');
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('/api/ap-selections/import/preview', { method: 'POST', body: formData });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.errors?.[0]?.msg || 'AP 选课表识别失败');
+    pendingApSelectionImport = result.data;
+    renderApSelectionImportPreview();
+    showToast(
+      result.data.can_confirm
+        ? `已匹配 ${result.data.matched_rows} 条选课记录`
+        : `识别完成，但有 ${result.data.issue_count} 个问题需要处理`,
+      result.data.can_confirm ? 'success' : 'warning',
+    );
+  } catch (error) {
+    pendingApSelectionImport = null;
+    renderApSelectionImportPreview();
+    showToast(error.message, 'error');
+  }
+}
+
+function renderApSelectionImportPreview() {
+  const container = document.getElementById('ap-selection-import-preview');
+  if (!container) return;
+  const data = pendingApSelectionImport;
+  if (!data) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+
+  const issues = [
+    ...(data.unmapped_course_sheets || []).map(item => ({
+      location: item.sheet_name,
+      name: item.title || '-',
+      detail: item.reason,
+    })),
+    ...(data.unmatched || []).map(item => ({
+      location: `${item.sheet_name} 第 ${item.excel_row} 行`,
+      name: `${item.chinese_name}${item.english_name ? ` (${item.english_name})` : ''}`,
+      detail: '学生数据库中未找到唯一对应学生',
+    })),
+    ...(data.ambiguous || []).map(item => ({
+      location: `${item.sheet_name} 第 ${item.excel_row} 行`,
+      name: `${item.chinese_name}${item.english_name ? ` (${item.english_name})` : ''}`,
+      detail: `匹配到多个学生：${(item.candidate_ids || []).join(', ')}`,
+    })),
+  ];
+
+  const usedAi = data.recognition_method === 'ai';
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div class="student-import-summary">
+      <span>文件：${escapeImportHtml(data.filename)}</span>
+      <span>工作表：${data.total_sheets}</span>
+      <span>课程名单页：${data.recognized_sheet_count}</span>
+      <span>选课记录：${data.matched_rows}</span>
+      <span>涉及学生：${data.unique_students}</span>
+      <span>需处理：${data.issue_count}</span>
+      <span class="${usedAi ? 'ai-recognition-badge' : ''}">${usedAi ? `模型辅助：${escapeImportHtml(data.ai?.model || '已启用')}` : '规则直接识别'}</span>
+    </div>
+    ${usedAi ? `
+      <div class="ai-recognition-notice">
+        原表格式未通过常规识别，模型已转换为候选结构；课程与学生仍经过系统硬校验，并需要人工确认。
+      </div>
+    ` : ''}
+
+    <div class="student-import-file">
+      <div class="student-import-file-header">
+        <strong>工作表与课程标题识别结果</strong>
+        <span class="${data.can_confirm ? 'ap-import-status-ok' : 'ap-import-status-warning'}">
+          ${data.can_confirm ? '✓ 全部匹配，可以更新' : '⚠ 存在未匹配项，暂不能更新'}
+        </span>
+      </div>
+      <div class="student-import-preview-table">
+        <table>
+          <thead>
+            <tr><th>工作表</th><th>识别标题</th><th>系统课程</th><th>名单人数</th><th>匹配</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            ${(data.sheets || []).map(sheet => `
+              <tr>
+                <td>${escapeImportHtml(sheet.sheet_name)}</td>
+                <td>${escapeImportHtml(sheet.title || '-')}</td>
+                <td>${escapeImportHtml(sheet.course_name || '-')}</td>
+                <td>${sheet.rows || 0}</td>
+                <td>${sheet.matched || 0}</td>
+                <td class="${sheet.status === 'recognized' && !sheet.unmatched && !sheet.ambiguous ? 'ap-import-status-ok' : 'ap-import-status-warning'}">
+                  ${sheet.status === 'recognized'
+                    ? (sheet.unmatched || sheet.ambiguous ? `${sheet.unmatched || 0} 未匹配 / ${sheet.ambiguous || 0} 有歧义` : '已匹配')
+                    : '课程未识别'}
+                </td>
+              </tr>
+            `).join('')}
+            ${(data.ignored_sheets || []).map(sheet => `
+              <tr>
+                <td>${escapeImportHtml(sheet.sheet_name)}</td>
+                <td>-</td><td>-</td><td>-</td><td>-</td>
+                <td>${escapeImportHtml(sheet.reason)}（已忽略）</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    ${issues.length ? `
+      <div class="student-import-file">
+        <strong>需要处理的问题</strong>
+        <div class="student-import-errors">
+          确认更新已锁定。请先修正表格中的姓名/标题，或补全学生数据库后重新上传。
+        </div>
+        <div class="student-import-preview-table">
+          <table>
+            <thead><tr><th>位置</th><th>姓名/标题</th><th>问题</th></tr></thead>
+            <tbody>
+              ${issues.map(issue => `
+                <tr>
+                  <td>${escapeImportHtml(issue.location)}</td>
+                  <td>${escapeImportHtml(issue.name)}</td>
+                  <td>${escapeImportHtml(issue.detail)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="student-import-file">
+      <div class="student-import-file-header">
+        <strong>学生选课更新预览（${data.changes.length} 人）</strong>
+        <span>仅更新本文件名单中出现的学生</span>
+      </div>
+      <div class="student-import-preview-table">
+        <table>
+          <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>当前 AP 选课</th><th>导入后 AP 选课</th></tr></thead>
+          <tbody>
+            ${data.changes.map(change => `
+              <tr>
+                <td>${escapeImportHtml(change.student_id)}</td>
+                <td>${escapeImportHtml(change.student_name)}</td>
+                <td>${escapeImportHtml(change.english_name || '-')}</td>
+                <td>${escapeImportHtml((change.previous_course_names || []).join('、') || '无')}</td>
+                <td>${escapeImportHtml((change.course_names || []).join('、') || '无')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="student-import-preview-actions">
+      <label class="ap-import-mode">
+        更新方式
+        <select id="ap-selection-import-mode" class="select">
+          <option value="replace">覆盖名单内学生的现有 AP 选课</option>
+          <option value="merge">只添加本次选课，保留原有 AP 选课</option>
+        </select>
+      </label>
+      <button type="button" class="btn btn-secondary" onclick="clearApSelectionImport()">清空预览</button>
+      <button type="button" class="btn btn-primary" onclick="confirmApSelectionImport()" ${data.can_confirm ? '' : 'disabled'}>
+        确认更新 ${data.unique_students} 名学生
+      </button>
+    </div>
+  `;
+}
+
+window.clearApSelectionImport = function() {
+  pendingApSelectionImport = null;
+  renderApSelectionImportPreview();
+};
+
+window.confirmApSelectionImport = async function() {
+  const data = pendingApSelectionImport;
+  if (!data?.can_confirm) {
+    showToast('仍有未匹配的课程或学生，不能更新', 'warning');
+    return;
+  }
+  const mode = document.getElementById('ap-selection-import-mode')?.value || 'replace';
+  const description = mode === 'replace'
+    ? '覆盖文件中这些学生当前的 AP 选课'
+    : '把本次课程合并到这些学生当前的 AP 选课';
+  if (!confirm(`确定要${description}吗？共涉及 ${data.unique_students} 名学生。`)) return;
+  try {
+    const result = await api('/ap-selections/import/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode,
+        changes: data.changes.map(change => ({
+          student_id: change.student_id,
+          course_ids: change.course_ids,
+        })),
+      }),
+    });
+    pendingApSelectionImport = null;
+    renderApSelectionImportPreview();
+    showToast(`已更新 ${result.updated_students} 名学生的 AP 选课`, 'success');
+    await loadSelections();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+// ==================== 学生名单快捷导入 ====================
+
+let pendingStudentImports = [];
+
+function escapeImportHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function initStudentImportHandlers() {
+  const uploadArea = document.getElementById('student-upload-area');
+  const fileInput = document.getElementById('student-file-input');
+  const selectButton = document.getElementById('btn-select-student-files');
+  if (!uploadArea || !fileInput || !selectButton) return;
+
+  selectButton.addEventListener('click', event => {
+    event.stopPropagation();
+    fileInput.click();
+  });
+  uploadArea.addEventListener('click', event => {
+    if (!event.target.closest('button')) fileInput.click();
+  });
+  fileInput.addEventListener('change', event => {
+    handleStudentImportFiles(event.target.files);
+    fileInput.value = '';
+  });
+  uploadArea.addEventListener('dragover', event => {
+    event.preventDefault();
+    uploadArea.classList.add('drag-over');
+  });
+  uploadArea.addEventListener('dragleave', event => {
+    if (!uploadArea.contains(event.relatedTarget)) uploadArea.classList.remove('drag-over');
+  });
+  uploadArea.addEventListener('drop', event => {
+    event.preventDefault();
+    uploadArea.classList.remove('drag-over');
+    handleStudentImportFiles(event.dataTransfer.files);
+  });
+}
+
+async function handleStudentImportFiles(fileList) {
+  const files = [...(fileList || [])];
+  if (!files.length) return;
+  showToast(`正在识别 ${files.length} 份学生名单...`, 'info');
+
+  for (const file of files) {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!['xlsx', 'xls', 'csv'].includes(extension)) {
+      showToast(`不支持的文件格式：${file.name}`, 'warning');
+      continue;
+    }
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch('/api/import/excel', { method: 'POST', body: formData });
+      const result = await response.json();
+      if (!result.ok) throw new Error(result.errors?.[0]?.msg || '名单识别失败');
+      if (result.data.type !== 'students') throw new Error('该文件不是学生名单');
+
+      const existingIndex = pendingStudentImports.findIndex(item => item.data.filename === result.data.filename);
+      const nextItem = { file, data: result.data };
+      if (existingIndex >= 0) pendingStudentImports[existingIndex] = nextItem;
+      else pendingStudentImports.push(nextItem);
+    } catch (error) {
+      showToast(`${file.name}：${error.message}`, 'error');
+    }
+  }
+
+  renderStudentImportPreview();
+}
+
+function renderStudentImportPreview() {
+  const container = document.getElementById('student-import-preview');
+  if (!pendingStudentImports.length) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+
+  const total = pendingStudentImports.reduce((sum, item) => sum + item.data.parsed_count, 0);
+  const totalErrors = pendingStudentImports.reduce((sum, item) => sum + item.data.errors.length, 0);
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div class="student-import-summary">
+      <span>文件：${pendingStudentImports.length} 份</span>
+      <span>可导入：${total} 人</span>
+      <span>需注意：${totalErrors} 行</span>
+    </div>
+    ${pendingStudentImports.map((item, index) => {
+      const data = item.data;
+      const context = data.import_context || {};
+      const gradeLabel = ({ 10: '高一', 11: '高二', 12: '高三' })[context.grade] || '未识别';
+      const adminMapping = Object.entries(context.admin_class_mapping || {})
+        .map(([source, target]) => `Class ${source} → ${target}`).join('；');
+      const teachingMapping = Object.entries(context.teaching_class_mapping || {})
+        .map(([source, target]) => `Teaching Class ${source} → ${target}`).join('；');
+      return `
+        <div class="student-import-file">
+          <div class="student-import-file-header">
+            <strong>${escapeImportHtml(data.filename)}</strong>
+            <button type="button" class="btn btn-danger btn-sm" onclick="removeStudentImport(${index})">移除</button>
+          </div>
+          <div class="student-import-mapping">
+            文件名识别：${gradeLabel}；有效学生 ${data.parsed_count}/${data.total_rows} 人；
+            ${data.recognition_method === 'ai' ? '<span class="ai-recognition-badge">模型辅助识别</span>' : '规则直接识别'}<br>
+            ${escapeImportHtml(adminMapping)}<br>${escapeImportHtml(teachingMapping)}
+          </div>
+          ${data.errors.length ? `
+            <div class="student-import-errors">
+              ${data.errors.slice(0, 5).map(error => `<div>${escapeImportHtml(error.msg)}</div>`).join('')}
+              ${data.errors.length > 5 ? `<div>另有 ${data.errors.length - 5} 行未显示</div>` : ''}
+            </div>
+          ` : ''}
+          <div class="student-import-table-caption">
+            完整名单（共 ${data.parsed_data.length} 人，可在表格内向下滚动核对）
+          </div>
+          <div class="student-import-preview-table">
+            <table>
+              <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>年级</th><th>行政班</th><th>教学班</th></tr></thead>
+              <tbody>
+                ${data.parsed_data.map(student => `
+                  <tr>
+                    <td>${escapeImportHtml(student.id)}</td>
+                    <td>${escapeImportHtml(student.name)}</td>
+                    <td>${escapeImportHtml(student.english_name || '-')}</td>
+                    <td>${student.grade}</td>
+                    <td>${escapeImportHtml(student.admin_class_id)}</td>
+                    <td>${escapeImportHtml(student.teaching_class_id)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }).join('')}
+    <div class="student-import-preview-actions">
+      <button type="button" class="btn btn-secondary" onclick="clearStudentImports()">清空待导入名单</button>
+      <button type="button" class="btn btn-primary" onclick="confirmStudentImports()">确认导入 ${total} 名学生</button>
+    </div>
+  `;
+}
+
+window.removeStudentImport = function(index) {
+  pendingStudentImports.splice(index, 1);
+  renderStudentImportPreview();
+};
+
+window.clearStudentImports = function() {
+  pendingStudentImports = [];
+  renderStudentImportPreview();
+};
+
+window.confirmStudentImports = async function() {
+  if (!pendingStudentImports.length) return;
+  const total = pendingStudentImports.reduce((sum, item) => sum + item.data.parsed_count, 0);
+  if (!confirm(`确认导入 ${pendingStudentImports.length} 份名单，共 ${total} 名学生吗？`)) return;
+
+  let imported = 0;
+  let skipped = 0;
+  try {
+    for (const item of pendingStudentImports) {
+      const response = await fetch('/api/import/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'students', data: item.data.parsed_data }),
+      });
+      const result = await response.json();
+      if (!result.ok) throw new Error(`${item.data.filename}：${result.errors?.[0]?.msg || '导入失败'}`);
+      imported += result.data.imported;
+      skipped += result.data.skipped;
+    }
+    pendingStudentImports = [];
+    renderStudentImportPreview();
+    await loadStudents();
+    showToast(`成功导入 ${imported} 名学生${skipped ? `，跳过 ${skipped} 条重复记录` : ''}`, 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
 
 // ==================== 数据导入功能 ====================
 
@@ -3570,7 +4546,7 @@ function showFilesList() {
 
   container.innerHTML = pendingFiles.map((item, index) => {
     const data = item.data;
-    const hasAI = data.errors.some(e => e.msg.includes('AI'));
+    const hasAI = data.recognition_method === 'ai';
 
     return `
       <div class="file-item" id="file-${item.id}">
@@ -3651,7 +4627,7 @@ window.confirmAllImports = async function() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: item.data.type,
-          data: item.data.preview_parsed
+          data: item.data.parsed_data
         })
       });
 
@@ -3686,6 +4662,7 @@ function getTypeName(type) {
     teachers: '教师名单',
     courses: '课程列表',
     rooms: '教室列表',
+    course_arrangement: '课程安排表（仅更新已匹配课程的 section 要求）',
     unknown: '未识别'
   };
   return names[type] || type;
@@ -3719,8 +4696,8 @@ async function confirmImport() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: currentImportData.type,
-        data: currentImportData.preview_parsed // 使用解析后的数据
+          type: currentImportData.type,
+          data: currentImportData.parsed_data // 使用全部解析后的数据，而非仅预览行
       })
     });
 
@@ -3784,7 +4761,7 @@ async function updateExportTargets() {
 
     case 'student':
       const students = await api('/students');
-      options += students.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+      options += students.map(s => `<option value="${s.id}">${s.name}${s.english_name ? ` (${s.english_name})` : ''}</option>`).join('');
       break;
 
     case 'room':
@@ -4527,7 +5504,7 @@ window.parseFormalDescription = async function() {
     html += `
       </div>
       <div style="margin-top: 12px; font-size: 13px; color: var(--gray-500);">
-        这些需求将在排课时自动应用
+        这是对自然语言的审阅结果；请将确认后的硬/软规则保存到“约束管理”页，再执行排课。
       </div>
     `;
 
@@ -4720,30 +5697,24 @@ window.startFormalSolve = async function() {
     if (mode === 'all') {
       // 完整求解：先生成任务，再排课
       await api('/build-tasks', { method: 'POST' });
-      result = await api('/solve', {
-        method: 'POST',
-        body: JSON.stringify({
+      result = await solveWithRequiredApproval({
           seed: seed ? parseInt(seed) : undefined,
           timeout: parseInt(timeout) * 1000,
           keep,
           constraints: formalConstraints,
           description
-        })
       });
     } else if (mode === 'sections') {
       // 仅分班
       result = await api('/build-tasks', { method: 'POST' });
     } else {
       // 仅排课
-      result = await api('/solve', {
-        method: 'POST',
-        body: JSON.stringify({
+      result = await solveWithRequiredApproval({
           seed: seed ? parseInt(seed) : undefined,
           timeout: parseInt(timeout) * 1000,
           keep,
           constraints: formalConstraints,
           description
-        })
       });
     }
 
@@ -4760,6 +5731,8 @@ window.startFormalSolve = async function() {
           <button class="btn btn-secondary" onclick="switchView('overview-timetable')">查看总课表</button>
         </div>
       `;
+    } else if (!result.solved) {
+      contentDiv.innerHTML = `<div class="validation-result warning">⚠️ 未生成课表：${result.reason || '未获批准放宽受保护规则'}</div>`;
     } else {
       const hasViolations = result.hard_violations && result.hard_violations.length > 0;
 

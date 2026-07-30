@@ -34,7 +34,15 @@ export const courseSchema = z.object({
     max: z.number().int().positive(),
   }).optional(),
   elective_group: z.enum(["A", "B", "C"]).optional(),
-  section_count: z.number().int().positive().optional(),
+  section_count: z.union([
+    z.number().int().positive(),
+    z.array(z.number().int().positive()).min(1),
+  ]).optional(),
+  section_requirements: z.array(z.object({
+    grades: z.array(z.number().int().positive()).min(1),
+    count: z.number().int().positive(),
+    teacher_id: entityIdSchema.optional(),
+  })).min(1).optional(),
   no_teacher: z.boolean().optional(),
 });
 
@@ -51,6 +59,8 @@ export const roomSchema = z.object({
 export const studentSchema = z.object({
   id: entityIdSchema,
   name: z.string().min(1),
+  english_name: z.string().optional(),
+  pinyin_name: z.string().optional(),
   grade: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   admin_class_id: entityIdSchema,
   teaching_class_id: entityIdSchema,
@@ -85,9 +95,12 @@ export const teachingAssignmentSchema = z.object({
   id: entityIdSchema,
   teacher_id: entityIdSchema,
   course_id: entityIdSchema,
-  class_id: entityIdSchema,
+  class_id: entityIdSchema.optional(),
+  class_ids: z.array(entityIdSchema).min(1).optional(),
   class_type: z.enum(["admin", "teaching"]),
   weekly_hours: z.number().int().positive(),
+}).refine(value => Boolean(value.class_id || value.class_ids?.length), {
+  message: "教学分工必须指定 class_id 或 class_ids",
 });
 
 // AP选课

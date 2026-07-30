@@ -40,6 +40,14 @@ export interface ElectiveSection {
   weekly_hours: number;
 }
 
+/** 教务表中的“选修 2”表示必须开两个平行教学班，而不是教师人数上限。 */
+function requiredSectionCount(value: unknown): number {
+  if (Array.isArray(value)) return Math.max(1, ...value.filter(Number.isFinite));
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  const match = String(value ?? '').match(/(?:选修|section)?\s*(\d+)/i);
+  return match ? Math.max(1, Number(match[1])) : 1;
+}
+
 // 分班配置
 export interface SectioningConfig {
   max_students_per_section?: number;  // 每班最大人数
@@ -54,44 +62,28 @@ function generateRequiredTasks(state: TimetableState): TeachingTask[] {
   state.teaching_assignments.forEach(assignment => {
     const course = state.courses.find(c => c.id === assignment.course_id);
     if (!course) return;
-
-    // 确定学生列表和固定教室
-    let studentIds: string[] = [];
-    let roomId: string | undefined;
-    let sourceClassId: string | undefined;
-
-    if (assignment.class_type === "admin") {
-      const adminClass = state.admin_classes.find(c => c.id === assignment.class_id);
-      if (adminClass) {
-        studentIds = adminClass.student_ids;
-        roomId = adminClass.fixed_room_id;
-        sourceClassId = adminClass.id;
-      }
-    } else {
-      const teachingClass = state.teaching_classes.find(c => c.id === assignment.class_id);
-      if (teachingClass) {
-        studentIds = teachingClass.student_ids;
-        roomId = teachingClass.fixed_room_id;
-        sourceClassId = teachingClass.id;
-      }
+    const classIds = assignment.class_ids?.length ? assignment.class_ids : assignment.class_id ? [assignment.class_id] : [];
+    const sharedMeetingPlaceholder = assignment.course_id === 'MEETING' && assignment.class_type === 'admin' && classIds.length > 1;
+    for (const classId of classIds) {
+      const group = assignment.class_type === 'admin'
+        ? state.admin_classes.find(item => item.id === classId)
+        : state.teaching_classes.find(item => item.id === classId);
+      if (!group?.student_ids.length) continue;
+      tasks.push({
+        id: `TASK_REQ_${assignment.id}_${classId}`,
+        source: 'required',
+        course_id: assignment.course_id,
+        // Grade-wide “班主任” placeholders are not an actual one-person
+        // resource. Treat those fixed meetings as unstaffed until individual
+        // homeroom teachers are supplied.
+        teacher_id: sharedMeetingPlaceholder ? null : assignment.teacher_id,
+        student_ids: group.student_ids,
+        weekly_hours: assignment.weekly_hours,
+        room_policy: 'pinned',
+        room_id: group.fixed_room_id,
+        source_class_id: group.id,
+      });
     }
-
-    if (studentIds.length === 0) return;
-
-    // 创建教学任务
-    const task: TeachingTask = {
-      id: `TASK_REQ_${assignment.id}`,
-      source: "required",
-      course_id: assignment.course_id,
-      teacher_id: assignment.teacher_id,
-      student_ids: studentIds,
-      weekly_hours: assignment.weekly_hours,
-      room_policy: "pinned",
-      room_id: roomId,
-      source_class_id: sourceClassId,
-    };
-
-    tasks.push(task);
   });
 
   return tasks;
@@ -141,7 +133,7 @@ function generateRequiredElectiveSections(
       const course = state.courses.find(c => c.id === courseId);
       if (!course) return;
 
-      const sectionCount = course.section_count || 1;
+      const sectionCount = requiredSectionCount(course.section_count);
       const maxStudents = config.max_students_per_section || 30;
       const actualSectionCount = Math.max(sectionCount, Math.ceil(studentIds.length / maxStudents));
 
@@ -228,84 +220,53 @@ function generateApSections(
     });
   });
 
+  const studentsById = new Map(state.students.map(student => [student.id, student]));
+
   // 为每门AP课程创建section
   courseStudents.forEach((studentIds, courseId) => {
     const course = state.courses.find(c => c.id === courseId);
     if (!course) return;
+    const requirements = course.section_requirements?.length
+      ? course.section_requirements
+      : [{ grades: null, count: requiredSectionCount(course.section_count), teacher_id: undefined }];
+    const claimedStudents = new Set<string>();
 
-    // 找能教这门课的老师
-    const availableTeachers = state.teachers.filter(t =>
-      t.can_teach.includes(courseId)
-    );
-
-    if (availableTeachers.length === 0) {
-      console.warn(`没有能教 ${courseId} 的老师，跳过分班`);
-      return;
-    }
-
-    // 计算需要多少个section
-    const sectionCount = course.section_count || 1;
-    const maxStudents = config.max_students_per_section || 25;
-    const actualSectionCount = Math.max(
-      Math.min(sectionCount, availableTeachers.length),
-      Math.ceil(studentIds.length / maxStudents)
-    );
-
-    // 智能分班
-    const sectionStudents: string[][] = Array.from({ length: actualSectionCount }, () => []);
-
-    if (config.balance_sections) {
-      // 均衡分班：轮询分配
-      studentIds.forEach((studentId, index) => {
-        sectionStudents[index % actualSectionCount].push(studentId);
+    for (const requirement of requirements) {
+      const cohortStudentIds = studentIds.filter(studentId => {
+        const student = studentsById.get(studentId);
+        return !requirement.grades || requirement.grades.includes(student?.grade || -1);
       });
-    } else {
-      // 按顺序分班
-      const studentsPerSection = Math.ceil(studentIds.length / actualSectionCount);
+      if (!cohortStudentIds.length) continue;
+      cohortStudentIds.forEach(studentId => {
+        if (claimedStudents.has(studentId)) throw new Error(`课程 ${courseId} 的开班要求重复包含学生 ${studentId}`);
+        claimedStudents.add(studentId);
+      });
+      const availableTeachers = state.teachers.filter(teacher =>
+        teacher.can_teach.includes(courseId) && (!requirement.teacher_id || teacher.id === requirement.teacher_id)
+      );
+      if (availableTeachers.length === 0) throw new Error(`课程 ${courseId} 没有符合年级组要求的教师`);
+      const maxStudents = config.max_students_per_section || 25;
+      const actualSectionCount = Math.max(requirement.count, Math.ceil(cohortStudentIds.length / maxStudents));
+      const sectionStudents: string[][] = Array.from({ length: actualSectionCount }, () => []);
+      if (config.balance_sections) {
+        cohortStudentIds.forEach((studentId, index) => sectionStudents[index % actualSectionCount].push(studentId));
+      } else {
+        const studentsPerSection = Math.ceil(cohortStudentIds.length / actualSectionCount);
+        for (let i = 0; i < actualSectionCount; i++) sectionStudents[i] = cohortStudentIds.slice(i * studentsPerSection, (i + 1) * studentsPerSection);
+      }
+      const cohortKey = requirement.grades ? `_G${[...requirement.grades].sort((a, b) => a - b).join('_G')}` : '';
       for (let i = 0; i < actualSectionCount; i++) {
-        const start = i * studentsPerSection;
-        const end = Math.min(start + studentsPerSection, studentIds.length);
-        sectionStudents[i] = studentIds.slice(start, end);
+        if (!sectionStudents[i].length) continue;
+        // 同一名老师可以承担多个 section；排课阶段负责保证时段不重叠。
+        const teacher = availableTeachers[i % availableTeachers.length];
+        const sectionId = `AP_${courseId}${cohortKey}_${i + 1}`;
+        sections.push({ id: sectionId, course_id: courseId, course_name: course.name, course_type: 'ap', section_index: i,
+          student_ids: sectionStudents[i], teacher_id: teacher.id, room_id: null, capacity: sectionStudents[i].length, weekly_hours: course.weekly_hours });
+        tasks.push({ id: `TASK_${sectionId}`, source: 'ap', course_id: courseId, teacher_id: teacher.id,
+          student_ids: sectionStudents[i], weekly_hours: course.weekly_hours, room_policy: 'assign', source_class_id: undefined, source_section_id: sectionId });
       }
     }
-
-    // 创建分班结果
-    for (let i = 0; i < actualSectionCount; i++) {
-      if (sectionStudents[i].length === 0) continue;
-
-      const sectionId = `AP_${courseId}_${i + 1}`;
-      const teacher = availableTeachers[i % availableTeachers.length];
-
-      const section: ElectiveSection = {
-        id: sectionId,
-        course_id: courseId,
-        course_name: course.name,
-        course_type: 'ap',
-        section_index: i,
-        student_ids: sectionStudents[i],
-        teacher_id: teacher.id,
-        room_id: null,
-        capacity: sectionStudents[i].length,
-        weekly_hours: course.weekly_hours,
-      };
-
-      sections.push(section);
-
-      // 创建教学任务
-      const task: TeachingTask = {
-        id: `TASK_${sectionId}`,
-        source: "ap",
-        course_id: courseId,
-        teacher_id: teacher.id,
-        student_ids: sectionStudents[i],
-        weekly_hours: course.weekly_hours,
-        room_policy: "assign",
-        source_class_id: undefined,
-        source_section_id: sectionId,
-      };
-
-      tasks.push(task);
-    }
+    if (claimedStudents.size !== studentIds.length) throw new Error(`课程 ${courseId} 的开班要求未覆盖全部学生`);
   });
 
   return { sections, tasks };

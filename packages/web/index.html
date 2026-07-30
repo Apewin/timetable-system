@@ -22,6 +22,7 @@
           <h3>🎯 排课表</h3>
           <ul>
             <li><a href="#" data-view="welcome" class="active">🏠 首页</a></li>
+            <li><a href="#" data-view="manual-timetable">✋ 手动课表</a></li>
             <li><a href="#" data-view="formal-timetable">📘 正式课表</a></li>
             <li><a href="#" data-view="temp-timetable">📙 临时课表</a></li>
             <li><a href="#" data-view="validate">✅ 数据校验</a></li>
@@ -99,6 +100,37 @@
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- 手动课表 -->
+        <div id="view-manual-timetable" class="view">
+          <div class="manual-timetable-header">
+            <div>
+              <h2>✋ 手动课表</h2>
+              <p>选择班级后，从右侧课程池拖入左侧空白课表。此处保存为浏览器中的手动草稿，不会覆盖正式课表。</p>
+            </div>
+            <div class="manual-timetable-actions">
+              <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班级</button>
+            </div>
+          </div>
+          <div class="manual-timetable-controls">
+            <label for="manual-class-select">当前班级</label>
+            <select id="manual-class-select" class="select"></select>
+            <input id="manual-course-search" class="input" placeholder="搜索课程名称或 ID">
+          </div>
+          <div class="manual-timetable-layout">
+            <section class="manual-grid-panel">
+              <div id="manual-timetable-grid" class="manual-timetable-grid" aria-label="手动课表"></div>
+            </section>
+            <aside class="manual-course-panel">
+              <div class="manual-course-panel-header">
+                <h3>课程池</h3>
+                <span id="manual-course-count" class="manual-course-count">0 门</span>
+              </div>
+              <p class="manual-course-hint">拖动课程到左侧格子；已放入的课程可点击 × 删除。</p>
+              <div id="manual-course-pool" class="manual-course-pool"></div>
+            </aside>
           </div>
         </div>
 
@@ -356,6 +388,21 @@
 
         <div id="view-students" class="view">
           <h2>学生管理</h2>
+          <div class="student-import-panel">
+            <div class="student-import-copy">
+              <h3>批量导入学生名单</h3>
+              <p>支持拖入多个 Excel 文件。系统根据文件名识别高一、高二、高三，并读取 Student ID、Name (Chinese)、English Name、Teaching Class 和 Class。</p>
+              <p class="student-import-rule">文件名需包含 senior 1/2/3，或 2025级/2024级/2023级。</p>
+            </div>
+            <div class="student-import-dropzone" id="student-upload-area">
+              <div class="upload-icon">📄</div>
+              <strong>将学生名单拖到这里</strong>
+              <span>或点击选择 .xlsx / .xls / .csv 文件</span>
+              <input type="file" id="student-file-input" accept=".xlsx,.xls,.csv" multiple hidden>
+              <button type="button" id="btn-select-student-files" class="btn btn-secondary btn-sm">选择学生名单</button>
+            </div>
+            <div id="student-import-preview" class="student-import-preview hidden"></div>
+          </div>
           <div class="toolbar">
             <div class="filter-group">
               <select id="filter-student-grade" class="select">
@@ -367,7 +414,7 @@
               <select id="filter-student-class" class="select">
                 <option value="">全部班级</option>
               </select>
-              <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索姓名、ID或选修课...">
+              <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索中文名、英文名、Student ID或选修课...">
             </div>
             <button id="btn-add-student" class="btn btn-primary">添加学生</button>
           </div>
@@ -397,6 +444,20 @@
 
         <div id="view-selections" class="view">
           <h2>AP选课</h2>
+          <div class="student-import-panel ap-selection-import-panel">
+            <div class="student-import-copy">
+              <h3>批量导入 AP 选课表</h3>
+              <p>支持读取一个 Excel 文件里的多个工作表。系统会识别每个工作表的 AP 课程标题、中文姓名、拼音和英文名，并与学生数据库核对。</p>
+              <p class="student-import-rule">只有课程和学生全部匹配成功后，才能确认更新。</p>
+            </div>
+            <div id="ap-selection-upload-area" class="student-import-dropzone">
+              <input id="ap-selection-file-input" type="file" accept=".xlsx,.xls" hidden>
+              <strong>将 AP 选课表拖到这里</strong>
+              <span>或点击选择包含多个工作表的 Excel 文件</span>
+              <button type="button" id="btn-select-ap-selection-file" class="btn btn-secondary btn-sm">选择 AP 选课表</button>
+            </div>
+            <div id="ap-selection-import-preview" class="student-import-preview hidden"></div>
+          </div>
           <div class="toolbar">
             <input type="text" id="search-selections" class="search-input" placeholder="🔍 搜索课程名称或学生...">
             <button id="btn-add-selection" class="btn btn-primary">添加选课</button>
@@ -406,6 +467,20 @@
 
         <div id="view-elective-selections" class="view">
           <h2>其他选课</h2>
+          <div class="student-import-panel elective-selection-import-panel">
+            <div class="student-import-copy">
+              <h3>批量导入高三 A/B/C 选课</h3>
+              <p>支持每名学生一行的 A/B/C 三列表、组别与课程长表，以及每门课一个工作表的课程名单。</p>
+              <p class="student-import-rule">系统会核对高三学生及各组允许课程；全部通过后才可确认更新。</p>
+            </div>
+            <div id="elective-selection-upload-area" class="student-import-dropzone">
+              <input id="elective-selection-file-input" type="file" accept=".xlsx,.xls" hidden>
+              <strong>将高三 A/B/C 选课表拖到这里</strong>
+              <span>格式轻微变化时，会自动尝试模型辅助识别</span>
+              <button type="button" id="btn-select-elective-selection-file" class="btn btn-secondary btn-sm">选择选课表</button>
+            </div>
+            <div id="elective-selection-import-preview" class="student-import-preview hidden"></div>
+          </div>
           <div class="toolbar">
             <div class="control-group">
               <label>选择年级：</label>
@@ -455,7 +530,7 @@
           <h2>学生课表</h2>
           <div class="toolbar">
             <div class="search-select-group">
-              <input type="text" id="search-student" class="search-input" placeholder="🔍 搜索学生姓名或ID...">
+              <input type="text" id="search-student" class="search-input" placeholder="🔍 搜索中文名、英文名或Student ID...">
               <select id="select-student" class="select">
                 <option value="">选择学生</option>
               </select>
@@ -517,14 +592,14 @@
           <div class="settings-container">
             <div class="settings-section">
               <h3>🤖 AI 模型配置</h3>
-              <p class="settings-hint">配置大模型的 API 密钥和接口地址，用于AI智能排课功能</p>
+              <p class="settings-hint">配置兼容 OpenAI Chat Completions 的大模型接口，用于非标准 Excel 辅助识别和 AI 功能。</p>
               <div class="form-group">
                 <label>API 密钥</label>
                 <div class="input-group">
                   <input type="password" id="settings-api-key" class="input" placeholder="输入 API Key">
                   <button class="btn btn-secondary" onclick="toggleApiKeyVisibility()">👁️</button>
                 </div>
-                <small class="form-hint">从 DeepSeek 平台获取: <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a></small>
+                <small class="form-hint">密钥只保存在本机的 .env.local，不会返回给浏览器或提交到 Git。</small>
               </div>
               <div class="form-group">
                 <label>API 接口地址</label>
@@ -533,11 +608,8 @@
               </div>
               <div class="form-group">
                 <label>模型名称</label>
-                <select id="settings-model" class="select">
-                  <option value="deepseek-v4-flash">deepseek-v4-flash（快速）</option>
-                  <option value="deepseek-v4-pro">deepseek-v4-pro（专业，支持思考模式）</option>
-                </select>
-                <small class="form-hint">选择要使用的 AI 模型</small>
+                <input type="text" id="settings-model" class="input" placeholder="deepseek-v4-flash">
+                <small class="form-hint">填写接口实际支持的模型 ID</small>
               </div>
               <div class="settings-actions">
                 <button class="btn btn-primary" onclick="saveSettings()">💾 保存设置</button>

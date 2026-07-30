@@ -18,6 +18,18 @@ importers:
         specifier: ^0.18.5
         version: 0.18.5
 
+  packages/backend:
+    dependencies:
+      express:
+        specifier: ^4.18.0
+        version: 4.22.2
+      multer:
+        specifier: ^2.2.0
+        version: 2.2.0
+      xlsx:
+        specifier: ^0.18.5
+        version: 0.18.5
+
   packages/cli:
     dependencies:
       '@timetable/core':

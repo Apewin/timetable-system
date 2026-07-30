@@ -67,10 +67,13 @@ function checkReferences(state: TimetableState) {
     if (!state.courses.find(c => c.id === a.course_id)) {
       errors.push({ code: "MISSING_REF", msg: `分工 ${a.id} 引用的课程 ${a.course_id} 不存在`, refs: [a.id, a.course_id] });
     }
-    const adminClass = state.admin_classes.find(c => c.id === a.class_id);
-    const teachingClass = state.teaching_classes.find(c => c.id === a.class_id);
-    if (!adminClass && !teachingClass) {
-      errors.push({ code: "MISSING_REF", msg: `分工 ${a.id} 引用的班级 ${a.class_id} 不存在`, refs: [a.id, a.class_id] });
+    const classIds = a.class_ids?.length ? a.class_ids : a.class_id ? [a.class_id] : [];
+    for (const classId of classIds) {
+      const adminClass = state.admin_classes.find(c => c.id === classId);
+      const teachingClass = state.teaching_classes.find(c => c.id === classId);
+      if (!adminClass && !teachingClass) {
+        errors.push({ code: "MISSING_REF", msg: `分工 ${a.id} 引用的班级 ${classId} 不存在`, refs: [a.id, classId] });
+      }
     }
   });
 

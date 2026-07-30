@@ -14,6 +14,15 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Excel 中的“选修 2/选修 3”是该课程必须开的平行教学班数。即使只有
+// 一名老师，也应保留这些 section，由排课器把同一老师的不同班排到不同时间。
+function requiredSectionCount(value) {
+  if (Array.isArray(value)) return Math.max(1, ...value.filter(Number.isFinite));
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  const match = String(value ?? '').match(/(?:选修|section)?\s*(\d+)/i);
+  return match ? Math.max(1, Number(match[1])) : 1;
+}
+
 const app = express();
 
 // P1-7 fix: CORS 收敛到 localhost
@@ -606,83 +615,48 @@ app.post('/api/solve-sections', (req, res) => {
     // 生成AP选修班
     const apSections = [];
     const apTasks = [];
+    const studentsById = new Map(state.students.map(student => [student.id, student]));
 
     courseStudents.forEach((studentIds, courseId) => {
       const course = state.courses.find(c => c.id === courseId);
       if (!course) return;
-
-      // 找能教这门课的老师
-      const availableTeachers = state.teachers.filter(t =>
-        t.can_teach.includes(courseId)
-      );
-
-      if (availableTeachers.length === 0) {
-        console.warn(`没有能教 ${courseId} 的老师，跳过分班`);
-        return;
-      }
-
-      // 计算需要多少个section
-      let sectionCount = course.section_count || 1;
-      // 处理 section_count 是数组的情况（跨年级课程）
-      if (Array.isArray(sectionCount)) {
-        sectionCount = Math.max(...sectionCount);
-      }
-      const maxStudents = sectioningConfig.max_students_per_section;
-      const actualSectionCount = Math.max(
-        Math.min(sectionCount, availableTeachers.length),
-        Math.ceil(studentIds.length / maxStudents)
-      );
-
-      // 智能分班
-      const sectionStudents = Array.from({ length: actualSectionCount }, () => []);
-
-      if (sectioningConfig.balance_sections) {
-        // 均衡分班：轮询分配
-        studentIds.forEach((studentId, index) => {
-          sectionStudents[index % actualSectionCount].push(studentId);
+      const requirements = course.section_requirements?.length
+        ? course.section_requirements
+        : [{ grades: null, count: requiredSectionCount(course.section_count), teacher_id: null }];
+      const claimedStudents = new Set();
+      requirements.forEach(requirement => {
+        const cohortStudentIds = studentIds.filter(studentId => {
+          const student = studentsById.get(studentId);
+          return !requirement.grades || requirement.grades.includes(student?.grade);
         });
-      } else {
-        // 按顺序分班
-        const studentsPerSection = Math.ceil(studentIds.length / actualSectionCount);
-        for (let i = 0; i < actualSectionCount; i++) {
-          const start = i * studentsPerSection;
-          const end = Math.min(start + studentsPerSection, studentIds.length);
-          sectionStudents[i] = studentIds.slice(start, end);
+        if (!cohortStudentIds.length) return;
+        cohortStudentIds.forEach(studentId => {
+          if (claimedStudents.has(studentId)) throw new Error(`课程 ${courseId} 的开班要求重复包含学生 ${studentId}`);
+          claimedStudents.add(studentId);
+        });
+        const availableTeachers = state.teachers.filter(teacher =>
+          teacher.can_teach.includes(courseId) && (!requirement.teacher_id || teacher.id === requirement.teacher_id)
+        );
+        if (!availableTeachers.length) throw new Error(`课程 ${courseId} 没有符合年级组要求的教师`);
+        const actualSectionCount = Math.max(requirement.count, Math.ceil(cohortStudentIds.length / sectioningConfig.max_students_per_section));
+        const sectionStudents = Array.from({ length: actualSectionCount }, () => []);
+        if (sectioningConfig.balance_sections) cohortStudentIds.forEach((studentId, index) => sectionStudents[index % actualSectionCount].push(studentId));
+        else {
+          const studentsPerSection = Math.ceil(cohortStudentIds.length / actualSectionCount);
+          for (let i = 0; i < actualSectionCount; i++) sectionStudents[i] = cohortStudentIds.slice(i * studentsPerSection, (i + 1) * studentsPerSection);
         }
-      }
-
-      // 创建分班结果
-      for (let i = 0; i < actualSectionCount; i++) {
-        if (sectionStudents[i].length === 0) continue;
-
-        const sectionId = `AP_${courseId}_${i + 1}`;
-        const teacher = availableTeachers[i % availableTeachers.length];
-
-        apSections.push({
-          id: sectionId,
-          course_id: courseId,
-          course_name: course.name,
-          course_type: 'ap',
-          section_index: i,
-          student_ids: sectionStudents[i],
-          teacher_id: teacher.id,
-          room_id: null,
-          capacity: sectionStudents[i].length,
-          weekly_hours: course.weekly_hours,
-        });
-
-        apTasks.push({
-          id: `TASK_${sectionId}`,
-          source: "ap",
-          course_id: courseId,
-          teacher_id: teacher.id,
-          student_ids: sectionStudents[i],
-          weekly_hours: course.weekly_hours,
-          room_policy: "assign",
-          source_class_id: undefined,
-          source_section_id: sectionId,
-        });
-      }
+        const cohortKey = requirement.grades ? `_G${[...requirement.grades].sort((a, b) => a - b).join('_G')}` : '';
+        for (let i = 0; i < actualSectionCount; i++) {
+          if (!sectionStudents[i].length) continue;
+          const teacher = availableTeachers[i % availableTeachers.length];
+          const sectionId = `AP_${courseId}${cohortKey}_${i + 1}`;
+          apSections.push({ id: sectionId, course_id: courseId, course_name: course.name, course_type: 'ap', section_index: i,
+            student_ids: sectionStudents[i], teacher_id: teacher.id, room_id: null, capacity: sectionStudents[i].length, weekly_hours: course.weekly_hours });
+          apTasks.push({ id: `TASK_${sectionId}`, source: 'ap', course_id: courseId, teacher_id: teacher.id,
+            student_ids: sectionStudents[i], weekly_hours: course.weekly_hours, room_policy: 'assign', source_class_id: undefined, source_section_id: sectionId });
+        }
+      });
+      if (claimedStudents.size !== studentIds.length) throw new Error(`课程 ${courseId} 的开班要求未覆盖全部学生`);
     });
 
     // 生成必修选修班
@@ -728,11 +702,7 @@ app.post('/api/solve-sections', (req, res) => {
         const course = state.courses.find(c => c.id === courseId);
         if (!course) return;
 
-        let sectionCount = course.section_count || 1;
-        // 处理 section_count 是数组的情况（跨年级课程）
-        if (Array.isArray(sectionCount)) {
-          sectionCount = Math.max(...sectionCount);
-        }
+        const sectionCount = requiredSectionCount(course.section_count);
         const maxStudents = sectioningConfig.max_students_per_section;
         const actualSectionCount = Math.max(sectionCount, Math.ceil(studentIds.length / maxStudents));
 
@@ -1269,15 +1239,25 @@ app.get('/api/timetable/:by/:id', (req, res) => {
 
     switch (by) {
       case 'student':
-        // 学生课表：找到该学生所在班级的所有排课
+        // 学生课表：以明确的学生归属为准。选修课的 class_id 是 section
+        // 而不是行政班/教学班，不能再依赖 task_id 字符串包含班级 ID 的
+        // 旧规则，否则走班课会从个人课表中丢失。
         const student = state.students.find(s => s.id === id);
         if (student) {
+          const enrolledTaskIds = new Set((state.teaching_tasks || [])
+            .filter(task => (task.student_ids || []).includes(id))
+            .map(task => task.id));
+          const enrolledSectionIds = new Set([
+            ...(state.ap_sections || []),
+            ...(state.elective_sections || []),
+          ].filter(section => (section.student_ids || []).includes(id)).map(section => section.id));
           relatedAssignments = assignments.filter(a =>
+            a.student_id === id ||
             a.class_id === student.teaching_class_id ||
             a.class_id === student.admin_class_id ||
-            a.class_id === id ||
-            a.task_id?.includes(student.teaching_class_id) ||
-            a.task_id?.includes(student.admin_class_id)
+            enrolledSectionIds.has(a.class_id) ||
+            enrolledSectionIds.has(a.section_id) ||
+            enrolledTaskIds.has(a.task_id)
           );
         }
         title = `学生 ${id} 的课表`;

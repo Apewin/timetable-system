@@ -29,6 +29,7 @@ pnpm-debug.log*
 
 # Test data
 /tmp/
+.tmp-artifact/
 
 # State files (contains school data, not for version control)
 timetable.json

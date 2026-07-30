@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "vitest run --exclude src/__tests__/regression.test.cjs && node src/__tests__/regression.test.cjs",
     "lint": "eslint src"
   },
   "dependencies": {
