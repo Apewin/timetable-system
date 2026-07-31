@@ -400,7 +400,8 @@ tr:hover {
 .manual-slot.has-course { background: var(--manual-course-surface, #e8f5e9); }
 .manual-slot.has-conflict,
 .manual-teaching-main.has-conflict,
-.manual-admin-lane.has-conflict {
+.manual-admin-lane.has-conflict,
+.manual-admin-merged.has-conflict {
   outline: 2px solid rgba(244, 67, 54, 0.75);
   outline-offset: -2px;
 }
@@ -414,7 +415,8 @@ tr:hover {
 }
 
 .manual-teaching-main,
-.manual-admin-lane {
+.manual-admin-lane,
+.manual-admin-merged {
   position: relative;
   min-height: 42px;
   padding: 6px 7px;
@@ -423,7 +425,8 @@ tr:hover {
 }
 
 .manual-teaching-main.has-course,
-.manual-admin-lane.has-course {
+.manual-admin-lane.has-course,
+.manual-admin-merged.has-course {
   background: var(--manual-course-surface, #e8f5e9);
 }
 
@@ -443,12 +446,14 @@ tr:hover {
 }
 
 .manual-admin-lane .manual-slot-course,
-.manual-teaching-main .manual-slot-course {
+.manual-teaching-main .manual-slot-course,
+.manual-admin-merged .manual-slot-course {
   font-size: 11px;
 }
 
 .manual-admin-lane .manual-slot-placeholder,
-.manual-teaching-main .manual-slot-placeholder {
+.manual-teaching-main .manual-slot-placeholder,
+.manual-admin-merged .manual-slot-placeholder {
   font-size: 11px;
 }
 .manual-slot-conflict-mark,
@@ -535,26 +540,31 @@ tr:hover {
 .manual-slot.has-course.category-admin-required,
 .manual-teaching-main.has-course.category-admin-required,
 .manual-admin-lane.has-course.category-admin-required,
+.manual-admin-merged.has-course.category-admin-required,
 .manual-course-legend-item.category-admin-required { --manual-course-accent: #1565c0; --manual-course-surface: #e3f2fd; }
 .manual-course-card.category-teaching-required,
 .manual-slot.has-course.category-teaching-required,
 .manual-teaching-main.has-course.category-teaching-required,
 .manual-admin-lane.has-course.category-teaching-required,
+.manual-admin-merged.has-course.category-teaching-required,
 .manual-course-legend-item.category-teaching-required { --manual-course-accent: #7b1fa2; --manual-course-surface: #f3e5f5; }
 .manual-course-card.category-ap,
 .manual-slot.has-course.category-ap,
 .manual-teaching-main.has-course.category-ap,
 .manual-admin-lane.has-course.category-ap,
+.manual-admin-merged.has-course.category-ap,
 .manual-course-legend-item.category-ap { --manual-course-accent: #ef6c00; --manual-course-surface: #fff3e0; }
 .manual-course-card.category-elective,
 .manual-slot.has-course.category-elective,
 .manual-teaching-main.has-course.category-elective,
 .manual-admin-lane.has-course.category-elective,
+.manual-admin-merged.has-course.category-elective,
 .manual-course-legend-item.category-elective { --manual-course-accent: #00796b; --manual-course-surface: #e0f2f1; }
 .manual-course-card.category-other,
 .manual-slot.has-course.category-other,
 .manual-teaching-main.has-course.category-other,
 .manual-admin-lane.has-course.category-other,
+.manual-admin-merged.has-course.category-other,
 .manual-course-legend-item.category-other { --manual-course-accent: #546e7a; --manual-course-surface: #eceff1; }
 .manual-course-name { color: var(--manual-course-accent); font-size: 13px; font-weight: 600; }
 .manual-course-card.is-bundle .manual-course-name { line-height: 1.45; }

@@ -507,10 +507,13 @@ function manualStudentIdsForClass(classId) {
 function manualAdminClassIdsForTeachingClass(classId) {
   const currentClass = window._manualClassesById?.get(classId);
   if (!currentClass || currentClass.class_type !== 'teaching') return [];
-  const ids = new Set((window._manualStudents || [])
-    .filter(student => student.teaching_class_id === classId && student.admin_class_id)
-    .map(student => student.admin_class_id));
-  return [...ids].sort((left, right) => {
+  // Administrative lessons are grade-wide timetable events.  Show the same
+  // administrative draft in all teaching-class views of that grade, rather
+  // than only in the teaching class where the editor happened to enter it.
+  const ids = [...(window._manualClassesById?.values() || [])]
+    .filter(item => item.class_type === 'admin' && Number(item.grade) === Number(currentClass.grade))
+    .map(item => item.id);
+  return ids.sort((left, right) => {
     const leftName = window._manualClassesById?.get(left)?.name || left;
     const rightName = window._manualClassesById?.get(right)?.name || right;
     return leftName.localeCompare(rightName, 'zh-CN');
@@ -649,6 +652,38 @@ function removeManualCourseFromSlot(slotId, classId = manualCurrentClassId()) {
   renderManualTimetableGrid();
 }
 
+function saveManualCourseToAdminClasses(slotId, itemId, adminClassIds) {
+  const drafts = readManualDrafts();
+  for (const adminClassId of adminClassIds) {
+    drafts[adminClassId] = { ...(drafts[adminClassId] || {}), [slotId]: itemId };
+  }
+  writeManualDrafts(drafts);
+  renderManualTimetableGrid();
+}
+
+function openManualAdminPlacementDialog(teachingClassId, slotId, itemId) {
+  const adminClassIds = manualAdminClassIdsForTeachingClass(teachingClassId);
+  if (adminClassIds.length === 1) {
+    saveManualCourseToAdminClasses(slotId, itemId, adminClassIds);
+    return;
+  }
+  const item = manualStoredItem(itemId, teachingClassId);
+  const names = adminClassIds.map(id => window._manualClassesById?.get(id)?.name || id);
+  showModal('安排行政班课程', `
+    <p>将“${item?.name || itemId}”安排到哪一个行政班？选择“两个行政班同上”后，教学班课表会自动合并为一个课程格。</p>
+    <div class="form-actions manual-admin-target-actions">
+      ${adminClassIds.map((id, index) => `<button type="button" class="btn btn-secondary manual-admin-target-choice" data-target-class-ids="${id}">${names[index]}</button>`).join('')}
+      <button type="button" class="btn btn-primary manual-admin-target-choice" data-target-class-ids="${adminClassIds.join(',')}">两个行政班同上</button>
+    </div>
+  `);
+  document.querySelectorAll('.manual-admin-target-choice').forEach(button => {
+    button.addEventListener('click', () => {
+      saveManualCourseToAdminClasses(slotId, itemId, button.dataset.targetClassIds.split(','));
+      hideModal();
+    });
+  });
+}
+
 function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons = [], label = '', placeholder = '拖入课程' }) {
   const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
   const labelMarkup = label ? `<span class="manual-slot-lane-label">${label}</span>` : '';
@@ -680,37 +715,64 @@ function renderManualTimetableGrid() {
       const slotId = manualSlotId(day, period);
       const item = manualStoredItem(draft[slotId], classId);
       const conflictReasons = [...(conflicts.get(`${classId}:${slotId}`) || [])];
-      if (!adminClassIds.length) {
+      const adminEntries = adminClassIds.map(adminClassId => ({
+        classId: adminClassId,
+        classInfo: window._manualClassesById?.get(adminClassId),
+        item: manualStoredItem(drafts[adminClassId]?.[slotId], adminClassId),
+        conflictReasons: [...(conflicts.get(`${adminClassId}:${slotId}`) || [])],
+      }));
+      const hasAdminCourse = adminEntries.some(entry => entry.item);
+      if (!adminClassIds.length || !hasAdminCourse) {
         const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
-        html += `<div class="manual-slot manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}" data-target-class-id="${classId}" title="${conflictTitle}">
+        html += `<div class="manual-slot manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}" data-target-class-id="${classId}" data-manual-placement-mode="${adminClassIds.length ? 'teaching-or-admin' : 'class'}" title="${conflictTitle}">
           ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons })}
         </div>`;
         continue;
       }
 
-      const lanes = adminClassIds.map(adminClassId => {
-        const adminItem = manualStoredItem(drafts[adminClassId]?.[slotId], adminClassId);
-        const adminConflicts = [...(conflicts.get(`${adminClassId}:${slotId}`) || [])];
-        const adminClass = window._manualClassesById?.get(adminClassId);
-        const conflictTitle = adminConflicts.length ? `课程冲突：${adminConflicts.join('、')}` : '';
-        return `<div class="manual-admin-lane manual-drop-target ${adminItem ? `has-course category-${adminItem.category || 'other'}` : ''} ${adminConflicts.length ? 'has-conflict' : ''}"
-          data-slot-id="${slotId}" data-target-class-id="${adminClassId}" title="${conflictTitle}">
+      const allAdminCoursesMatch = adminEntries.length > 1
+        && adminEntries.every(entry => entry.item?.id === adminEntries[0].item?.id);
+      const teachingConflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
+      const teachingMarkup = item ? `
+        <div class="manual-teaching-main has-course category-${item.category || 'other'} ${conflictReasons.length ? 'has-conflict' : ''}"
+          data-slot-id="${slotId}" title="${teachingConflictTitle}">
+          ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons, label: '教学班' })}
+        </div>` : '';
+      if (allAdminCoursesMatch) {
+        const mergedItem = adminEntries[0].item;
+        const mergedConflicts = [...new Set(adminEntries.flatMap(entry => entry.conflictReasons))];
+        const mergedConflictTitle = mergedConflicts.length ? `课程冲突：${mergedConflicts.join('、')}` : '';
+        const labels = adminEntries.map(entry => entry.classInfo?.name || entry.classId).join('、');
+        html += `<div class="manual-slot manual-teaching-slot ${item ? `has-course category-${item.category || 'other'}` : ''}" data-slot-id="${slotId}">
+          ${teachingMarkup}
+          <div class="manual-admin-merged has-course category-${mergedItem.category || 'other'} ${mergedConflicts.length ? 'has-conflict' : ''}" title="${mergedConflictTitle}">
+            <span class="manual-slot-lane-label">${labels} · 同上</span>
+            <div class="manual-slot-course">
+              <span>${manualPoolItemLabel(mergedItem)}</span>
+              <button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-ids="${adminEntries.map(entry => entry.classId).join(',')}" aria-label="删除两个行政班课程">×</button>
+            </div>
+            ${mergedConflicts.length ? `<span class="manual-slot-conflict-mark" aria-label="${mergedConflictTitle}" title="${mergedConflictTitle}"></span>` : ''}
+          </div>
+        </div>`;
+        continue;
+      }
+
+      const lanes = adminEntries.map(entry => {
+        const conflictTitle = entry.conflictReasons.length ? `课程冲突：${entry.conflictReasons.join('、')}` : '';
+        return `<div class="manual-admin-lane manual-drop-target ${entry.item ? `has-course category-${entry.item.category || 'other'}` : ''} ${entry.conflictReasons.length ? 'has-conflict' : ''}"
+          data-slot-id="${slotId}" data-target-class-id="${entry.classId}" title="${conflictTitle}">
           ${manualCourseSlotMarkup({
-            item: adminItem,
+            item: entry.item,
             slotId,
-            targetClassId: adminClassId,
-            conflictReasons: adminConflicts,
-            label: adminClass?.name || adminClassId,
+            targetClassId: entry.classId,
+            conflictReasons: entry.conflictReasons,
+            label: entry.classInfo?.name || entry.classId,
             placeholder: '拖入行政班课程',
           })}
         </div>`;
       }).join('');
-      const teachingConflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
-      html += `<div class="manual-slot manual-teaching-slot ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}">
-        <div class="manual-teaching-main manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${conflictReasons.length ? 'has-conflict' : ''}"
-          data-slot-id="${slotId}" data-target-class-id="${classId}" title="${teachingConflictTitle}">
-          ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons, label: '教学班' })}
-        </div>
+      html += `<div class="manual-slot manual-teaching-slot ${item ? `has-course category-${item.category || 'other'}` : ''}" data-slot-id="${slotId}">
+        ${teachingMarkup}
         <div class="manual-admin-lanes" aria-label="行政班学生去向">${lanes}</div>
       </div>`;
     }
@@ -724,11 +786,25 @@ function renderManualTimetableGrid() {
       target.classList.remove('drag-over');
       const itemId = event.dataTransfer.getData('application/x-manual-item')
         || event.dataTransfer.getData('application/x-manual-course');
+      const targetClass = window._manualClassesById?.get(target.dataset.targetClassId);
+      const item = manualStoredItem(itemId, target.dataset.targetClassId);
+      if (target.dataset.manualPlacementMode === 'teaching-or-admin'
+        && targetClass?.class_type === 'teaching'
+        && item?.category === 'admin-required') {
+        openManualAdminPlacementDialog(target.dataset.targetClassId, target.dataset.slotId, itemId);
+        return;
+      }
       saveManualCourseToSlot(target.dataset.slotId, itemId, target.dataset.targetClassId);
     });
   });
   grid.querySelectorAll('.manual-slot-remove').forEach(button => {
-    button.addEventListener('click', () => removeManualCourseFromSlot(button.dataset.slotId, button.dataset.targetClassId));
+    button.addEventListener('click', () => {
+      const targetIds = button.dataset.targetClassIds?.split(',') || [button.dataset.targetClassId];
+      const drafts = readManualDrafts();
+      targetIds.filter(Boolean).forEach(targetId => delete drafts[targetId]?.[button.dataset.slotId]);
+      writeManualDrafts(drafts);
+      renderManualTimetableGrid();
+    });
   });
 }
 
