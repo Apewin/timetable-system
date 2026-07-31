@@ -1696,6 +1696,94 @@ tr:hover {
   color: var(--gray-400);
 }
 
+/* Overview cards use the same five course colors as the manual timetable. */
+.overview-card-action {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 14px;
+  border-top: 1px solid var(--gray-200);
+  color: var(--primary-dark);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.overview-card:focus-visible {
+  outline: 3px solid rgba(33, 150, 243, 0.45);
+  outline-offset: 3px;
+}
+
+.overview-course-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+  margin: 0 0 14px;
+}
+
+.overview-course-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--gray-600);
+  font-size: 12px;
+}
+
+.overview-course-legend-item i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--timetable-course-accent);
+}
+
+.overview-mini-timetable .slot-filled.category-admin-required,
+.timetable-grid .slot-cell.has-class.category-admin-required,
+.overview-course-legend-item.category-admin-required {
+  --timetable-course-accent: #1565c0;
+  --timetable-course-surface: #e3f2fd;
+}
+
+.overview-mini-timetable .slot-filled.category-teaching-required,
+.timetable-grid .slot-cell.has-class.category-teaching-required,
+.overview-course-legend-item.category-teaching-required {
+  --timetable-course-accent: #7b1fa2;
+  --timetable-course-surface: #f3e5f5;
+}
+
+.overview-mini-timetable .slot-filled.category-ap,
+.timetable-grid .slot-cell.has-class.category-ap,
+.overview-course-legend-item.category-ap {
+  --timetable-course-accent: #ef6c00;
+  --timetable-course-surface: #fff3e0;
+}
+
+.overview-mini-timetable .slot-filled.category-elective,
+.timetable-grid .slot-cell.has-class.category-elective,
+.overview-course-legend-item.category-elective {
+  --timetable-course-accent: #00796b;
+  --timetable-course-surface: #e0f2f1;
+}
+
+.overview-mini-timetable .slot-filled.category-other,
+.timetable-grid .slot-cell.has-class.category-other,
+.overview-course-legend-item.category-other {
+  --timetable-course-accent: #546e7a;
+  --timetable-course-surface: #eceff1;
+}
+
+.overview-mini-timetable .slot-filled[class*="category-"] {
+  background-color: var(--timetable-course-surface);
+  color: var(--timetable-course-accent);
+  box-shadow: inset 3px 0 0 var(--timetable-course-accent);
+}
+
+.timetable-grid .slot-cell.has-class[class*="category-"] {
+  background-color: var(--timetable-course-surface);
+  border-left-color: var(--timetable-course-accent);
+}
+
+.timetable-grid .slot-cell.has-class[class*="category-"] .course-name {
+  color: var(--timetable-course-accent);
+}
+
 /* Timetable Detail View */
 .timetable-detail {
   background-color: var(--white);

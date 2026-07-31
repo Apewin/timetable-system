@@ -46,6 +46,35 @@ function getRoomName(slot) {
   return '';
 }
 
+// Keep timetable displays aligned with the five course colors used by the
+// manual timetable. API timetable rows expose both course type and class type;
+// split rows are identified by their descriptive label.
+function timetableCourseCategory(slot) {
+  if (!slot) return 'other';
+  const courseType = String(
+    slot.course_type || slot.teaching_course?.course_type || slot.elective_course?.course_type || '',
+  ).toLowerCase();
+  const classType = String(slot.class_type || '').toLowerCase();
+  const courseLabel = getCourseName(slot);
+  if (courseType === 'ap' || classType === 'ap' || courseLabel.startsWith('AP 选课分流')) return 'ap';
+  if (courseType === 'required_elective' || classType === 'elective' || courseLabel.startsWith('选修课分流')) return 'elective';
+  if (courseLabel.startsWith('行政班：')) return 'admin-required';
+  if (courseType === 'required') return classType === 'teaching' ? 'teaching-required' : 'admin-required';
+  if (classType === 'teaching') return 'teaching-required';
+  if (classType === 'admin' || slot.admin_courses) return 'admin-required';
+  return 'other';
+}
+
+function timetableCourseCategoryLabel(category) {
+  return ({
+    'admin-required': '行政班必修',
+    'teaching-required': '教学班必修',
+    ap: 'AP 选修',
+    elective: '非必修选修',
+    other: '其他',
+  })[category] || '其他';
+}
+
 // 工具函数
 function showToast(message, type = 'success') {
   const toast = document.getElementById('toast');
@@ -258,7 +287,7 @@ async function api(path, options = {}) {
 }
 
 // 视图切换
-function switchView(viewName) {
+async function switchView(viewName) {
   // 隐藏所有视图
   document.querySelectorAll('.view').forEach(view => {
     view.classList.remove('active');
@@ -279,7 +308,7 @@ function switchView(viewName) {
   });
 
   // 加载视图数据
-  loadViewData(viewName);
+  return loadViewData(viewName);
 }
 
 // 加载视图数据
@@ -2796,11 +2825,12 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
         (row[0].includes('6') || row[0].includes('7') || row[0].includes('8'));
 
       if (slot) {
+        const category = timetableCourseCategory(slot);
         // 检查是否是教学班课表（包含行政班课程）
         if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
           // 教学班课表：显示行政班课程
           html += `
-            <div class="slot-cell has-class ${isWalkBlock ? 'walk-block' : ''}"
+            <div class="slot-cell has-class category-${category} ${isWalkBlock ? 'walk-block' : ''}"
                  data-slot-id="D${day}P${period.id}">
               <div class="admin-courses">
                 ${Object.entries(slot.admin_courses).map(([classId, course]) => `
@@ -2827,7 +2857,7 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
         } else {
           // 其他课表：直接显示
           html += `
-            <div class="slot-cell has-class ${isWalkBlock ? 'walk-block' : ''}"
+            <div class="slot-cell has-class category-${category} ${isWalkBlock ? 'walk-block' : ''}"
                  draggable="true"
                  data-task-id="${slot.task_id || ''}"
                  data-slot-id="D${day}P${period.id}">
@@ -2888,10 +2918,21 @@ async function loadOverviewTimetable() {
     );
 
     // 渲染概览网格
-    let html = '<div class="overview-grid">';
+    const legend = viewType === 'class' ? `
+      <div class="overview-course-legend" aria-label="课程颜色说明">
+        ${['admin-required', 'teaching-required', 'ap', 'elective', 'other'].map(category => `
+          <span class="overview-course-legend-item category-${category}"><i></i>${timetableCourseCategoryLabel(category)}</span>
+        `).join('')}
+      </div>
+    ` : '';
+    let html = `${legend}<div class="overview-grid">`;
     timetables.forEach(({ id, name, data }) => {
       html += `
-        <div class="overview-card" onclick="viewDetailedTimetable('${viewType}', '${id}', '${name}')">
+        <div class="overview-card" role="button" tabindex="0"
+             data-overview-type="${viewType}"
+             data-overview-id="${encodeURIComponent(id)}"
+             data-overview-name="${encodeURIComponent(name || '')}"
+             aria-label="查看${name}的完整课表">
           <div class="overview-card-header">
             <h4>${name}</h4>
             <span class="badge">${id}</span>
@@ -2899,12 +2940,27 @@ async function loadOverviewTimetable() {
           <div class="overview-card-body">
             ${renderMiniTimetable(data)}
           </div>
+          <div class="overview-card-action">查看完整课表 <span aria-hidden="true">→</span></div>
         </div>
       `;
     });
     html += '</div>';
 
     content.innerHTML = html;
+    content.querySelectorAll('.overview-card[data-overview-id]').forEach(card => {
+      const openTimetable = () => window.viewDetailedTimetable(
+        card.dataset.overviewType,
+        decodeURIComponent(card.dataset.overviewId),
+        decodeURIComponent(card.dataset.overviewName),
+      );
+      card.addEventListener('click', openTimetable);
+      card.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openTimetable();
+        }
+      });
+    });
   } catch (error) {
     content.innerHTML = `<div class="empty-state"><p>加载失败: ${error.message}</p></div>`;
   }
@@ -2926,7 +2982,8 @@ function renderMiniTimetable(data) {
     for (let i = 1; i <= 5; i++) {
       const slot = row[i];
       if (slot) {
-        html += `<td class="slot-filled">${getCourseName(slot)}</td>`;
+        const category = timetableCourseCategory(slot);
+        html += `<td class="slot-filled category-${category}" title="${timetableCourseCategoryLabel(category)}">${getCourseName(slot)}</td>`;
       } else {
         html += `<td class="slot-empty">-</td>`;
       }
@@ -2936,20 +2993,6 @@ function renderMiniTimetable(data) {
 
   html += '</tbody></table>';
   return html;
-}
-
-// 查看详细课表
-async function viewDetailedTimetable(type, id, name) {
-  // 切换到对应的详细视图
-  switchView(`${type}-timetable`);
-
-  // 设置下拉框并加载数据
-  const select = document.getElementById(`select-${type}`);
-  select.value = id;
-
-  // 触发change事件
-  const event = new Event('change');
-  select.dispatchEvent(event);
 }
 
 // 编辑实体（全局函数，供 onclick 调用）
@@ -3296,18 +3339,23 @@ async function deleteEntity(entity, id) {
   loadViewData(getCurrentView());
 }
 
-// 查看详细课表（全局函数，供 onclick 调用）
+// 查看详细课表（供总课表概览卡片调用）
 window.viewDetailedTimetable = async function(type, id, name) {
-  // 切换到对应的详细视图
-  switchView(`${type}-timetable`);
-
-  // 设置下拉框并加载数据
+  // Wait for the destination selector to populate before selecting the card's
+  // item. Previously this raced loadClassSelect(), opening an empty page.
+  await switchView(`${type}-timetable`);
   const select = document.getElementById(`select-${type}`);
+  if (!select) throw new Error(`未找到${type}课表选择器`);
   select.value = id;
-
-  // 触发change事件
-  const event = new Event('change');
-  select.dispatchEvent(event);
+  const data = await api(`/timetable/${type}/${id}`);
+  const subject = type === 'class' ? '班级' : type === 'teacher' ? '教师' : type;
+  renderDetailedTimetable(
+    `${type}-timetable-content`,
+    data,
+    `${name || id} 的课表`,
+    `${subject}ID: ${id}`,
+  );
+  document.getElementById(`${type}-timetable-content`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 };
 
 // 加载 AI 助手
