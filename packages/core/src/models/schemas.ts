@@ -25,6 +25,10 @@ export const teacherSchema = z.object({
 export const courseSchema = z.object({
   id: entityIdSchema,
   name: z.string().min(1),
+  grade: z.union([
+    z.number().int().min(10).max(12),
+    z.array(z.number().int().min(10).max(12)).min(1),
+  ]).optional(),
   type: z.enum(["required", "required_elective", "ap", "other"]),
   required_room_type: roomTypeSchema.optional(),
   weekly_hours: z.number().int().positive(),

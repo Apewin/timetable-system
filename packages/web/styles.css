@@ -1395,6 +1395,44 @@ tr:hover {
   resize: vertical;
 }
 
+.grade-range-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.form-group .grade-range-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 92px;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  background: var(--gray-100);
+  cursor: pointer;
+}
+
+.form-group .grade-range-option:has(input:checked) {
+  border-color: var(--primary);
+  background: rgba(76, 175, 80, 0.1);
+  color: var(--primary);
+}
+
+.form-group .grade-range-option input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.form-help {
+  margin-top: 7px;
+  color: var(--gray-500);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;

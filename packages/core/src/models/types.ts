@@ -24,6 +24,7 @@ export interface Teacher {
 export interface Course {
   id: EntityId;
   name: string;
+  grade?: number | number[];  // 适用年级；数组表示允许跨年级选课/混班
   type: "required" | "required_elective" | "ap" | "other";  // 必修 / 必修选修课 / AP选修 / 其他（班会社团自习等）
   required_room_type?: RoomType;  // AP课指定学科教室类型
   weekly_hours: number;  // 默认周课时

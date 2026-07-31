@@ -10,7 +10,11 @@ import { compileRules } from './rule-compiler.mjs';
 import { solveSchedule } from './cpsat-solver.mjs';
 import { validateSchedule } from './schedule-validator.mjs';
 import { approvalGatedRules, enforceApprovalGates, relaxApprovedRules } from './approval-gate.mjs';
-import { validateSelectionBlocks } from './section-builder.mjs';
+import {
+  normalizeCourseGradeRange,
+  validateCourseGradeSelections,
+  validateSelectionBlocks,
+} from './section-builder.mjs';
 import { applyApSelectionChanges, parseApSelectionBuffer } from './ap-selection-import.mjs';
 import {
   applyElectiveSelectionChanges,
@@ -1077,9 +1081,15 @@ const editableEntities = new Set([
 ]);
 
 function changedState(state, entity, items) {
-  const next = { ...state, [entity]: items };
+  const normalizedItems = entity === 'courses'
+    ? items.map(normalizeCourseGradeRange)
+    : items;
+  const next = { ...state, [entity]: normalizedItems };
   if (entity === 'constraints') validateRules(items);
   if (entity === 'selection_blocks') validateSelectionBlocks(next);
+  if (entity === 'courses' || entity === 'students' || entity === 'selection_blocks') {
+    validateCourseGradeSelections(next);
+  }
   if (state.schedule) next.solve_status = 'stale';
   return next;
 }

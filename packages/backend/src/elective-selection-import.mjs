@@ -47,7 +47,7 @@ function findHeader(matrix) {
 function electiveCourses(state) {
   return (state.courses || []).filter(course =>
     course.type === 'required_elective'
-    && Number(course.grade) === 12
+    && (Array.isArray(course.grade) ? course.grade : [course.grade]).map(Number).includes(12)
     && ['A', 'B', 'C'].includes(text(course.elective_group).toUpperCase()));
 }
 

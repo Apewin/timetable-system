@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { buildSections } from '../src/section-builder.mjs';
+import {
+  buildSections,
+  normalizeCourseGradeRange,
+  validateCourseGradeSelections,
+} from '../src/section-builder.mjs';
 
 function state(overrides = {}) {
   return {
@@ -17,7 +21,7 @@ test('keeps a mixed-grade AP cohort together when its section requirement permit
       { id: 'S11', grade: 11, ap_courses: ['BIO'], elective_choices: {} },
       { id: 'S12', grade: 12, ap_courses: ['BIO'], elective_choices: {} },
     ],
-    courses: [{ id: 'BIO', type: 'ap', weekly_hours: 5, section_count: 1 }],
+    courses: [{ id: 'BIO', type: 'ap', grade: [11, 12], weekly_hours: 5, section_count: 1 }],
     teachers: [{ id: 'T_BIO', can_teach: ['BIO'] }],
     rooms: [{ id: 'LAB', type: 'biology', capacity: 30 }],
   }));
@@ -26,6 +30,31 @@ test('keeps a mixed-grade AP cohort together when its section requirement permit
   assert.deepEqual(sections[0].student_ids, ['S11', 'S12']);
   assert.deepEqual(sections[0].eligible_student_ids, ['S11', 'S12']);
   assert.deepEqual(sections[0].room_candidates, ['LAB']);
+});
+
+test('rejects an existing selection outside the edited course grade range', () => {
+  assert.throws(() => validateCourseGradeSelections(state({
+    students: [{ id: 'S12', name: '高三学生', grade: 12, ap_courses: ['BIO'], elective_choices: {} }],
+    courses: [{ id: 'BIO', name: 'AP Biology', type: 'ap', grade: 11, weekly_hours: 5 }],
+  })), /高三学生.*不在该课程的新适用年级范围内/);
+});
+
+test('normalizes a narrowed grade range and removes obsolete section requirements', () => {
+  const course = normalizeCourseGradeRange({
+    id: 'MACRO',
+    grade: [12, 11, 11],
+    section_requirements: [
+      { grades: [11], count: 1, teacher_id: 'T11' },
+      { grades: [12], count: 2, teacher_id: 'T12' },
+    ],
+  });
+  assert.deepEqual(course.grade, [11, 12]);
+
+  const narrowed = normalizeCourseGradeRange({ ...course, grade: 11 });
+  assert.equal(narrowed.grade, 11);
+  assert.deepEqual(narrowed.section_requirements, [
+    { grades: [11], count: 1, teacher_id: 'T11' },
+  ]);
 });
 
 test('uses per-grade teacher and section requirements without treating teacher count as a section limit', () => {

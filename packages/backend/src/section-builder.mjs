@@ -12,6 +12,78 @@ function byId(items = []) {
   return new Map(items.map(item => [item.id, item]));
 }
 
+const SCHOOL_GRADES = [10, 11, 12];
+
+/**
+ * Returns the canonical grade range for a course. Historical data may store a
+ * single grade as a number, while cross-grade courses use an array.
+ * `undefined` is retained for backwards compatibility and means unrestricted.
+ */
+export function courseGradeRange(course) {
+  if (course?.grade === undefined || course?.grade === null || course?.grade === '') return null;
+  const rawGrades = Array.isArray(course.grade) ? course.grade : [course.grade];
+  if (!rawGrades.length) throw new Error(`课程 ${course.id || '（未命名）'} 至少需要一个适用年级`);
+  const grades = rawGrades.map(Number);
+  if (!grades.every(grade => Number.isInteger(grade) && SCHOOL_GRADES.includes(grade))) {
+    throw new Error(`课程 ${course.id || '（未命名）'} 的适用年级只能是高一、高二或高三`);
+  }
+  return [...new Set(grades)].sort((left, right) => left - right);
+}
+
+/**
+ * Canonicalizes the editable grade range and removes obsolete per-grade
+ * section requirements when an administrator narrows a course's scope.
+ */
+export function normalizeCourseGradeRange(course) {
+  const grades = courseGradeRange(course);
+  if (!grades) return course;
+  const normalized = {
+    ...course,
+    grade: grades.length === 1 ? grades[0] : grades,
+  };
+  if (Array.isArray(course.section_requirements)) {
+    const requirements = course.section_requirements
+      .map(requirement => ({
+        ...requirement,
+        grades: [...new Set((requirement.grades || []).map(Number))]
+          .filter(grade => grades.includes(grade))
+          .sort((left, right) => left - right),
+      }))
+      .filter(requirement => requirement.grades.length);
+    if (requirements.length) normalized.section_requirements = requirements;
+    else delete normalized.section_requirements;
+  }
+  return normalized;
+}
+
+function gradeAllowed(course, grade) {
+  const grades = courseGradeRange(course);
+  return !grades || grades.includes(Number(grade));
+}
+
+/**
+ * Prevents a grade-range edit from silently dropping students who have
+ * already selected the course. The administrator can first amend those
+ * students' choices, then narrow the course safely.
+ */
+export function validateCourseGradeSelections(state, courses = byId(state.courses)) {
+  for (const course of courses.values()) courseGradeRange(course);
+  for (const student of state.students || []) {
+    const selectedCourseIds = [
+      ...(student.ap_courses || []),
+      ...Object.values(student.elective_choices || {}),
+    ];
+    for (const courseId of selectedCourseIds) {
+      const course = courses.get(courseId);
+      if (!course || gradeAllowed(course, student.grade)) continue;
+      throw new Error(
+        `学生 ${student.name || student.id}（${student.id}，高${Number(student.grade) - 9}）`
+        + `已选择 ${course.name || course.id}，不在该课程的新适用年级范围内；请先调整该生选课`,
+      );
+    }
+  }
+}
+
 function configuredSectionCount(value) {
   if (Array.isArray(value)) return Math.max(1, ...value.filter(Number.isFinite));
   return Number.isInteger(value) && value > 0 ? value : 1;
@@ -70,6 +142,9 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
     for (const classId of classIds) {
       const group = classes.get(classId);
       if (!group) throw new Error(`教师分工 ${assignment.id} 引用了不存在的班级 ${classId}`);
+      if (!gradeAllowed(course, group.grade)) {
+        throw new Error(`课程 ${course.id} 不适用于 ${group.name || classId} 所在年级`);
+      }
       const candidates = compatibleRooms(state, course, group.student_ids.length);
       if (!candidates.length) throw new Error(`班级 ${classId} 的 ${course.id} 没有容量足够的教室`);
       const fixedRoom = assignment.class_type === 'admin' ? group.fixed_room_id : null;
@@ -107,10 +182,22 @@ function selectedCourseStudents(state, courses) {
   const selected = new Map();
   for (const student of state.students || []) {
     for (const courseId of student.ap_courses || []) {
-      if (courses.get(courseId)?.type === 'ap') addSelection(selected, courseId, student);
+      const course = courses.get(courseId);
+      if (course?.type === 'ap') {
+        if (!gradeAllowed(course, student.grade)) {
+          throw new Error(`学生 ${student.id} 的年级不在课程 ${courseId} 的适用范围内`);
+        }
+        addSelection(selected, courseId, student);
+      }
     }
     for (const courseId of Object.values(student.elective_choices || {})) {
-      if (courses.get(courseId)?.type === 'required_elective') addSelection(selected, courseId, student);
+      const course = courses.get(courseId);
+      if (course?.type === 'required_elective') {
+        if (!gradeAllowed(course, student.grade)) {
+          throw new Error(`学生 ${student.id} 的年级不在课程 ${courseId} 的适用范围内`);
+        }
+        addSelection(selected, courseId, student);
+      }
     }
   }
   return selected;
@@ -136,6 +223,11 @@ export function validateSelectionBlocks(state, courses = new Map((state.courses 
       const course = courses.get(courseId);
       if (!course) throw new Error(`选课组 ${block.id} 引用了不存在的课程 ${courseId}`);
       if (course.type !== 'required_elective') throw new Error(`选课组 ${block.id} 的课程 ${courseId} 必须是选修课`);
+      const courseGrades = courseGradeRange(course);
+      const unsupported = courseGrades ? block.grades.filter(grade => !courseGrades.includes(grade)) : [];
+      if (unsupported.length) {
+        throw new Error(`选课组 ${block.id} 的课程 ${courseId} 不适用于组内年级: ${unsupported.join(', ')}`);
+      }
     }
     if (block.synchronized_time_block) {
       if (!Number.isInteger(block.section_count) || block.section_count < 1) {
@@ -168,11 +260,31 @@ function selectedSections(state, courses) {
     if (synchronizedBlock && allStudents.some(student => !synchronizedBlock.grades.includes(student.grade))) {
       throw new Error(`同步选课组 ${synchronizedBlock.id} 的课程 ${courseId} 含有组外年级学生`);
     }
-    const requirements = synchronizedBlock
+    let requirements = synchronizedBlock
       ? [{ grades: synchronizedBlock.grades, count: synchronizedBlock.section_count, teacher_id: null, synchronized_block_id: synchronizedBlock.id }]
       : course.section_requirements?.length
       ? course.section_requirements
       : [{ grades: null, count: configuredSectionCount(course.section_count), teacher_id: null }];
+    if (!synchronizedBlock && course.section_requirements?.length) {
+      const allowedGrades = courseGradeRange(course);
+      if (allowedGrades) {
+        requirements = requirements
+          .map(requirement => ({
+            ...requirement,
+            grades: (requirement.grades || []).filter(grade => allowedGrades.includes(Number(grade))),
+          }))
+          .filter(requirement => requirement.grades.length);
+        const explicitlyCovered = new Set(requirements.flatMap(requirement => requirement.grades));
+        const uncoveredGrades = allowedGrades.filter(grade => !explicitlyCovered.has(grade));
+        if (uncoveredGrades.length) {
+          requirements.push({
+            grades: uncoveredGrades,
+            count: configuredSectionCount(course.section_count),
+            teacher_id: null,
+          });
+        }
+      }
+    }
     const claimed = new Set();
 
     for (const requirement of requirements) {
@@ -301,6 +413,7 @@ function applySectionOverrides(sections, state) {
 
 export function buildSections(state) {
   const courses = byId(state.courses);
+  validateCourseGradeSelections(state, courses);
   validateSelectionBlocks(state, courses);
   const adminClasses = byId(state.admin_classes);
   const teachingClasses = byId(state.teaching_classes);

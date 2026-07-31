@@ -699,6 +699,31 @@ function courseGradeLabel(course) {
   return grades.length ? grades.map(grade => `高${grade - 9}`).join('、') : '未设置';
 }
 
+function courseGradeValues(course = {}) {
+  return (Array.isArray(course.grade) ? course.grade : [course.grade])
+    .map(Number)
+    .filter(grade => [10, 11, 12].includes(grade));
+}
+
+function renderCourseGradeOptions(course = { grade: [10, 11, 12] }) {
+  const selected = new Set(courseGradeValues(course));
+  return `
+    <div class="grade-range-options" role="group" aria-label="课程适用年级">
+      ${[
+        [10, '高一'],
+        [11, '高二'],
+        [12, '高三'],
+      ].map(([grade, label]) => `
+        <label class="grade-range-option">
+          <input type="checkbox" name="grade_scope" value="${grade}" ${selected.has(grade) ? 'checked' : ''}>
+          <span>${label}</span>
+        </label>
+      `).join('')}
+    </div>
+    <div class="form-help">勾选多个年级表示允许跨年级选课和混班；保存后旧课表会失效，需要重新排课。</div>
+  `;
+}
+
 function courseTypeLabel(type) {
   return ({ required: '必修', ap: 'AP选修', required_elective: '必修选修', other: '活动/其他' })[type] || type || '-';
 }
@@ -2691,7 +2716,13 @@ window.editEntity = async function(entity, id) {
               <select name="type">
                 <option value="required" ${item.type === 'required' ? 'selected' : ''}>必修</option>
                 <option value="ap" ${item.type === 'ap' ? 'selected' : ''}>AP选修</option>
+                <option value="required_elective" ${item.type === 'required_elective' ? 'selected' : ''}>必修选修</option>
+                <option value="other" ${item.type === 'other' ? 'selected' : ''}>活动/其他</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label>适用年级</label>
+              ${renderCourseGradeOptions(item)}
             </div>
             <div class="form-group">
               <label>每周课时</label>
@@ -2844,7 +2875,7 @@ window.editEntity = async function(entity, id) {
           if (key === 'id') continue; // 跳过 ID 字段
 
           // 特殊处理 can_teach（复选框）
-          if (key === 'can_teach') {
+          if (key === 'can_teach' || key === 'grade_scope') {
             // 跳过，后面单独处理
             continue;
           } else if (key === 'grade' || key === 'max_per_day' || key === 'max_per_week' || key === 'weekly_hours' || key === 'capacity') {
@@ -2859,6 +2890,14 @@ window.editEntity = async function(entity, id) {
         // 单独处理 can_teach（复选框多选）
         if (entity === 'teachers') {
           updateData.can_teach = formData.getAll('can_teach');
+        }
+        if (entity === 'courses') {
+          const grades = formData.getAll('grade_scope').map(Number);
+          if (!grades.length) {
+            showToast('请至少选择一个适用年级', 'error');
+            return;
+          }
+          updateData.grade = grades.length === 1 ? grades[0] : grades;
         }
 
         try {
@@ -3708,7 +3747,13 @@ function init() {
           <select name="type">
             <option value="required">必修</option>
             <option value="ap">AP选修</option>
+            <option value="required_elective">必修选修</option>
+            <option value="other">活动/其他</option>
           </select>
+        </div>
+        <div class="form-group">
+          <label>适用年级</label>
+          ${renderCourseGradeOptions()}
         </div>
         <div class="form-group">
           <label>每周课时</label>
@@ -3728,10 +3773,16 @@ function init() {
     document.getElementById('form-add-course').addEventListener('submit', async (e) => {
       e.preventDefault();
       const formData = new FormData(e.target);
+      const grades = formData.getAll('grade_scope').map(Number);
+      if (!grades.length) {
+        showToast('请至少选择一个适用年级', 'error');
+        return;
+      }
       const data = {
         id: formData.get('id'),
         name: formData.get('name'),
         type: formData.get('type'),
+        grade: grades.length === 1 ? grades[0] : grades,
         weekly_hours: parseInt(formData.get('weekly_hours')),
         required_room_type: formData.get('required_room_type') || undefined,
         prefer_morning: false,
