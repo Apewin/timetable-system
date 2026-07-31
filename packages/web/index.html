@@ -380,6 +380,15 @@
         <div id="view-courses" class="view">
           <h2>课程管理</h2>
           <div class="toolbar">
+            <div class="control-group">
+              <label for="filter-course-grade">适用年级：</label>
+              <select id="filter-course-grade" class="select">
+                <option value="">全部年级</option>
+                <option value="10">高一</option>
+                <option value="11">高二</option>
+                <option value="12">高三</option>
+              </select>
+            </div>
             <input type="text" id="search-courses" class="search-input" placeholder="🔍 搜索课程名称、ID或类型...">
             <button id="btn-add-course" class="btn btn-primary">添加课程</button>
           </div>

@@ -679,27 +679,63 @@ function renderRoomsList(data) {
 async function loadCourses() {
   const data = await api('/courses');
   window._coursesData = data;
-  renderCoursesList(data);
-  initEntitySearch('search-courses', data, renderCoursesList, (item, keyword) => {
-    return item.id.toLowerCase().includes(keyword) ||
-           item.name.toLowerCase().includes(keyword) ||
-           item.type.toLowerCase().includes(keyword);
-  });
+  const gradeFilter = document.getElementById('filter-course-grade');
+  const searchInput = document.getElementById('search-courses');
+  gradeFilter.onchange = applyCourseFilters;
+  searchInput.oninput = applyCourseFilters;
+  applyCourseFilters();
 }
 
-function renderCoursesList(data) {
+function courseAppliesToGrade(course, grade) {
+  const grades = Array.isArray(course.grade) ? course.grade : [course.grade];
+  return grades.map(Number).includes(Number(grade));
+}
+
+function courseGradeLabel(course) {
+  const grades = (Array.isArray(course.grade) ? course.grade : [course.grade])
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  return grades.length ? grades.map(grade => `高${grade - 9}`).join('、') : '未设置';
+}
+
+function courseTypeLabel(type) {
+  return ({ required: '必修', ap: 'AP选修', required_elective: '必修选修', other: '活动/其他' })[type] || type || '-';
+}
+
+function applyCourseFilters() {
+  const allCourses = window._coursesData || [];
+  const grade = document.getElementById('filter-course-grade')?.value || '';
+  const keyword = document.getElementById('search-courses')?.value.toLowerCase().trim() || '';
+  const filtered = allCourses.filter(course => {
+    const gradeMatch = !grade || courseAppliesToGrade(course, grade);
+    const keywordMatch = !keyword
+      || course.id.toLowerCase().includes(keyword)
+      || course.name.toLowerCase().includes(keyword)
+      || course.type.toLowerCase().includes(keyword)
+      || courseGradeLabel(course).includes(keyword);
+    return gradeMatch && keywordMatch;
+  });
+  renderCoursesList(filtered, { grade, total: allCourses.length });
+}
+
+function renderCoursesList(data, { grade = '', total = data.length } = {}) {
   const content = document.getElementById('courses-list');
   if (data.length === 0) {
-    content.innerHTML = '<div class="empty-state"><p>暂无课程数据</p></div>';
+    content.innerHTML = `<div class="empty-state"><p>${grade ? `高${Number(grade) - 9}暂无匹配课程` : '暂无课程数据'}</p></div>`;
     return;
   }
   content.innerHTML = `
     <div class="table-container">
+      <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
+        ${grade ? `高${Number(grade) - 9}课程` : '全部课程'}：显示 ${data.length}/${total} 门
+      </div>
       <table>
         <thead>
           <tr>
             <th>ID</th>
             <th>名称</th>
+            <th>适用年级</th>
             <th>类型</th>
             <th>周课时</th>
             <th>教室类型</th>
@@ -713,7 +749,8 @@ function renderCoursesList(data) {
             <tr>
               <td>${c.id}</td>
               <td>${c.name}</td>
-              <td>${c.type === 'ap' ? 'AP选修' : '必修'}</td>
+              <td>${courseGradeLabel(c)}</td>
+              <td>${courseTypeLabel(c.type)}</td>
               <td>${c.weekly_hours}</td>
               <td>${c.required_room_type || '-'}</td>
               <td>${c.prefer_morning ? '是' : '-'}</td>
