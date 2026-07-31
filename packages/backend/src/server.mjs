@@ -1010,6 +1010,7 @@ app.post('/api/elective-selections/import/preview', upload.single('file'), (req,
       expectedType: 'elective_selections',
       filename,
       reason: '用户点击“大模型整理”请求按系统标准整理高三 A/B/C 选课文件',
+      courseCatalog: state.courses || [],
     });
     preview = parseElectiveSelectionWorkbook(ai.workbook, state, filename);
     return {

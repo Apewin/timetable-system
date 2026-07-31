@@ -40,6 +40,9 @@ test('calls the model once and validates its JSON response', async () => {
     assert.equal(request.messages.length, 2);
     assert.match(request.messages[0].content, /不推测、不补全/);
     assert.match(request.messages[0].content, /不确定字段保留空值/);
+    assert.match(request.messages[0].content, /并排放置多份纵向课程名单/);
+    assert.match(request.messages[0].content, /德语名单/);
+    assert.match(request.messages[0].content, /GERMAN（德语）/);
     return {
       ok: true,
       json: async () => ({
@@ -61,6 +64,7 @@ test('calls the model once and validates its JSON response', async () => {
   };
   const result = await interpretWorkbook(workbook, {
     expectedType: 'elective_selections',
+    courseCatalog: [{ id: 'GERMAN', name: '德语', type: 'required_elective', grade: 12, elective_group: 'C' }],
     fetchImpl,
     config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
   });

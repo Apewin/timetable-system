@@ -100,7 +100,22 @@ export function workbookSnapshot(workbook, {
   };
 }
 
-function schemaFor(expectedType) {
+function electiveCoursePrompt(courseCatalog = []) {
+  const courses = courseCatalog
+    .filter(course => course?.type === 'required_elective'
+      && ['A', 'B', 'C'].includes(text(course.elective_group).toUpperCase()))
+    .filter(course => (Array.isArray(course.grade) ? course.grade : [course.grade]).map(Number).includes(12));
+  if (!courses.length) return '系统课程目录未提供；仍须只保留原表中明确写出的课程名称，不得自行猜测。';
+  return ['A', 'B', 'C'].map(group => {
+    const items = courses
+      .filter(course => text(course.elective_group).toUpperCase() === group)
+      .map(course => `${course.id}（${course.name}）`)
+      .join('；');
+    return `${group}组：${items || '无'}`;
+  }).join('\n');
+}
+
+function schemaFor(expectedType, { courseCatalog = [] } = {}) {
   if (expectedType === 'students') {
     return '每个名单页输出 headers=["Student ID","Name (Chinese)","Name (Pinyin)","English Name","Teaching Class","Class"]；rows 按该顺序。不要推测缺失值。';
   }
@@ -108,7 +123,13 @@ function schemaFor(expectedType) {
     return '每门 AP 课程一个 sheet；title 必须是课程标题；headers=["Name (Chinese)","Name (Pinyin)","English Name"]；rows 只包含该课程学生。';
   }
   if (expectedType === 'elective_selections') {
-    return '输出一个 sheet；headers=["Student ID","中文姓名","姓名拼音","英文名","A组","B组","C组"]；每名学生一行。只把实际出现的选课放入 A/B/C，缺失组留空，禁止自行补课。';
+    return [
+      '输出一个 sheet；headers=["Student ID","中文姓名","姓名拼音","英文名","A组","B组","C组"]；每名学生一行。只把实际出现的选课放入 A/B/C，缺失组留空，禁止自行补课。',
+      '重点识别规则：一个工作表可能并排放置多份纵向课程名单。例如第一行的不同列分别写“德语名单（8人）”“法语名单（31人）”“日语名单（42人）”。每个标题下同一列的所有非空姓名，都属于该标题对应课程；空列、空行、人数说明和序号都应忽略。',
+      '遇到这种并排名单时，必须拆成每名学生一行的标准表：姓名放入“中文姓名”，课程放入对应的 A组/B组/C组列。没有学号、拼音或英文名时留空；不得因为姓名相似而补造身份；未出现的组别留空。',
+      '只能使用以下当前系统允许的高三课程；若标题无法明确对应，保留空值并在 notes 说明：',
+      electiveCoursePrompt(courseCatalog),
+    ].join('\n');
   }
   return '识别为 students、teachers、courses 或 rooms，并使用明确的中文标准表头输出。';
 }
@@ -201,6 +222,7 @@ export async function interpretWorkbook(workbook, {
   expectedType,
   filename = '',
   reason = '',
+  courseCatalog = [],
   fetchImpl = globalThis.fetch,
   config = getAiConfig({ includeSecret: true }),
 } = {}) {
@@ -216,7 +238,7 @@ export async function interpretWorkbook(workbook, {
         '必须保留可见的有效数据行；对不确定字段保留空值并在 notes 说明，绝不能根据姓名、年级或课程常识猜测。',
         '不要执行排课、分班或数据更新；你的输出只用于人工确认前的结构整理。',
         '只返回 JSON：{"document_type":"","confidence":0到1,"notes":[],"sheets":[{"name":"","title":"","headers":[],"rows":[[]]}]}。',
-        schemaFor(expectedType),
+        schemaFor(expectedType, { courseCatalog }),
       ].join('\n'),
     },
     {
