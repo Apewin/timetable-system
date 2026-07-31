@@ -691,7 +691,7 @@ async function loadCourses() {
   const highTwoClasses = teachingClasses
     .filter(item => Number(item.grade) === 11)
     .sort((left, right) => left.id.localeCompare(right.id));
-  classFilter.innerHTML = '<option value="">全部高二教学班</option>'
+  classFilter.innerHTML = '<option value="">全部 Senior 2 教学班</option>'
     + highTwoClasses.map(item => `<option value="${item.id}">${item.name}</option>`).join('');
   gradeFilter.onchange = () => {
     syncCourseClassFilter();
@@ -716,12 +716,17 @@ function courseAppliesToGrade(course, grade) {
   return grades.map(Number).includes(Number(grade));
 }
 
+function seniorGradeLabel(grade) {
+  const number = Number(grade);
+  return [10, 11, 12].includes(number) ? `Senior ${number - 9}` : '未设置';
+}
+
 function courseGradeLabel(course) {
   const grades = (Array.isArray(course.grade) ? course.grade : [course.grade])
     .map(Number)
     .filter(Number.isFinite)
     .sort((left, right) => left - right);
-  return grades.length ? grades.map(grade => `高${grade - 9}`).join('、') : '未设置';
+  return grades.length ? grades.map(seniorGradeLabel).join('、') : '未设置';
 }
 
 function courseGradeValues(course = {}) {
@@ -735,9 +740,9 @@ function renderCourseGradeOptions(course = { grade: [10, 11, 12] }) {
   return `
     <div class="grade-range-options" role="group" aria-label="课程适用年级">
       ${[
-        [10, '高一'],
-        [11, '高二'],
-        [12, '高三'],
+        [10, 'Senior 1'],
+        [11, 'Senior 2'],
+        [12, 'Senior 3'],
       ].map(([grade, label]) => `
         <label class="grade-range-option">
           <input type="checkbox" name="grade_scope" value="${grade}" ${selected.has(grade) ? 'checked' : ''}>
@@ -781,7 +786,7 @@ function renderCourseClassOptions(course = {}) {
     ? effectiveCourseClassIds(course)
     : highTwoTeachingClasses().map(item => item.id));
   return `
-    <div class="class-range-options" role="group" aria-label="高二适用教学班">
+    <div class="class-range-options" role="group" aria-label="Senior 2 适用教学班">
       ${highTwoTeachingClasses().map(item => `
         <label class="class-range-option">
           <input type="checkbox" name="class_scope" value="${item.id}" ${selected.has(item.id) ? 'checked' : ''}>
@@ -789,7 +794,7 @@ function renderCourseClassOptions(course = {}) {
         </label>
       `).join('')}
     </div>
-    <div class="form-help">仅用于高二分层必修课；未被勾选的教学班不会生成该课程的排课任务。</div>
+    <div class="form-help">仅用于 Senior 2 分层必修课；未被勾选的教学班不会生成该课程的排课任务。</div>
   `;
 }
 
@@ -825,13 +830,13 @@ function applyCourseFilters() {
 function renderCoursesList(data, { grade = '', classId = '', total = data.length } = {}) {
   const content = document.getElementById('courses-list');
   if (data.length === 0) {
-    content.innerHTML = `<div class="empty-state"><p>${grade ? `高${Number(grade) - 9}暂无匹配课程` : '暂无课程数据'}</p></div>`;
+    content.innerHTML = `<div class="empty-state"><p>${grade ? `${seniorGradeLabel(grade)} 暂无匹配课程` : '暂无课程数据'}</p></div>`;
     return;
   }
   content.innerHTML = `
     <div class="table-container">
       <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
-        ${grade ? `高${Number(grade) - 9}课程` : '全部课程'}：显示 ${data.length}/${total} 门
+        ${grade ? `${seniorGradeLabel(grade)} 课程` : '全部课程'}：显示 ${data.length}/${total} 门
       </div>
       <table>
         <thead>
@@ -2811,7 +2816,7 @@ window.editEntity = async function(entity, id) {
               ${renderCourseGradeOptions(item)}
             </div>
             <div class="form-group" data-high-two-class-scope>
-              <label>适用班级（高二）</label>
+              <label>适用班级（Senior 2）</label>
               ${renderCourseClassOptions(item)}
             </div>
             <div class="form-group">
@@ -2997,7 +3002,7 @@ window.editEntity = async function(entity, id) {
           if (grades.includes(11)) {
             const classIds = formData.getAll('class_scope');
             if (!classIds.length) {
-              showToast('高二课程请至少选择一个适用教学班', 'error');
+              showToast('Senior 2 课程请至少选择一个适用教学班', 'error');
               return;
             }
             updateData.applicable_class_ids = classIds;
@@ -3862,7 +3867,7 @@ function init() {
           ${renderCourseGradeOptions()}
         </div>
         <div class="form-group" data-high-two-class-scope>
-          <label>适用班级（高二）</label>
+          <label>适用班级（Senior 2）</label>
           ${renderCourseClassOptions()}
         </div>
         <div class="form-group">
@@ -3895,7 +3900,7 @@ function init() {
       }
       const classIds = formData.getAll('class_scope');
       if (grades.includes(11) && !classIds.length) {
-        showToast('高二课程请至少选择一个适用教学班', 'error');
+        showToast('Senior 2 课程请至少选择一个适用教学班', 'error');
         return;
       }
       const data = {
