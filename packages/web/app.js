@@ -56,6 +56,48 @@ function showToast(message, type = 'success') {
   }, 3000);
 }
 
+let activeAiProcessingRun = 0;
+let aiProcessingTimer = null;
+
+function startAiProcessing(title) {
+  const runId = ++activeAiProcessingRun;
+  const overlay = document.getElementById('ai-processing-overlay');
+  const titleElement = document.getElementById('ai-processing-title');
+  const stageElement = document.getElementById('ai-processing-stage');
+  const elapsedElement = document.getElementById('ai-processing-elapsed');
+  const startedAt = Date.now();
+  clearInterval(aiProcessingTimer);
+  titleElement.textContent = title;
+  overlay.classList.remove('hidden');
+  const render = () => {
+    if (runId !== activeAiProcessingRun) return;
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    stageElement.textContent = elapsedSeconds < 2
+      ? '正在上传并读取工作簿…'
+      : elapsedSeconds < 6
+        ? '大模型正在理解工作表、标题与字段…'
+        : '大模型正在整理数据；请勿关闭此页面…';
+    elapsedElement.textContent = `已运行 ${elapsedSeconds} 秒`;
+  };
+  render();
+  aiProcessingTimer = setInterval(render, 250);
+  return runId;
+}
+
+function finishAiProcessing(runId, { error = false } = {}) {
+  if (runId !== activeAiProcessingRun) return;
+  const overlay = document.getElementById('ai-processing-overlay');
+  const stageElement = document.getElementById('ai-processing-stage');
+  const elapsedElement = document.getElementById('ai-processing-elapsed');
+  clearInterval(aiProcessingTimer);
+  aiProcessingTimer = null;
+  stageElement.textContent = error ? '整理失败，请查看错误提示。' : '整理完成，正在更新校验预览…';
+  elapsedElement.textContent = error ? '可修改表格后重新尝试。' : '系统校验已完成。';
+  setTimeout(() => {
+    if (runId === activeAiProcessingRun) overlay.classList.add('hidden');
+  }, error ? 1500 : 800);
+}
+
 function showModal(title, content) {
   const modal = document.getElementById('modal');
   const modalTitle = document.getElementById('modal-title');
@@ -4424,7 +4466,7 @@ window.clearElectiveSelectionImport = function() {
 
 window.organizeElectiveSelectionImportWithAi = async function() {
   if (!pendingElectiveSelectionUploadFile) return;
-  showToast('正在请求大模型整理高三 A/B/C 选课表…', 'info');
+  const aiRun = startAiProcessing('大模型正在整理高三 A/B/C 选课表');
   try {
     const formData = new FormData();
     formData.append('file', pendingElectiveSelectionUploadFile);
@@ -4434,8 +4476,10 @@ window.organizeElectiveSelectionImportWithAi = async function() {
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
     pendingElectiveSelectionImport = result.data;
     renderElectiveSelectionImportPreview();
+    finishAiProcessing(aiRun);
     showToast('大模型已整理完成，请核对预览后确认', 'success');
   } catch (error) {
+    finishAiProcessing(aiRun, { error: true });
     showToast(error.message, 'error');
   }
 };
@@ -4697,7 +4741,7 @@ window.clearApSelectionImport = function() {
 
 window.organizeApSelectionImportWithAi = async function() {
   if (!pendingApSelectionUploadFile) return;
-  showToast('正在请求大模型整理 AP 选课表…', 'info');
+  const aiRun = startAiProcessing('大模型正在整理 AP 选课表');
   try {
     const formData = new FormData();
     formData.append('file', pendingApSelectionUploadFile);
@@ -4707,8 +4751,10 @@ window.organizeApSelectionImportWithAi = async function() {
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
     pendingApSelectionImport = result.data;
     renderApSelectionImportPreview();
+    finishAiProcessing(aiRun);
     showToast('大模型已整理完成，请核对预览后确认', 'success');
   } catch (error) {
+    finishAiProcessing(aiRun, { error: true });
     showToast(error.message, 'error');
   }
 };
@@ -4902,7 +4948,7 @@ window.organizeStudentImportWithAi = async function(index) {
   if (!item?.file || item.aiOrganizing) return;
   item.aiOrganizing = true;
   renderStudentImportPreview();
-  showToast(`正在请求大模型整理 ${item.data.filename}…`, 'info');
+  const aiRun = startAiProcessing(`大模型正在整理 ${item.data.filename}`);
   try {
     const formData = new FormData();
     formData.append('file', item.file);
@@ -4914,10 +4960,12 @@ window.organizeStudentImportWithAi = async function(index) {
     if (result.data.type !== 'students') throw new Error('大模型整理后仍不是可导入的学生名单');
     pendingStudentImports[index] = { ...item, data: result.data, aiOrganizing: false };
     renderStudentImportPreview();
+    finishAiProcessing(aiRun);
     showToast('大模型已整理完成，请核对完整名单后再确认导入', 'success');
   } catch (error) {
     item.aiOrganizing = false;
     renderStudentImportPreview();
+    finishAiProcessing(aiRun, { error: true });
     showToast(error.message, 'error');
   }
 };
