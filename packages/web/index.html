@@ -22,10 +22,8 @@
           <h3>🎯 排课表</h3>
           <ul>
             <li><a href="#" data-view="welcome" class="active">🏠 首页</a></li>
-            <li><a href="#" data-view="manual-timetable">✋ 手动课表</a></li>
-            <li><a href="#" data-view="formal-timetable">📘 正式课表</a></li>
-            <li><a href="#" data-view="temp-timetable">📙 临时课表</a></li>
-            <li><a href="#" data-view="validate">✅ 数据校验</a></li>
+            <li><a href="#" data-view="manual-timetable">🗓️ 排课表</a></li>
+            <li><a href="#" data-view="past-timetables">🕘 过往课表</a></li>
           </ul>
         </div>
         <div class="nav-section">
@@ -93,8 +91,8 @@
                 <div class="welcome-card-icon">📊</div>
                 <h3>快速开始</h3>
                 <div class="quick-links">
-                  <a href="#" onclick="switchView('formal-timetable')">📘 正式课表</a>
-                  <a href="#" onclick="switchView('temp-timetable')">📙 临时课表</a>
+                  <a href="#" onclick="switchView('manual-timetable')">🗓️ 排课表</a>
+                  <a href="#" onclick="switchView('past-timetables')">🕘 过往课表</a>
                   <a href="#" onclick="switchView('students')">👨‍🎓 学生管理</a>
                   <a href="#" onclick="switchView('import')">📥 数据导入</a>
                 </div>
@@ -103,11 +101,11 @@
           </div>
         </div>
 
-        <!-- 手动课表 -->
+        <!-- 排课表 -->
         <div id="view-manual-timetable" class="view">
           <div class="manual-timetable-header">
             <div>
-              <h2>✋ 手动课表</h2>
+              <h2>🗓️ 排课表</h2>
               <p>先拖入需要人工确定的课程，再确认成为排课必要条件。确认后课程显示金色锁框，AI 只会补全剩余课程，不会移动这些课程。</p>
             </div>
             <div class="manual-timetable-actions">
@@ -115,6 +113,7 @@
               <button id="manual-unlock-plan" class="btn btn-secondary hidden" type="button">解除必要条件</button>
               <button id="manual-confirm-plan" class="btn btn-warning" type="button">🔒 确认为必要条件</button>
               <button id="manual-ai-solve" class="btn btn-primary" type="button" disabled>✨ AI 补全排课</button>
+              <button id="manual-save-schedule" class="btn btn-success" type="button" disabled>💾 储存课表</button>
             </div>
           </div>
           <div id="manual-plan-status" class="manual-plan-status" role="status"></div>
@@ -125,7 +124,7 @@
           </div>
           <div class="manual-timetable-layout">
             <section class="manual-grid-panel">
-              <div id="manual-timetable-grid" class="manual-timetable-grid" aria-label="手动课表"></div>
+              <div id="manual-timetable-grid" class="manual-timetable-grid" aria-label="排课表"></div>
             </section>
             <aside class="manual-course-panel">
               <div class="manual-course-panel-header">
@@ -143,6 +142,17 @@
               <div id="manual-course-pool" class="manual-course-pool"></div>
             </aside>
           </div>
+        </div>
+
+        <!-- 过往课表 -->
+        <div id="view-past-timetables" class="view">
+          <div class="past-timetables-header">
+            <div>
+              <h2>🕘 过往课表</h2>
+              <p>每次点击“储存课表”都会保存一份独立快照，保留当时的课程、班级、师生和排课结果。</p>
+            </div>
+          </div>
+          <div id="past-timetables-content"></div>
         </div>
 
         <!-- 正式课表 -->

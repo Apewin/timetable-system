@@ -377,6 +377,9 @@ async function loadViewData(viewName) {
     case 'manual-timetable':
       await loadManualTimetable();
       break;
+    case 'past-timetables':
+      await loadPastTimetables();
+      break;
     case 'temp-timetable':
       await loadTempTimetablePage();
       break;
@@ -755,6 +758,7 @@ function renderManualPlanControls(message = '') {
   const confirmButton = document.getElementById('manual-confirm-plan');
   const unlockButton = document.getElementById('manual-unlock-plan');
   const solveButton = document.getElementById('manual-ai-solve');
+  const saveButton = document.getElementById('manual-save-schedule');
   const clearButton = document.getElementById('manual-clear-class');
   if (confirmButton) {
     confirmButton.disabled = confirmed || !placementCount;
@@ -762,6 +766,7 @@ function renderManualPlanControls(message = '') {
   }
   if (unlockButton) unlockButton.classList.toggle('hidden', !confirmed);
   if (solveButton) solveButton.disabled = !confirmed || window._manualAiRunning === true;
+  if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true || window._manualScheduleSaving === true;
   if (clearButton) clearButton.disabled = confirmed;
   const status = document.getElementById('manual-plan-status');
   if (!status) return;
@@ -976,8 +981,8 @@ function renderManualTimetableGrid() {
 }
 
 async function loadManualTimetable() {
-  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks, students, manualPlan] = await Promise.all([
-    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'), api('/students'), api('/manual-plan'),
+  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks, students, manualPlan, status] = await Promise.all([
+    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'), api('/students'), api('/manual-plan'), api('/status'),
   ]);
   window._manualCourses = [...courses].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN'));
   window._manualTeachingAssignments = teachingAssignments;
@@ -985,6 +990,7 @@ async function loadManualTimetable() {
   window._manualSelectionBlocks = selectionBlocks;
   window._manualSections = manualPlan.catalog?.sections || [];
   window._manualPlan = manualPlan;
+  window._manualScheduleAvailable = status.solve_status === 'valid';
   const selector = document.getElementById('manual-class-select');
   const classes = [
     ...teachingClasses.map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` })),
@@ -1011,7 +1017,7 @@ async function loadManualTimetable() {
   document.getElementById('manual-course-search').oninput = renderManualCoursePool;
   document.getElementById('manual-clear-class').onclick = () => {
     const classId = manualCurrentClassId();
-    if (!classId || !confirm('清空当前班级的手动课表草稿吗？')) return;
+    if (!classId || !confirm('清空当前班级的排课草稿吗？')) return;
     const drafts = readManualDrafts();
     delete drafts[classId];
     writeManualDrafts(drafts);
@@ -1034,6 +1040,10 @@ async function loadManualTimetable() {
         body: JSON.stringify({ placements, confirmed_by: '教务用户' }),
       });
       window._manualPlan = plan;
+      // Confirming a new set of necessary conditions marks an older solved
+      // timetable stale on the server, so it must not be saved as the result
+      // of this new plan before AI completion runs again.
+      window._manualScheduleAvailable = false;
       hydrateManualDrafts(plan);
       renderManualCoursePool();
       renderManualTimetableGrid();
@@ -1083,6 +1093,7 @@ async function loadManualTimetable() {
         solve_duration_ms: result.solve_duration_ms,
         status: result.status,
       };
+      window._manualScheduleAvailable = true;
       const warning = result.ai_warnings?.length ? `；${result.ai_warnings.join('；')}` : '';
       renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，硬约束校验通过${warning}`);
       showToast(`AI 排课完成，用时 ${duration} 秒`);
@@ -1095,12 +1106,118 @@ async function loadManualTimetable() {
       clearInterval(timer);
       window._manualAiRunning = false;
       button.disabled = !manualPlanIsConfirmed();
+      const saveButton = document.getElementById('manual-save-schedule');
+      if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true;
+    }
+  };
+  document.getElementById('manual-save-schedule').onclick = async () => {
+    window._manualScheduleSaving = true;
+    renderManualPlanControls('正在储存当前完整课表快照…');
+    try {
+      const result = await api('/schedule-archives', { method: 'POST', body: '{}' });
+      const savedAt = formatArchiveDateTime(result.archive?.saved_at);
+      renderManualPlanControls(`课表已储存：${savedAt}。之后重排或修改数据不会影响这份记录。`);
+      showToast(`课表已储存（${savedAt}）`);
+    } catch {
+      renderManualPlanControls();
+    } finally {
+      window._manualScheduleSaving = false;
+      const saveButton = document.getElementById('manual-save-schedule');
+      if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true;
     }
   };
   renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
   if (!hydratedFromBackend && manualPlacementsFromDrafts().length) queueManualDraftSync();
+}
+
+function formatArchiveDateTime(value) {
+  if (!value || Number.isNaN(new Date(value).getTime())) return '未知时间';
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium', timeStyle: 'medium', hour12: false,
+  }).format(new Date(value));
+}
+
+async function loadPastTimetables() {
+  const content = document.getElementById('past-timetables-content');
+  if (!content) return;
+  content.innerHTML = '<div class="loading">正在读取已储存的课表…</div>';
+  try {
+    const archives = await api('/schedule-archives');
+    if (!archives.length) {
+      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成 AI 排课后，在“排课表”页面点击“储存课表”即可创建第一份记录。</p></div>';
+      return;
+    }
+    content.innerHTML = `
+      <div class="schedule-archive-list">
+        ${archives.map(archive => `
+          <article class="schedule-archive-card ${archive.id === window._selectedScheduleArchiveId ? 'selected' : ''}">
+            <div>
+              <h3>${archive.name || '课表存档'}</h3>
+              <p>储存时间：${formatArchiveDateTime(archive.saved_at)}</p>
+              <p>${archive.assignments_count || 0} 条学生课时 · ${archive.meetings_count || 0} 个课程时段${archive.solve_duration_ms != null ? ` · 排课用时 ${(archive.solve_duration_ms / 1000).toFixed(1)} 秒` : ''}</p>
+            </div>
+            <button class="btn btn-primary" type="button" data-open-archive="${archive.id}">查看课表</button>
+          </article>
+        `).join('')}
+      </div>
+      <div id="past-timetable-detail" class="past-timetable-detail"></div>
+    `;
+    content.querySelectorAll('[data-open-archive]').forEach(button => {
+      button.addEventListener('click', () => openPastTimetable(button.dataset.openArchive));
+    });
+    const selected = archives.find(archive => archive.id === window._selectedScheduleArchiveId);
+    if (selected) await openPastTimetable(selected.id);
+  } catch (error) {
+    content.innerHTML = `<div class="empty-state"><p>加载过往课表失败：${error.message}</p></div>`;
+  }
+}
+
+async function openPastTimetable(archiveId) {
+  const detail = document.getElementById('past-timetable-detail');
+  if (!detail) return;
+  window._selectedScheduleArchiveId = archiveId;
+  detail.innerHTML = '<div class="loading">正在载入保存时的课表…</div>';
+  try {
+    const archive = await api(`/schedule-archives/${encodeURIComponent(archiveId)}`);
+    const classes = archive.classes || [];
+    if (!classes.length) throw new Error('这份课表没有可查看的班级');
+    const previousClassId = window._selectedArchivedClassId;
+    const classId = classes.some(item => item.id === previousClassId) ? previousClassId : classes[0].id;
+    detail.innerHTML = `
+      <div class="past-timetable-toolbar">
+        <div>
+          <h3>${archive.name || '课表存档'}</h3>
+          <p>储存于 ${formatArchiveDateTime(archive.saved_at)}；显示的是当时固定下来的数据快照。</p>
+        </div>
+        <label>查看班级
+          <select id="past-timetable-class-select" class="select">
+            ${classes.map(item => `<option value="${item.id}" ${item.id === classId ? 'selected' : ''}>${item.class_type === 'teaching' ? '教学班' : '行政班'} · ${item.name || item.id}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div id="past-timetable-grid"></div>
+    `;
+    const selector = document.getElementById('past-timetable-class-select');
+    const loadClass = async () => {
+      window._selectedArchivedClassId = selector.value;
+      const item = classes.find(entry => entry.id === selector.value);
+      const data = await api(`/schedule-archives/${encodeURIComponent(archiveId)}/timetable/class/${encodeURIComponent(selector.value)}`);
+      renderDetailedTimetable(
+        'past-timetable-grid', data,
+        `${item?.name || selector.value} 的课表`,
+        `保存于 ${formatArchiveDateTime(archive.saved_at)} · ${item?.class_type === 'teaching' ? '教学班' : '行政班'}`,
+      );
+    };
+    selector.onchange = () => { loadClass().catch(() => {}); };
+    await loadClass();
+    document.querySelectorAll('.schedule-archive-card').forEach(card => {
+      card.classList.toggle('selected', card.querySelector('[data-open-archive]')?.dataset.openArchive === archiveId);
+    });
+  } catch (error) {
+    detail.innerHTML = `<div class="empty-state"><p>无法打开这份过往课表：${error.message}</p></div>`;
+  }
 }
 
 // 加载欢迎页面

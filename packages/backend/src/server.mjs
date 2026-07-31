@@ -36,6 +36,7 @@ import {
   normalizeManualPlacements,
   resolveManualPlan,
 } from './manual-plan.mjs';
+import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from './schedule-archive.mjs';
 
 const app = express();
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
@@ -585,7 +586,10 @@ app.get('/api/status', (_req, res) => reply(res, () => {
     school: state.meta?.school,
     last_stage: state.solve_status === 'stale' ? 'needs_resolve' : state.solve_status === 'valid' ? 'timetable' : state.section_plan ? 'sections' : 'not_run',
       counts: Object.fromEntries(['teachers', 'rooms', 'courses', 'students', 'admin_classes', 'teaching_classes', 'selection_blocks', 'constraints']
-      .map(key => [key, state[key]?.length || 0]).concat([['assignments', state.schedule?.assignments?.length || state.assignments?.length || 0]])),
+      .map(key => [key, state[key]?.length || 0]).concat([
+        ['assignments', state.schedule?.assignments?.length || state.assignments?.length || 0],
+        ['schedule_archives', state.schedule_archives?.length || 0],
+      ])),
     solve_status: state.solve_status || 'not_run',
   };
 }));
@@ -1086,6 +1090,61 @@ app.post('/api/swap', (req, res) => reply(res, () => {
 app.get('/api/timetable/:by/:id', (req, res) => reply(res, () => {
   const state = repository.read();
   return timetableGrid(state, req.params.by, req.params.id);
+}));
+
+function nextScheduleArchiveId(archives, savedAt) {
+  const base = `ARCHIVE_${savedAt.replace(/[^0-9]/g, '')}`;
+  const ids = new Set(archives.map(archive => archive.id));
+  let id = base;
+  let suffix = 2;
+  while (ids.has(id)) id = `${base}_${suffix++}`;
+  return id;
+}
+
+app.get('/api/schedule-archives', (_req, res) => reply(res, () => {
+  const archives = repository.read().schedule_archives || [];
+  return archives
+    .map(archiveSummary)
+    .sort((left, right) => String(right.saved_at).localeCompare(String(left.saved_at)));
+}));
+
+app.post('/api/schedule-archives', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  if (!state.schedule || state.solve_status !== 'valid') {
+    throw new Error('当前没有通过校验的完整课表；请完成 AI 排课后再储存');
+  }
+  const validation = validateSchedule(problemForSchedule(state, state.schedule), state.schedule);
+  if (!validation.ok) {
+    throw new Error(`当前课表未通过硬约束校验：${validation.hard_violations[0]?.message || '未知错误'}`);
+  }
+  const savedAt = new Date().toISOString();
+  const archives = state.schedule_archives || [];
+  const schedule = { ...state.schedule, validation };
+  const archive = createScheduleArchive({ ...state, schedule }, {
+    id: nextScheduleArchiveId(archives, savedAt),
+    savedAt,
+  });
+  repository.write({ ...state, schedule_archives: [archive, ...archives] });
+  return { message: '课表已储存到过往课表', archive: archiveSummary(archive) };
+}));
+
+app.get('/api/schedule-archives/:archiveId', (req, res) => reply(res, () => {
+  const archive = (repository.read().schedule_archives || [])
+    .find(item => item.id === req.params.archiveId);
+  if (!archive) throw new Error('未找到该过往课表');
+  const classes = [
+    ...(archive.context?.teaching_classes || []).map(item => ({ ...item, class_type: 'teaching' })),
+    ...(archive.context?.admin_classes || []).map(item => ({ ...item, class_type: 'admin' })),
+  ].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id), 'zh-CN'));
+  return { ...archiveSummary(archive), classes };
+}));
+
+app.get('/api/schedule-archives/:archiveId/timetable/:by/:id', (req, res) => reply(res, () => {
+  const archive = (repository.read().schedule_archives || [])
+    .find(item => item.id === req.params.archiveId);
+  if (!archive) throw new Error('未找到该过往课表');
+  const data = timetableGrid(stateForScheduleArchive(archive), req.params.by, req.params.id);
+  return { ...data, archived: true, archive: archiveSummary(archive) };
 }));
 
 function parseUploadedWorkbook(workbook, filename, state) {

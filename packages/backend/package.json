@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.mjs",
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/state-repository.mjs && node --check src/rule-schema.mjs && node --check src/rule-compiler.mjs && node --check src/section-builder.mjs && node --check src/schedule-validator.mjs && node --check src/initial-schedule.mjs && node --check src/cpsat-solver.mjs && node --check src/problem-builder.mjs && node --check src/manual-plan.mjs && node --check src/ap-selection-import.mjs && node --check src/elective-selection-import.mjs && node --check src/llm-workbook-interpreter.mjs",
+    "check": "node --check src/server.mjs && node --check src/state-repository.mjs && node --check src/rule-schema.mjs && node --check src/rule-compiler.mjs && node --check src/section-builder.mjs && node --check src/schedule-validator.mjs && node --check src/initial-schedule.mjs && node --check src/cpsat-solver.mjs && node --check src/problem-builder.mjs && node --check src/manual-plan.mjs && node --check src/schedule-archive.mjs && node --check src/ap-selection-import.mjs && node --check src/elective-selection-import.mjs && node --check src/llm-workbook-interpreter.mjs",
     "test": "node --test test/**/*.test.mjs",
     "test:integration": "node integration/full-school.mjs"
   },
