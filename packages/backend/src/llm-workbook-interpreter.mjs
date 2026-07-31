@@ -200,6 +200,7 @@ export function workbookFromInterpretation(interpretation) {
 async function callChat(messages, config, fetchImpl, { jsonMode = false } = {}) {
   const endpoint = `${validateApiUrl(config.apiUrl)}/chat/completions`;
   let lastChoice;
+  let lastPayloadDiagnostic = '';
   // DeepSeek documents that JSON mode can occasionally return empty content.
   // Retrying once here is safe: this endpoint has no side effect and the
   // workbook is only converted into a preview for human confirmation.
@@ -216,21 +217,29 @@ async function callChat(messages, config, fetchImpl, { jsonMode = false } = {}) 
         messages,
         temperature: 0,
         max_tokens: 12_000,
-        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        // Structured extraction does not need a long hidden reasoning trace.
+        // On retry, omit response_format because DeepSeek documents that its
+        // JSON mode can occasionally return an empty response; the prompt
+        // still requires a JSON-only answer and the result is strictly parsed.
+        ...(jsonMode ? { thinking: { type: 'disabled' } } : {}),
+        ...(jsonMode && attempt === 0 ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: AbortSignal.timeout(45_000),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || `模型 API 请求失败（HTTP ${response.status}）`);
+    if (payload.error?.message) throw new Error(payload.error.message);
     const choice = payload.choices?.[0];
     const content = text(choice?.message?.content);
     if (content) return content;
     lastChoice = choice;
+    lastPayloadDiagnostic = choice
+      ? `结束原因：${text(choice.finish_reason) || '未知'}`
+      : `HTTP ${response.status}，响应未包含 choices`;
   }
-  const finishReason = text(lastChoice?.finish_reason) || '未知';
   const reasoningOnly = text(lastChoice?.message?.reasoning_content) ? '；模型仅返回了推理内容' : '';
   const retryNote = jsonMode ? '已自动重试 1 次，' : '';
-  throw new Error(`模型 API 未返回可读取内容（${retryNote}结束原因：${finishReason}${reasoningOnly}）`);
+  throw new Error(`模型 API 未返回可读取内容（${retryNote}${lastPayloadDiagnostic || '响应结构未知'}${reasoningOnly}）`);
 }
 
 export async function interpretWorkbook(workbook, {
