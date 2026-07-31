@@ -23,11 +23,19 @@ import {
   parseElectiveSelectionWorkbook,
 } from './elective-selection-import.mjs';
 import {
+  AI_SCHEDULING_STRATEGY_PROMPT,
   getAiConfig,
   interpretWorkbook,
+  planSchedulingStrategy,
   saveAiConfig,
   testAiConnection,
 } from './llm-workbook-interpreter.mjs';
+import {
+  emptyManualPlan,
+  mergedMeetingLocks,
+  normalizeManualPlacements,
+  resolveManualPlan,
+} from './manual-plan.mjs';
 
 const app = express();
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
@@ -719,35 +727,70 @@ app.post('/api/elective-sections/:id/move-student', (req, res) => reply(res, asy
   };
 }));
 
-app.post('/api/solve', (req, res) => reply(res, async () => {
-  const state = repository.read();
-  const rules = req.body?.rules ?? req.body?.constraints ?? state.constraints ?? [];
+function activeMeetingLocks(state, extraLocks = []) {
+  const manualPlan = state.manual_plan || emptyManualPlan();
+  const savedScheduleLocks = (state.schedule?.locks || [])
+    .filter(lock => lock.origin !== 'manual' || manualPlan.status === 'confirmed');
+  const confirmedManualLocks = manualPlan.status === 'confirmed' ? manualPlan.locks || [] : [];
+  return mergedMeetingLocks(savedScheduleLocks, confirmedManualLocks, extraLocks);
+}
+
+function problemWithAiStrategy(problem, strategy) {
+  if (!strategy) return problem;
+  const weightOverrides = strategy.soft_rule_weight_overrides || {};
+  const rules = (problem.rules || []).map(rule => (
+    !rule.hard && Object.hasOwn(weightOverrides, rule.id)
+      ? { ...rule, weight: weightOverrides[rule.id] }
+      : rule
+  ));
+  for (const [index, sectionId] of (strategy.priority_section_ids || []).entries()) {
+    rules.push({
+      id: `ai_priority_${index + 1}_${sectionId}`,
+      name: `AI 搜索优先级 ${index + 1}`,
+      type: 'priority',
+      hard: false,
+      weight: 0,
+      scope: 'section',
+      target_ids: [sectionId],
+      section_target_ids: [sectionId],
+      params: { rank: index + 1 },
+      unmatched: false,
+    });
+  }
+  return { ...problem, rules };
+}
+
+async function solveAndPersist(state, body = {}, { strategy = null, strategyWarnings = [] } = {}) {
+  const rules = body.rules ?? body.constraints ?? state.constraints ?? [];
   validateRules(rules);
   const problem = buildSchedulingProblem(state, rules);
-  const approvedRuleIds = req.body?.approved_rule_relaxations || [];
+  const approvedRuleIds = body.approved_rule_relaxations || [];
   if (!Array.isArray(approvedRuleIds) || !approvedRuleIds.every(id => typeof id === 'string')) {
     throw new Error('approved_rule_relaxations 必须是规则 ID 数组');
   }
   const waitingForApproval = approvalGatedRules(problem, approvedRuleIds);
-  // An approved relaxation is deliberately absent from the solve model.  It
-  // remains in `problem` for independent validation and audit reporting, but
-  // CP-SAT must not spend time optimizing a rule the operator has waived.
-  const guardedProblem = enforceApprovalGates(relaxApprovedRules(problem, approvedRuleIds));
-  const requestedSeconds = Number(req.body?.max_time_seconds ?? (req.body?.timeout ? Number(req.body.timeout) / 1000 : 120));
+  // AI may influence decision order and temporary soft weights only. Approval
+  // gates and manual locks remain executable solver constraints.
+  const guardedProblem = problemWithAiStrategy(
+    enforceApprovalGates(relaxApprovedRules(problem, approvedRuleIds)),
+    strategy,
+  );
+  const requestedSeconds = Number(body.max_time_seconds ?? (body.timeout ? Number(body.timeout) / 1000 : 120));
+  const lockedMeetings = activeMeetingLocks(state);
   const solveStartedAt = performance.now();
   const solution = await solveSchedule(guardedProblem, {
     maxTimeSeconds: Math.min(600, Math.max(5, Number.isFinite(requestedSeconds) ? requestedSeconds : 120)),
-    // Soft rules are the normal preference layer.  Callers may explicitly
-    // disable optimization for a fast feasibility diagnostic, but the web UI
-    // should never silently discard configured priorities.
-    optimizeSoft: req.body?.optimize_soft !== false,
-    // The initial section roster is only a balanced preview.  Normal solving
-    // jointly assigns interchangeable student cohorts and meeting times;
-    // locking a roster is an explicit diagnostic/administrative action.
-    freezeMembership: req.body?.lock_section_rosters === true,
-    lockedMeetings: state.schedule?.locks || [],
+    optimizeSoft: body.optimize_soft !== false,
+    freezeMembership: body.lock_section_rosters === true,
+    lockedMeetings,
   });
   const solveDurationMs = Math.round(performance.now() - solveStartedAt);
+  const diagnosticFields = {
+    solve_duration_ms: solveDurationMs,
+    manual_lock_count: lockedMeetings.filter(lock => lock.origin === 'manual').length,
+    ai_strategy: strategy,
+    ai_warnings: strategyWarnings,
+  };
   if (!solution.ok) {
     if (waitingForApproval.length) return {
       solved: false,
@@ -755,19 +798,19 @@ app.post('/api/solve', (req, res) => reply(res, async () => {
       reason: '在不破坏受保护软规则的前提下无解；系统没有自动放宽规则。',
       blocked_by: waitingForApproval.map(rule => ({ id: rule.id, name: rule.name || rule.id, type: rule.type, scope: rule.scope })),
       diagnostic: solution.reason || solution.status,
-      solve_duration_ms: solveDurationMs,
+      ...diagnosticFields,
     };
     return {
       solved: false,
       status: solution.status,
       reason: solution.reason || '未在时限内找到满足硬约束的课表',
-      solve_duration_ms: solveDurationMs,
+      ...diagnosticFields,
     };
   }
-  const validation = validateSchedule(problem, { ...solution, locks: state.schedule?.locks || [] });
+  const validation = validateSchedule(problem, { ...solution, locks: lockedMeetings });
   if (!validation.ok) throw new Error(`求解器结果未通过独立校验: ${validation.hard_violations[0]?.message || '未知错误'}`);
   const schedule = {
-    version: 1,
+    version: (state.schedule?.version || 0) + 1,
     created_at: new Date().toISOString(),
     solver_status: solution.status,
     solve_duration_ms: solveDurationMs,
@@ -776,25 +819,203 @@ app.post('/api/solve', (req, res) => reply(res, async () => {
     meetings: solution.meetings,
     assignments: solution.assignments,
     validation,
-    relaxation_approvals: (approvedRuleIds || []).filter(id =>
+    relaxation_approvals: approvedRuleIds.filter(id =>
       (problem.rules || []).some(rule => rule.id === id && rule.requires_approval_to_relax === true))
       .map(rule_id => ({ rule_id, approved_at: new Date().toISOString() })),
-    locks: state.schedule?.locks || [],
+    locks: lockedMeetings,
+    ai_strategy: strategy,
+    ai_warnings: strategyWarnings,
   };
-  repository.write({ ...state, assignments: solution.assignments, schedule, solve_status: 'valid' });
+  const manualPlan = state.manual_plan?.status === 'confirmed'
+    ? {
+      ...state.manual_plan,
+      last_solve: {
+        solved_at: schedule.created_at,
+        schedule_version: schedule.version,
+        solve_duration_ms: solveDurationMs,
+        status: solution.status,
+      },
+    }
+    : state.manual_plan;
+  repository.write({
+    ...state,
+    ...(manualPlan ? { manual_plan: manualPlan } : {}),
+    assignments: solution.assignments,
+    schedule,
+    solve_status: 'valid',
+  });
   return {
     solved: true,
     status: solution.status,
     assignments: solution.assignments,
     validation,
-    // Kept at the top level for the existing formal-solve page while the
-    // canonical, richer result remains under `validation`.
     hard_violations: validation.hard_violations,
     soft_violations: validation.soft_violations,
     soft_score: validation.soft_score,
     approved_rule_relaxations: schedule.relaxation_approvals.map(item => item.rule_id),
-    solve_duration_ms: solveDurationMs,
+    ...diagnosticFields,
   };
+}
+
+app.post('/api/solve', (req, res) => reply(res, async () =>
+  solveAndPersist(repository.read(), req.body || {})));
+
+function manualEditingProblem(state) {
+  try {
+    return {
+      problem: buildSchedulingProblem(state, state.constraints || []),
+      catalog_warning: null,
+    };
+  } catch (error) {
+    if (!(state.schedule?.sections || []).length) throw error;
+    // Manual planning is intentionally the first scheduling step, so the page
+    // must still open while other inputs are incomplete. A stale generated
+    // section catalog is safe for drafting because any later input edit marks
+    // confirmed locks stale and requires explicit re-confirmation.
+    return {
+      problem: {
+        slots: Array.from({ length: 50 }, (_, index) => ({
+          id: `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`,
+          day: Math.floor(index / 10) + 1,
+          period: index % 10 + 1,
+        })),
+        sections: state.schedule.sections,
+        rooms: state.rooms || [],
+        rules: [],
+      },
+      catalog_warning: `当前输入尚未通过完整建模校验，手动草稿暂用上一次 section 目录：${error.message}`,
+    };
+  }
+}
+
+function manualPlanData(state) {
+  const { problem, catalog_warning: catalogWarning } = manualEditingProblem(state);
+  return {
+    ...(state.manual_plan || emptyManualPlan()),
+    ai: {
+      configured: getAiConfig().configured,
+      prompt_version: 'manual-lock-strategy-v1',
+      prompt: AI_SCHEDULING_STRATEGY_PROMPT,
+    },
+    catalog: {
+      warning: catalogWarning,
+      sections: problem.sections.map(section => ({
+        id: section.id,
+        course_id: section.course_id,
+        class_id: section.class_id,
+        class_type: section.class_type,
+        grades: section.grades,
+        weekly_hours: section.weekly_hours,
+        teacher_id: section.teacher_id,
+      })),
+    },
+  };
+}
+
+app.get('/api/manual-plan', (_req, res) => reply(res, () =>
+  manualPlanData(repository.read())));
+
+app.put('/api/manual-plan/draft', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const current = state.manual_plan || emptyManualPlan();
+  if (current.status === 'confirmed') {
+    throw new Error('必要条件已经确认；如需修改，请先点击“解除必要条件”');
+  }
+  const { problem } = manualEditingProblem(state);
+  const resolved = resolveManualPlan(state, problem, req.body?.placements || []);
+  const manualPlan = {
+    ...current,
+    status: 'draft',
+    draft_revision: (current.draft_revision || 0) + 1,
+    updated_at: new Date().toISOString(),
+    placements: resolved.placements,
+    locks: [],
+    issues: resolved.issues,
+    counts: resolved.counts,
+  };
+  repository.write({ ...state, manual_plan: manualPlan });
+  return manualPlanData({ ...state, manual_plan: manualPlan });
+}));
+
+app.post('/api/manual-plan/confirm', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const current = state.manual_plan || emptyManualPlan();
+  const rawPlacements = req.body?.placements ?? current.placements;
+  const { problem } = manualEditingProblem(state);
+  const resolved = resolveManualPlan(state, problem, rawPlacements);
+  if (!resolved.placements.length) throw new Error('手动课表还是空的，没有可确认为必要条件的课程');
+  if (resolved.issues.length) {
+    const details = resolved.issues.slice(0, 3).map(issue => issue.message).join('；');
+    throw new Error(`手动课表存在 ${resolved.issues.length} 项直接冲突，不能锁定：${details}`);
+  }
+  const confirmedAt = new Date().toISOString();
+  const manualPlan = {
+    ...current,
+    version: (current.version || 0) + 1,
+    draft_revision: (current.draft_revision || 0) + 1,
+    status: 'confirmed',
+    placements: resolved.placements,
+    locks: resolved.locks,
+    issues: [],
+    counts: resolved.counts,
+    confirmed_at: confirmedAt,
+    confirmed_by: importText(req.body?.confirmed_by) || '教务用户',
+    last_solve: null,
+  };
+  repository.write({
+    ...state,
+    manual_plan: manualPlan,
+    ...(state.schedule ? { solve_status: 'stale' } : {}),
+  });
+  return manualPlanData({ ...state, manual_plan: manualPlan });
+}));
+
+app.post('/api/manual-plan/unlock', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const current = state.manual_plan || emptyManualPlan();
+  if (current.status !== 'confirmed') return manualPlanData(state);
+  const manualKeys = new Set((current.locks || []).map(lock => `${lock.section_id}\u0000${lock.slot_id}`));
+  const schedule = state.schedule
+    ? {
+      ...state.schedule,
+      locks: (state.schedule.locks || []).filter(lock =>
+        lock.origin !== 'manual' && !manualKeys.has(`${lock.section_id}\u0000${lock.slot_id}`)),
+    }
+    : state.schedule;
+  const manualPlan = {
+    ...current,
+    status: 'draft',
+    locks: [],
+    issues: [],
+    confirmed_at: null,
+    confirmed_by: null,
+    last_solve: null,
+    updated_at: new Date().toISOString(),
+  };
+  repository.write({ ...state, manual_plan: manualPlan, ...(schedule ? { schedule } : {}) });
+  return manualPlanData({ ...state, manual_plan: manualPlan, ...(schedule ? { schedule } : {}) });
+}));
+
+app.post('/api/manual-plan/ai-solve', (req, res) => reply(res, async () => {
+  const state = repository.read();
+  const manualPlan = state.manual_plan || emptyManualPlan();
+  if (manualPlan.status !== 'confirmed' || !(manualPlan.locks || []).length) {
+    throw new Error('请先点击“确认为必要条件”，成功出现金色锁框后再进行 AI 补全排课');
+  }
+  const problem = buildSchedulingProblem(state, state.constraints || []);
+  let strategy = null;
+  const strategyWarnings = [];
+  if (req.body?.use_ai_strategy !== false) {
+    try {
+      strategy = await planSchedulingStrategy(problem, {
+        locks: manualPlan.locks,
+        instruction: req.body?.instruction || '在不移动手动锁定课程的前提下补全全部课程，并优先处理高约束和跨年级教师课程。',
+      });
+    } catch (error) {
+      strategyWarnings.push(`大模型策略阶段未采用：${error.message}；已自动使用确定性约束求解器继续排课。`);
+    }
+  }
+  return solveAndPersist(state, req.body || {}, { strategy, strategyWarnings });
 }));
 
 app.get('/api/validate', (_req, res) => reply(res, () => {
@@ -820,7 +1041,7 @@ app.post('/api/lock', (req, res) => reply(res, () => {
   const assignment = state.schedule.assignments.find(item => item.task_id === req.body?.task_id && item.slot_id === req.body?.slot_id);
   if (!assignment) throw new Error('找不到要锁定的课时');
   const locks = state.schedule.locks || [];
-  const lock = { section_id: assignment.section_id, slot_id: assignment.slot_id };
+  const lock = { section_id: assignment.section_id, slot_id: assignment.slot_id, origin: 'schedule' };
   if (!locks.some(item => item.section_id === lock.section_id && item.slot_id === lock.slot_id)) locks.push(lock);
   const schedule = { ...state.schedule, locks };
   const problem = buildSchedulingProblem(state, schedule.rules || state.constraints || []);
@@ -835,6 +1056,10 @@ app.post('/api/unlock', (req, res) => reply(res, () => {
   if (state.solve_status !== 'valid') throw new Error('当前输入已变更，旧课表已过期；请先重新排课再解锁');
   const assignment = state.schedule.assignments.find(item => item.task_id === req.body?.task_id && item.slot_id === req.body?.slot_id);
   if (!assignment) throw new Error('找不到要解锁的课时');
+  if ((state.manual_plan?.locks || []).some(lock =>
+    lock.section_id === assignment.section_id && lock.slot_id === assignment.slot_id)) {
+    throw new Error('该课时属于手动课表必要条件；请在“手动课表”中解除必要条件');
+  }
   const locks = (state.schedule.locks || []).filter(lock => !(lock.section_id === assignment.section_id && lock.slot_id === assignment.slot_id));
   repository.write({ ...state, schedule: { ...state.schedule, locks } });
   return { message: '已解锁', section_id: assignment.section_id, slot_id: assignment.slot_id };
@@ -1117,6 +1342,20 @@ function changedState(state, entity, items) {
     validateCourseClassScopes(next);
   }
   if (state.schedule) next.solve_status = 'stale';
+  if (state.manual_plan?.status === 'confirmed') {
+    next.manual_plan = {
+      ...state.manual_plan,
+      status: 'stale',
+      issues: [{
+        code: 'INPUT_CHANGED',
+        message: `${entity} 数据已变更，原必要条件必须重新校验并确认`,
+      }],
+      locks: [],
+      confirmed_at: null,
+      confirmed_by: null,
+      last_solve: null,
+    };
+  }
   return next;
 }
 

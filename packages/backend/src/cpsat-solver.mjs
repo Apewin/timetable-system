@@ -324,8 +324,10 @@ export async function solveSchedule(problem, options = {}) {
   const preflight = workloadInfeasibility(problem);
   if (preflight) return { ok: false, sections: [], meetings: [], assignments: [], ...preflight };
   const hasMembershipLocks = (problem.sections || []).some(section => (section.locked_student_ids || []).length);
-  if (options.useConstructiveSeed !== false && !(options.lockedMeetings || []).length && !hasMembershipLocks) {
-    const constructed = constructInitialSchedule(problem);
+  if (options.useConstructiveSeed !== false && !hasMembershipLocks) {
+    const constructed = constructInitialSchedule(problem, {
+      lockedMeetings: options.lockedMeetings || [],
+    });
     if (constructed) return { ok: true, status: 'CONSTRUCTIVE_FEASIBLE', ...constructed };
   }
   const model = new CpModel();

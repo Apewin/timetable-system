@@ -41,6 +41,25 @@ test('keeps a locked section meeting at its locked slot', async () => {
   assert.equal(validateSchedule(problem, { ...solution, locks: [{ section_id: 'LOCKED', slot_id: 'D1P7' }] }).ok, true);
 });
 
+test('constructive schedule honors locked meetings instead of disabling the fast path', async () => {
+  const problem = {
+    slots,
+    rooms: [{ id: 'R1', capacity: 30 }],
+    rules: [],
+    sections: [{
+      id: 'LOCKED_FAST', course_id: 'C', teacher_id: 'T', class_type: 'teaching',
+      weekly_hours: 2, student_ids: ['S'], eligible_student_ids: [],
+      room_id: 'R1', room_candidates: ['R1'],
+    }],
+  };
+  const locks = [{ section_id: 'LOCKED_FAST', slot_id: 'D1P7' }];
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5, lockedMeetings: locks });
+  assert.equal(solution.ok, true);
+  assert.equal(solution.status, 'CONSTRUCTIVE_FEASIBLE');
+  assert.ok(solution.meetings.some(meeting => meeting.slot_id === 'D1P7'));
+  assert.equal(validateSchedule(problem, { ...solution, locks }).ok, true);
+});
+
 test('keeps an administrator-locked student in the selected parallel section', async () => {
   const problem = {
     slots,

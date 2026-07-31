@@ -397,6 +397,10 @@ function writeManualDrafts(drafts) {
   localStorage.setItem(MANUAL_TIMETABLE_STORAGE_KEY, JSON.stringify(drafts));
 }
 
+function manualPlanIsConfirmed() {
+  return window._manualPlan?.status === 'confirmed';
+}
+
 function manualSlotId(day, period) { return `D${day}P${period}`; }
 
 function manualCurrentClassId() {
@@ -413,13 +417,26 @@ function manualCoursesForCurrentClass(courses) {
   return courses.filter(course => courseAppliesToGrade(course, currentClass.grade));
 }
 
-function manualCoursePoolItems(courses, selectionBlocks = []) {
+function manualSectionsForCourse(classInfo, courseId) {
+  return (window._manualSections || []).filter(section => {
+    if (section.course_id !== courseId) return false;
+    if (['ap', 'elective'].includes(section.class_type)) {
+      return !(section.grades || []).length || section.grades.map(Number).includes(Number(classInfo?.grade));
+    }
+    return section.class_id === classInfo?.id && section.class_type === classInfo?.class_type;
+  });
+}
+
+function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) {
   const courseById = new Map(courses.map(course => [course.id, course]));
   const bundledCourseIds = new Set();
   const bundles = [];
   const addBundle = (id, courseIds, name) => {
     const bundleCourses = courseIds.map(courseId => courseById.get(courseId)).filter(Boolean);
     if (bundleCourses.length < 2) return;
+    const sectionIds = bundleCourses.flatMap(course =>
+      manualSectionsForCourse(classInfo, course.id).map(section => section.id));
+    if (!sectionIds.length) return;
     bundleCourses.forEach(course => bundledCourseIds.add(course.id));
     bundles.push({
       id: `bundle:${id}`,
@@ -427,6 +444,7 @@ function manualCoursePoolItems(courses, selectionBlocks = []) {
       name: bundleCourses.map(course => course.name || course.id).join(' / '),
       group_name: name,
       course_ids: bundleCourses.map(course => course.id),
+      section_ids: [...new Set(sectionIds)],
       weekly_hours: Math.max(...bundleCourses.map(course => Number(course.weekly_hours) || 0)),
       category: 'elective',
     });
@@ -451,14 +469,29 @@ function manualCoursePoolItems(courses, selectionBlocks = []) {
 
   const individualCourses = courses
     .filter(course => !bundledCourseIds.has(course.id))
-    .map(course => ({
-      id: course.id,
-      kind: 'course',
-      name: course.name || course.id,
-      course_ids: [course.id],
-      weekly_hours: Number(course.weekly_hours) || 0,
-      category: manualCourseCategory(course),
-    }));
+    .flatMap(course => {
+      const sections = manualSectionsForCourse(classInfo, course.id);
+      if (!sections.length) return [];
+      const category = manualCourseCategory(course, classInfo?.id);
+      if (sections.length === 1) return [{
+        id: course.id,
+        kind: 'course',
+        name: course.name || course.id,
+        course_ids: [course.id],
+        section_ids: [sections[0].id],
+        weekly_hours: Number(course.weekly_hours) || 0,
+        category,
+      }];
+      return sections.map((section, index) => ({
+        id: `section:${section.id}`,
+        kind: 'section',
+        name: `${course.name || course.id} · Section ${index + 1}`,
+        course_ids: [course.id],
+        section_ids: [section.id],
+        weekly_hours: Number(course.weekly_hours) || 0,
+        category,
+      }));
+    });
   return [...bundles, ...individualCourses].sort((left, right) =>
     left.name.localeCompare(right.name, 'zh-CN'));
 }
@@ -468,11 +501,12 @@ function manualPoolItemLabel(item) {
 }
 
 function manualStoredItem(itemId, classId = manualCurrentClassId()) {
-  const activeItems = window._manualPoolItems || [];
-  const allItems = window._manualAllPoolItems || [];
-  const course = (window._manualCourses || []).find(item => item.id === itemId);
-  const stored = activeItems.find(item => item.id === itemId)
-    || allItems.find(item => item.id === itemId);
+  const items = manualItemsForClass(classId);
+  const courseId = itemId?.startsWith('section:')
+    ? window._manualSections?.find(section => `section:${section.id}` === itemId)?.course_id
+    : itemId;
+  const course = (window._manualCourses || []).find(item => item.id === courseId);
+  const stored = items.find(item => item.id === itemId);
   if (stored) {
     return stored.kind === 'course' && course
       ? { ...stored, category: manualCourseCategory(course, classId) }
@@ -482,10 +516,23 @@ function manualStoredItem(itemId, classId = manualCurrentClassId()) {
       id: itemId,
       kind: 'course',
       name: course.name || itemId,
-      course_ids: [itemId],
+      course_ids: [course.id],
+      section_ids: itemId?.startsWith('section:')
+        ? [itemId.slice('section:'.length)]
+        : manualSectionsForCourse(window._manualClassesById?.get(classId), course.id).map(section => section.id),
       weekly_hours: course.weekly_hours,
       category: manualCourseCategory(course, classId),
     } : null;
+}
+
+function manualItemsForClass(classId) {
+  const classInfo = window._manualClassesById?.get(classId);
+  if (!classInfo) return [];
+  return manualCoursePoolItems(
+    (window._manualCourses || []).filter(course => courseAppliesToGrade(course, classInfo.grade)),
+    window._manualSelectionBlocks || [],
+    classInfo,
+  );
 }
 
 function manualAssignmentClassIds(assignment = {}) {
@@ -619,15 +666,17 @@ function renderManualCoursePool() {
   const items = (window._manualPoolItems || []).filter(item =>
     !keyword || `${item.name} ${item.group_name || ''} ${(item.course_ids || []).join(' ')}`.toLowerCase().includes(keyword));
   count.textContent = `${items.length} 项`;
+  const locked = manualPlanIsConfirmed();
   pool.innerHTML = items.map(item => {
     const category = item.category;
     return `
-    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''}" draggable="true" data-manual-item-id="${item.id}">
+    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${locked ? 'is-disabled' : ''}" draggable="${locked ? 'false' : 'true'}" data-manual-item-id="${item.id}">
       <div class="manual-course-name">${item.name}</div>
-      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设` : `${item.course_ids[0]} · ${item.weekly_hours || 0} 节/周`}</div>
+      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设` : `${item.section_ids?.[0] || item.course_ids[0]} · ${item.weekly_hours || 0} 节/周`}</div>
     </div>
   `;
   }).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
+  if (locked) return;
   pool.querySelectorAll('.manual-course-card').forEach(card => {
     card.addEventListener('dragstart', event => {
       event.dataTransfer.effectAllowed = 'copy';
@@ -636,29 +685,134 @@ function renderManualCoursePool() {
   });
 }
 
+function manualPlacementsFromDrafts() {
+  const drafts = readManualDrafts();
+  const placements = [];
+  for (const [classId, draft] of Object.entries(drafts)) {
+    for (const [slotId, itemId] of Object.entries(draft || {})) {
+      const item = manualStoredItem(itemId, classId);
+      if (!item) throw new Error(`${classId} 的 ${slotId} 引用了已不存在的课程项 ${itemId}`);
+      placements.push({
+        class_id: classId,
+        slot_id: slotId,
+        item_id: item.id,
+        item_name: item.name,
+        course_ids: item.course_ids || [],
+        section_ids: item.section_ids || [],
+      });
+    }
+  }
+  return placements;
+}
+
+function hydrateManualDrafts(plan) {
+  if (!(plan?.placements || []).length) return false;
+  const drafts = {};
+  for (const placement of plan.placements) {
+    drafts[placement.class_id] = {
+      ...(drafts[placement.class_id] || {}),
+      [placement.slot_id]: placement.item_id,
+    };
+  }
+  writeManualDrafts(drafts);
+  return true;
+}
+
+let manualDraftSyncTimer = null;
+function queueManualDraftSync() {
+  if (manualPlanIsConfirmed()) return;
+  clearTimeout(manualDraftSyncTimer);
+  manualDraftSyncTimer = setTimeout(async () => {
+    try {
+      const plan = await api('/manual-plan/draft', {
+        method: 'PUT',
+        body: JSON.stringify({ placements: manualPlacementsFromDrafts() }),
+      });
+      window._manualPlan = plan;
+      renderManualPlanControls();
+    } catch {
+      // api() already presents the backend mapping/validation error.
+    }
+  }, 250);
+}
+
+function manualLockedPlacementKeys() {
+  if (!manualPlanIsConfirmed()) return new Set();
+  return new Set((window._manualPlan.placements || []).map(placement =>
+    `${placement.class_id}\u0000${placement.slot_id}\u0000${placement.item_id}`));
+}
+
+function manualPlacementIsLocked(classId, slotId, itemId) {
+  return manualLockedPlacementKeys().has(`${classId}\u0000${slotId}\u0000${itemId}`);
+}
+
+function renderManualPlanControls(message = '') {
+  const plan = window._manualPlan || { status: 'draft', placements: [], locks: [] };
+  const confirmed = plan.status === 'confirmed';
+  const placementCount = (() => {
+    try { return manualPlacementsFromDrafts().length; } catch { return (plan.placements || []).length; }
+  })();
+  const confirmButton = document.getElementById('manual-confirm-plan');
+  const unlockButton = document.getElementById('manual-unlock-plan');
+  const solveButton = document.getElementById('manual-ai-solve');
+  const clearButton = document.getElementById('manual-clear-class');
+  if (confirmButton) {
+    confirmButton.disabled = confirmed || !placementCount;
+    confirmButton.classList.toggle('hidden', confirmed);
+  }
+  if (unlockButton) unlockButton.classList.toggle('hidden', !confirmed);
+  if (solveButton) solveButton.disabled = !confirmed || window._manualAiRunning === true;
+  if (clearButton) clearButton.disabled = confirmed;
+  const status = document.getElementById('manual-plan-status');
+  if (!status) return;
+  status.className = `manual-plan-status status-${plan.status || 'draft'}`;
+  if (message) {
+    status.textContent = message;
+  } else if (confirmed) {
+    status.textContent = `已锁定：${plan.counts?.visual_placements || placementCount} 个手动格，展开为 ${plan.counts?.section_locks || plan.locks?.length || 0} 个 section 必要条件。AI 排课不会移动金框课程。`;
+  } else if (plan.status === 'stale') {
+    status.textContent = plan.issues?.[0]?.message || '输入数据已变化，请重新校验并确认必要条件。';
+  } else {
+    const base = placementCount
+      ? `手动草稿：${placementCount} 个课程格，尚未锁定。确认前仍可拖动或删除。`
+      : '第一步：把需要人工确定的课程拖入课表；完成后点击“确认为必要条件”。';
+    status.textContent = window._manualPlan?.catalog?.warning
+      ? `${base} 注意：${window._manualPlan.catalog.warning}`
+      : base;
+  }
+}
+
 function saveManualCourseToSlot(slotId, itemId, classId = manualCurrentClassId()) {
-  if (!classId || !itemId) return;
+  if (!classId || !itemId || manualPlanIsConfirmed()) return;
   const drafts = readManualDrafts();
   drafts[classId] = { ...(drafts[classId] || {}), [slotId]: itemId };
   writeManualDrafts(drafts);
   renderManualTimetableGrid();
+  renderManualPlanControls();
+  queueManualDraftSync();
 }
 
 function removeManualCourseFromSlot(slotId, classId = manualCurrentClassId()) {
+  if (manualPlanIsConfirmed()) return;
   const drafts = readManualDrafts();
   if (!drafts[classId]?.[slotId]) return;
   delete drafts[classId][slotId];
   writeManualDrafts(drafts);
   renderManualTimetableGrid();
+  renderManualPlanControls();
+  queueManualDraftSync();
 }
 
 function saveManualCourseToAdminClasses(slotId, itemId, adminClassIds) {
+  if (manualPlanIsConfirmed()) return;
   const drafts = readManualDrafts();
   for (const adminClassId of adminClassIds) {
     drafts[adminClassId] = { ...(drafts[adminClassId] || {}), [slotId]: itemId };
   }
   writeManualDrafts(drafts);
   renderManualTimetableGrid();
+  renderManualPlanControls();
+  queueManualDraftSync();
 }
 
 function openManualAdminPlacementDialog(teachingClassId, slotId, itemId) {
@@ -688,10 +842,13 @@ function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons =
   const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
   const labelMarkup = label ? `<span class="manual-slot-lane-label">${label}</span>` : '';
   if (!item) return `${labelMarkup}<span class="manual-slot-placeholder">${placeholder}</span>`;
+  const locked = manualPlacementIsLocked(targetClassId, slotId, item.id);
   return `${labelMarkup}
     <div class="manual-slot-course">
       <span>${manualPoolItemLabel(item)}</span>
-      <button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-id="${targetClassId}" aria-label="删除课程">×</button>
+      ${locked
+        ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">🔒</span>'
+        : `<button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-id="${targetClassId}" aria-label="删除课程">×</button>`}
     </div>
     ${conflictReasons.length ? `<span class="manual-slot-conflict-mark" aria-label="${conflictTitle}" title="${conflictTitle}"></span>` : ''}`;
 }
@@ -724,7 +881,8 @@ function renderManualTimetableGrid() {
       const hasAdminCourse = adminEntries.some(entry => entry.item);
       if (!adminClassIds.length || !hasAdminCourse) {
         const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
-        html += `<div class="manual-slot manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}" data-target-class-id="${classId}" data-manual-placement-mode="${adminClassIds.length ? 'teaching-or-admin' : 'class'}" title="${conflictTitle}">
+        const locked = item && manualPlacementIsLocked(classId, slotId, item.id);
+        html += `<div class="manual-slot manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''} ${locked ? 'is-locked' : ''}" data-slot-id="${slotId}" data-target-class-id="${classId}" data-manual-placement-mode="${adminClassIds.length ? 'teaching-or-admin' : 'class'}" title="${conflictTitle}">
           ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons })}
         </div>`;
         continue;
@@ -733,8 +891,9 @@ function renderManualTimetableGrid() {
       const allAdminCoursesMatch = adminEntries.length > 1
         && adminEntries.every(entry => entry.item?.id === adminEntries[0].item?.id);
       const teachingConflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
+      const teachingLocked = item && manualPlacementIsLocked(classId, slotId, item.id);
       const teachingMarkup = item ? `
-        <div class="manual-teaching-main has-course category-${item.category || 'other'} ${conflictReasons.length ? 'has-conflict' : ''}"
+        <div class="manual-teaching-main has-course category-${item.category || 'other'} ${conflictReasons.length ? 'has-conflict' : ''} ${teachingLocked ? 'is-locked' : ''}"
           data-slot-id="${slotId}" title="${teachingConflictTitle}">
           ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons, label: '教学班' })}
         </div>` : '';
@@ -743,13 +902,17 @@ function renderManualTimetableGrid() {
         const mergedConflicts = [...new Set(adminEntries.flatMap(entry => entry.conflictReasons))];
         const mergedConflictTitle = mergedConflicts.length ? `课程冲突：${mergedConflicts.join('、')}` : '';
         const labels = adminEntries.map(entry => entry.classInfo?.name || entry.classId).join('、');
+        const mergedLocked = adminEntries.every(entry =>
+          manualPlacementIsLocked(entry.classId, slotId, entry.item.id));
         html += `<div class="manual-slot manual-teaching-slot ${item ? `has-course category-${item.category || 'other'}` : ''}" data-slot-id="${slotId}">
           ${teachingMarkup}
-          <div class="manual-admin-merged has-course category-${mergedItem.category || 'other'} ${mergedConflicts.length ? 'has-conflict' : ''}" title="${mergedConflictTitle}">
+          <div class="manual-admin-merged has-course category-${mergedItem.category || 'other'} ${mergedConflicts.length ? 'has-conflict' : ''} ${mergedLocked ? 'is-locked' : ''}" title="${mergedConflictTitle}">
             <span class="manual-slot-lane-label">${labels} · 同上</span>
             <div class="manual-slot-course">
               <span>${manualPoolItemLabel(mergedItem)}</span>
-              <button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-ids="${adminEntries.map(entry => entry.classId).join(',')}" aria-label="删除两个行政班课程">×</button>
+              ${mergedLocked
+                ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">🔒</span>'
+                : `<button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-ids="${adminEntries.map(entry => entry.classId).join(',')}" aria-label="删除两个行政班课程">×</button>`}
             </div>
             ${mergedConflicts.length ? `<span class="manual-slot-conflict-mark" aria-label="${mergedConflictTitle}" title="${mergedConflictTitle}"></span>` : ''}
           </div>
@@ -759,7 +922,8 @@ function renderManualTimetableGrid() {
 
       const lanes = adminEntries.map(entry => {
         const conflictTitle = entry.conflictReasons.length ? `课程冲突：${entry.conflictReasons.join('、')}` : '';
-        return `<div class="manual-admin-lane manual-drop-target ${entry.item ? `has-course category-${entry.item.category || 'other'}` : ''} ${entry.conflictReasons.length ? 'has-conflict' : ''}"
+        const locked = entry.item && manualPlacementIsLocked(entry.classId, slotId, entry.item.id);
+        return `<div class="manual-admin-lane manual-drop-target ${entry.item ? `has-course category-${entry.item.category || 'other'}` : ''} ${entry.conflictReasons.length ? 'has-conflict' : ''} ${locked ? 'is-locked' : ''}"
           data-slot-id="${slotId}" data-target-class-id="${entry.classId}" title="${conflictTitle}">
           ${manualCourseSlotMarkup({
             item: entry.item,
@@ -778,7 +942,7 @@ function renderManualTimetableGrid() {
     }
   }
   grid.innerHTML = html;
-  grid.querySelectorAll('.manual-drop-target').forEach(target => {
+  if (!manualPlanIsConfirmed()) grid.querySelectorAll('.manual-drop-target').forEach(target => {
     target.addEventListener('dragover', event => { event.preventDefault(); target.classList.add('drag-over'); });
     target.addEventListener('dragleave', () => target.classList.remove('drag-over'));
     target.addEventListener('drop', event => {
@@ -804,23 +968,30 @@ function renderManualTimetableGrid() {
       targetIds.filter(Boolean).forEach(targetId => delete drafts[targetId]?.[button.dataset.slotId]);
       writeManualDrafts(drafts);
       renderManualTimetableGrid();
+      renderManualPlanControls();
+      queueManualDraftSync();
     });
   });
+  renderManualPlanControls();
 }
 
 async function loadManualTimetable() {
-  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks, students] = await Promise.all([
-    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'), api('/students'),
+  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks, students, manualPlan] = await Promise.all([
+    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'), api('/students'), api('/manual-plan'),
   ]);
   window._manualCourses = [...courses].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN'));
   window._manualTeachingAssignments = teachingAssignments;
   window._manualStudents = students;
+  window._manualSelectionBlocks = selectionBlocks;
+  window._manualSections = manualPlan.catalog?.sections || [];
+  window._manualPlan = manualPlan;
   const selector = document.getElementById('manual-class-select');
   const classes = [
     ...teachingClasses.map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` })),
     ...adminClasses.map(item => ({ ...item, class_type: 'admin', label: `行政班 · ${item.name}` })),
   ].sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
   window._manualClassesById = new Map(classes.map(item => [item.id, item]));
+  const hydratedFromBackend = hydrateManualDrafts(manualPlan);
   const previous = selector.value;
   selector.innerHTML = classes.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
   if (classes.some(item => item.id === previous)) selector.value = previous;
@@ -829,12 +1000,8 @@ async function loadManualTimetable() {
     // a required course can be administrative in one grade and teaching in another).
     // Grade scope is also respected here so a class only sees courses that
     // its students can actually take, including valid cross-grade courses.
-    window._manualPoolItems = manualCoursePoolItems(
-      manualCoursesForCurrentClass(window._manualCourses),
-      selectionBlocks,
-    );
+    window._manualPoolItems = manualItemsForClass(manualCurrentClassId());
   };
-  window._manualAllPoolItems = manualCoursePoolItems(window._manualCourses, selectionBlocks);
   refreshManualPoolItems();
   selector.onchange = () => {
     refreshManualPoolItems();
@@ -849,9 +1016,91 @@ async function loadManualTimetable() {
     delete drafts[classId];
     writeManualDrafts(drafts);
     renderManualTimetableGrid();
+    renderManualPlanControls();
+    queueManualDraftSync();
+  };
+  document.getElementById('manual-confirm-plan').onclick = async () => {
+    try {
+      const placements = manualPlacementsFromDrafts();
+      if (!placements.length) return showToast('请先拖入至少一门课程', 'error');
+      const conflictCount = manualConflictMap().size;
+      if (conflictCount) {
+        return showToast(`当前草稿还有 ${conflictCount} 个冲突格，请先处理红色叉号`, 'error');
+      }
+      if (!confirm(`将 ${placements.length} 个手动课程格确认为不可自动破坏的必要条件吗？确认后会显示金色锁框。`)) return;
+      renderManualPlanControls('正在校验课程、教师、学生和 section 映射…');
+      const plan = await api('/manual-plan/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ placements, confirmed_by: '教务用户' }),
+      });
+      window._manualPlan = plan;
+      hydrateManualDrafts(plan);
+      renderManualCoursePool();
+      renderManualTimetableGrid();
+      renderManualPlanControls();
+      showToast(`已锁定 ${plan.counts?.section_locks || plan.locks?.length || 0} 个 section 必要条件`);
+    } catch {
+      renderManualPlanControls();
+    }
+  };
+  document.getElementById('manual-unlock-plan').onclick = async () => {
+    if (!confirm('解除全部手动必要条件吗？解除后金框课程可以再次拖动，下一次排课也不再强制保留这些时段。')) return;
+    const plan = await api('/manual-plan/unlock', { method: 'POST', body: '{}' });
+    window._manualPlan = plan;
+    renderManualCoursePool();
+    renderManualTimetableGrid();
+    renderManualPlanControls();
+    showToast('必要条件已解除，可以继续修改草稿');
+  };
+  document.getElementById('manual-ai-solve').onclick = async () => {
+    const button = document.getElementById('manual-ai-solve');
+    const startedAt = Date.now();
+    window._manualAiRunning = true;
+    renderManualPlanControls('AI 排课阶段 1/2：DeepSeek 正在读取锁定课程和规则，生成安全的搜索优先级…');
+    const timer = setInterval(() => {
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
+      const stage = seconds < 45
+        ? 'AI 排课阶段 1/2：DeepSeek 正在分析约束和课程优先级'
+        : 'AI 排课阶段 2/2：CP-SAT 正在保留金框课程并补全剩余课表';
+      renderManualPlanControls(`${stage}（已用 ${seconds} 秒）…`);
+    }, 1000);
+    try {
+      const result = await api('/manual-plan/ai-solve', {
+        method: 'POST',
+        body: JSON.stringify({
+          use_ai_strategy: true,
+          optimize_soft: true,
+          max_time_seconds: 120,
+          instruction: '保留全部手动必要条件；优先处理跨年级教师和高约束课程，再补全其他课程。',
+        }),
+      });
+      const duration = ((result.solve_duration_ms || 0) / 1000).toFixed(1);
+      if (!result.solved) {
+        renderManualPlanControls(`AI 补全未找到可行解：${result.reason || result.status}（求解 ${duration} 秒）。金框课程没有被破坏。`);
+        return;
+      }
+      window._manualPlan.last_solve = {
+        solve_duration_ms: result.solve_duration_ms,
+        status: result.status,
+      };
+      const warning = result.ai_warnings?.length ? `；${result.ai_warnings.join('；')}` : '';
+      renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，硬约束校验通过${warning}`);
+      showToast(`AI 排课完成，用时 ${duration} 秒`);
+      if (confirm('完整课表已生成并通过硬约束校验。现在查看总课表吗？')) {
+        await switchView('overview-timetable');
+      }
+    } catch (error) {
+      renderManualPlanControls(`AI 排课失败：${error.message}。金框必要条件仍然保留，可以修正数据后重试。`);
+    } finally {
+      clearInterval(timer);
+      window._manualAiRunning = false;
+      button.disabled = !manualPlanIsConfirmed();
+    }
   };
   renderManualCoursePool();
   renderManualTimetableGrid();
+  renderManualPlanControls();
+  if (!hydratedFromBackend && manualPlacementsFromDrafts().length) queueManualDraftSync();
 }
 
 // 加载欢迎页面

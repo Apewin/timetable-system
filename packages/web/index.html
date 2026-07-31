@@ -108,12 +108,16 @@
           <div class="manual-timetable-header">
             <div>
               <h2>✋ 手动课表</h2>
-              <p>选择班级后，从右侧课程池拖入左侧空白课表。教学班格子默认只显示教学班课程；拖入行政班课程后才会展开行政班去向，并同步显示在同年级的教学班草稿中。此处保存为浏览器中的手动草稿，不会覆盖正式课表。</p>
+              <p>先拖入需要人工确定的课程，再确认成为排课必要条件。确认后课程显示金色锁框，AI 只会补全剩余课程，不会移动这些课程。</p>
             </div>
             <div class="manual-timetable-actions">
               <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班级</button>
+              <button id="manual-unlock-plan" class="btn btn-secondary hidden" type="button">解除必要条件</button>
+              <button id="manual-confirm-plan" class="btn btn-warning" type="button">🔒 确认为必要条件</button>
+              <button id="manual-ai-solve" class="btn btn-primary" type="button" disabled>✨ AI 补全排课</button>
             </div>
           </div>
+          <div id="manual-plan-status" class="manual-plan-status" role="status"></div>
           <div class="manual-timetable-controls">
             <label for="manual-class-select">当前班级</label>
             <select id="manual-class-select" class="select"></select>

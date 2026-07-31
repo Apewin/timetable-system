@@ -201,6 +201,24 @@ body {
   background-color: var(--secondary-dark);
 }
 
+.btn-warning {
+  background: #f5a623;
+  color: #3d2a00;
+}
+
+.btn-warning:hover {
+  background: #e59a16;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.hidden {
+  display: none !important;
+}
+
 .btn-danger {
   background-color: var(--danger);
   color: var(--white);
@@ -346,6 +364,31 @@ tr:hover {
 
 .manual-timetable-header h2 { margin-bottom: 6px; }
 .manual-timetable-header p { color: var(--gray-600); font-size: 14px; }
+.manual-timetable-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+.manual-plan-status {
+  min-height: 42px;
+  margin: 0 0 16px;
+  border: 1px solid #bbdefb;
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: #e3f2fd;
+  color: #0d47a1;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.manual-plan-status.status-confirmed {
+  border-color: #d7a928;
+  background: #fff8df;
+  color: #6d4c00;
+}
+
+.manual-plan-status.status-stale {
+  border-color: #ef9a9a;
+  background: #ffebee;
+  color: #b71c1c;
+}
 
 .manual-timetable-controls {
   align-items: center;
@@ -398,6 +441,26 @@ tr:hover {
 }
 
 .manual-slot.has-course { background: var(--manual-course-surface, #e8f5e9); }
+.manual-slot.is-locked,
+.manual-teaching-main.is-locked,
+.manual-admin-lane.is-locked,
+.manual-admin-merged.is-locked {
+  z-index: 1;
+  outline: 3px solid #d4a017;
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 1px rgba(255, 248, 220, 0.9), 0 0 0 1px rgba(132, 94, 0, 0.18);
+}
+
+.manual-slot.is-locked::after,
+.manual-teaching-main.is-locked::after,
+.manual-admin-lane.is-locked::after,
+.manual-admin-merged.is-locked::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(255, 235, 150, 0.8);
+  pointer-events: none;
+}
 .manual-slot.has-conflict,
 .manual-teaching-main.has-conflict,
 .manual-admin-lane.has-conflict,
@@ -504,6 +567,19 @@ tr:hover {
   line-height: 18px;
 }
 
+.manual-lock-badge {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  border: 1px solid #d4a017;
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: #fff8df;
+  color: #8a6500;
+  font-size: 11px;
+  line-height: 17px;
+}
+
 .manual-course-panel {
   flex: 0 0 270px;
   max-height: calc(100vh - 220px);
@@ -535,6 +611,7 @@ tr:hover {
 }
 
 .manual-course-card:active { cursor: grabbing; }
+.manual-course-card.is-disabled { cursor: not-allowed; filter: saturate(0.7); opacity: 0.62; }
 .manual-course-card.is-bundle { border-left-width: 6px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.03); }
 .manual-course-card.category-admin-required,
 .manual-slot.has-course.category-admin-required,

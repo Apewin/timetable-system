@@ -62,7 +62,7 @@ function sectionIdsForRule(rule, sections) {
  * chooses the most constrained remaining meeting and the least-loaded legal
  * slot.  CP-SAT remains the general fallback/refinement engine.
  */
-export function constructInitialSchedule(problem) {
+export function constructInitialSchedule(problem, { lockedMeetings = [] } = {}) {
   const sections = problem.sections.map(section => ({ ...section, student_ids: [...section.student_ids] }));
   const nodes = [];
   const sectionNodes = new Map();
@@ -73,13 +73,25 @@ export function constructInitialSchedule(problem) {
   for (const rule of problem.rules || []) if (rule.hard && rule.type === 'fixed_slots') {
     for (const sectionId of sectionIdsForRule(rule, sections)) fixedBySection.set(sectionId, rule.params.slots);
   }
+  const lockedBySection = new Map();
+  for (const lock of lockedMeetings) {
+    if (!sectionNodes.has(lock.section_id) && !sections.some(section => section.id === lock.section_id)) return null;
+    if (!problem.slots.some(slot => slot.id === lock.slot_id)) return null;
+    const list = lockedBySection.get(lock.section_id) || [];
+    if (!list.includes(lock.slot_id)) list.push(lock.slot_id);
+    lockedBySection.set(lock.section_id, list);
+  }
   const priorityBySection = new Map();
   for (const rule of problem.rules || []) if (rule.type === 'priority') {
     for (const sectionId of sectionIdsForRule(rule, sections)) priorityBySection.set(sectionId, Math.min(priorityBySection.get(sectionId) ?? Infinity, rule.params.rank));
   }
   for (const section of sections) {
     const own = [];
-    const fixed = fixedBySection.get(section.id) || [];
+    const ruleFixed = fixedBySection.get(section.id) || [];
+    const manualFixed = lockedBySection.get(section.id) || [];
+    const fixed = [...new Set([...ruleFixed, ...manualFixed])]
+      .sort((left, right) => problem.slots.findIndex(slot => slot.id === left) - problem.slots.findIndex(slot => slot.id === right));
+    if (ruleFixed.length === section.weekly_hours && manualFixed.some(slot => !ruleFixed.includes(slot))) return null;
     if (fixed.length > section.weekly_hours) return null;
     for (let index = 0; index < section.weekly_hours; index++) {
       const node = { id: `${section.id}@${index}`, section, index, fixedSlot: fixed[index] || null, neighbours: new Set(), color: null };
@@ -131,7 +143,7 @@ export function constructInitialSchedule(problem) {
   const timeOnlyMeetings = nodes.map(node => ({ section_id: node.section.id, slot_id: node.color }));
   const meetings = roomMatching(problem, sections, timeOnlyMeetings);
   if (!meetings) return null;
-  const solution = { sections, meetings };
+  const solution = { sections, meetings, locks: lockedMeetings };
   const checked = validateSchedule(problem, solution);
   return checked.ok ? { ...solution, assignments: expandAssignments(sections, meetings), soft_score: checked.soft_score } : null;
 }

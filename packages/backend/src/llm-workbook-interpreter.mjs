@@ -242,6 +242,94 @@ async function callChat(messages, config, fetchImpl, { jsonMode = false } = {}) 
   throw new Error(`模型 API 未返回可读取内容（${retryNote}${lastPayloadDiagnostic || '响应结构未知'}${reasoningOnly}）`);
 }
 
+export const AI_SCHEDULING_STRATEGY_PROMPT = [
+  '你是学校排课系统的策略解释器，不是最终课表裁决者。',
+  'manual_locks 是教务人员手动安排并二次确认的必要条件，绝对不得移动、删除、放宽或用其他课程替代。',
+  'hard_rules 是物理或制度硬约束，绝对不得删除、降级或重新解释。',
+  '你的职责只是在剩余未固定课程中给出搜索优先级，并提示可能的风险；最终课表必须由 CP-SAT 求解器生成并通过独立校验。',
+  '不得创造不存在的课程、section、教师、班级、学生、教室、规则或时段。',
+  '不得输出最终课表，不得建议破坏 manual_locks；发现疑似冲突时只能写入 warnings。',
+  '只返回 JSON：{"priority_section_ids":[],"soft_rule_weight_overrides":{},"warnings":[],"notes":[]}',
+  'priority_section_ids 只能使用输入中存在的 section id，按优先级从高到低排列。',
+  'soft_rule_weight_overrides 只能引用输入中 hard=false 的规则 id，值必须是 0 到 1000 的整数；不得包含硬规则。',
+].join('\n');
+
+function schedulingStrategySnapshot(problem, locks, instruction) {
+  return {
+    instruction: text(instruction),
+    manual_locks: locks.map(lock => ({
+      section_id: lock.section_id,
+      slot_id: lock.slot_id,
+    })),
+    sections: problem.sections.map(section => ({
+      id: section.id,
+      course_id: section.course_id,
+      teacher_id: section.teacher_id,
+      class_id: section.class_id,
+      class_type: section.class_type,
+      grades: section.grades,
+      weekly_hours: section.weekly_hours,
+      locked_meeting_count: locks.filter(lock => lock.section_id === section.id).length,
+    })),
+    rules: (problem.rules || []).map(rule => ({
+      id: rule.id,
+      name: rule.name,
+      type: rule.type,
+      hard: rule.hard,
+      weight: rule.weight,
+      scope: rule.scope,
+      target_count: rule.section_target_ids?.length || rule.target_ids?.length || 0,
+    })),
+  };
+}
+
+function validatedSchedulingStrategy(value, problem) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('模型返回的排课策略不是对象');
+  const sectionIds = new Set(problem.sections.map(section => section.id));
+  const softRules = new Set((problem.rules || []).filter(rule => !rule.hard).map(rule => rule.id));
+  const priorities = Array.isArray(value.priority_section_ids)
+    ? [...new Set(value.priority_section_ids.map(text).filter(Boolean))]
+    : [];
+  const unknownSections = priorities.filter(sectionId => !sectionIds.has(sectionId));
+  if (unknownSections.length) throw new Error(`模型排课策略引用了不存在的 section: ${unknownSections.join('、')}`);
+  const weights = {};
+  for (const [ruleId, rawWeight] of Object.entries(value.soft_rule_weight_overrides || {})) {
+    if (!softRules.has(ruleId)) throw new Error(`模型试图修改硬规则或未知规则: ${ruleId}`);
+    const weight = Number(rawWeight);
+    if (!Number.isInteger(weight) || weight < 0 || weight > 1000) {
+      throw new Error(`模型为规则 ${ruleId} 返回了无效权重`);
+    }
+    weights[ruleId] = weight;
+  }
+  return {
+    priority_section_ids: priorities,
+    soft_rule_weight_overrides: weights,
+    warnings: Array.isArray(value.warnings) ? value.warnings.map(text).filter(Boolean) : [],
+    notes: Array.isArray(value.notes) ? value.notes.map(text).filter(Boolean) : [],
+  };
+}
+
+/**
+ * Uses the configured model only to plan search strategy. Confirmed locks and
+ * hard rules remain executable solver data, never prompt-only instructions.
+ */
+export async function planSchedulingStrategy(problem, {
+  locks = [],
+  instruction = '',
+  fetchImpl = globalThis.fetch,
+  config = getAiConfig({ includeSecret: true }),
+} = {}) {
+  if (!config.apiKey) throw new Error('大模型 API Key 尚未配置；将使用确定性排课策略');
+  const content = await callChat([
+    { role: 'system', content: AI_SCHEDULING_STRATEGY_PROMPT },
+    {
+      role: 'user',
+      content: JSON.stringify(schedulingStrategySnapshot(problem, locks, instruction)),
+    },
+  ], config, fetchImpl, { jsonMode: true });
+  return validatedSchedulingStrategy(parseJsonContent(content), problem);
+}
+
 export async function interpretWorkbook(workbook, {
   expectedType,
   filename = '',

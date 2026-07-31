@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as XLSX from 'xlsx';
 import {
+  AI_SCHEDULING_STRATEGY_PROMPT,
   interpretWorkbook,
+  planSchedulingStrategy,
   workbookFromInterpretation,
   workbookSnapshot,
 } from '../src/llm-workbook-interpreter.mjs';
@@ -112,4 +114,46 @@ test('retries once when JSON mode returns an empty model response', async () => 
   assert.equal(requests[1].response_format, undefined);
   assert.deepEqual(requests[1].thinking, { type: 'disabled' });
   assert.equal(result.interpretation.sheets[0].rows[0][0], '张三');
+});
+
+test('uses the model only for a validated scheduling strategy', async () => {
+  assert.match(AI_SCHEDULING_STRATEGY_PROMPT, /manual_locks/);
+  assert.match(AI_SCHEDULING_STRATEGY_PROMPT, /不得输出最终课表/);
+  const problem = {
+    sections: [{
+      id: 'SEC_1', course_id: 'C1', teacher_id: 'T1', class_id: 'TC1',
+      class_type: 'teaching', grades: [11], weekly_hours: 1,
+    }],
+    rules: [
+      { id: 'HARD', name: '硬规则', type: 'forbid_slots', hard: true, scope: 'section', target_ids: ['SEC_1'] },
+      { id: 'SOFT', name: '软规则', type: 'preferred_slots', hard: false, weight: 3, scope: 'section', target_ids: ['SEC_1'] },
+    ],
+  };
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    assert.match(request.messages[0].content, /绝对不得移动/);
+    assert.match(request.messages[1].content, /D1P2/);
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              priority_section_ids: ['SEC_1'],
+              soft_rule_weight_overrides: { SOFT: 9 },
+              warnings: [],
+              notes: ['先排锁定课程附近的高约束课程'],
+            }),
+          },
+        }],
+      }),
+    };
+  };
+  const strategy = await planSchedulingStrategy(problem, {
+    locks: [{ section_id: 'SEC_1', slot_id: 'D1P2' }],
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.deepEqual(strategy.priority_section_ids, ['SEC_1']);
+  assert.deepEqual(strategy.soft_rule_weight_overrides, { SOFT: 9 });
 });
