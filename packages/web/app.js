@@ -467,20 +467,25 @@ function manualPoolItemLabel(item) {
   return `${item.name}${item.weekly_hours ? ` · ${item.weekly_hours} 节/周` : ''}`;
 }
 
-function manualStoredItem(itemId) {
+function manualStoredItem(itemId, classId = manualCurrentClassId()) {
   const activeItems = window._manualPoolItems || [];
   const allItems = window._manualAllPoolItems || [];
   const course = (window._manualCourses || []).find(item => item.id === itemId);
-  return activeItems.find(item => item.id === itemId)
-    || allItems.find(item => item.id === itemId)
-    || (course ? {
+  const stored = activeItems.find(item => item.id === itemId)
+    || allItems.find(item => item.id === itemId);
+  if (stored) {
+    return stored.kind === 'course' && course
+      ? { ...stored, category: manualCourseCategory(course, classId) }
+      : stored;
+  }
+  return course ? {
       id: itemId,
       kind: 'course',
       name: course.name || itemId,
       course_ids: [itemId],
       weekly_hours: course.weekly_hours,
-      category: manualCourseCategory(course),
-    } : null);
+      category: manualCourseCategory(course, classId),
+    } : null;
 }
 
 function manualAssignmentClassIds(assignment = {}) {
@@ -497,6 +502,19 @@ function manualStudentIdsForClass(classId) {
     .filter(student => student[studentField] === classId)
     .map(student => student.id);
   return new Set(liveRoster.length ? liveRoster : currentClass.student_ids || []);
+}
+
+function manualAdminClassIdsForTeachingClass(classId) {
+  const currentClass = window._manualClassesById?.get(classId);
+  if (!currentClass || currentClass.class_type !== 'teaching') return [];
+  const ids = new Set((window._manualStudents || [])
+    .filter(student => student.teaching_class_id === classId && student.admin_class_id)
+    .map(student => student.admin_class_id));
+  return [...ids].sort((left, right) => {
+    const leftName = window._manualClassesById?.get(left)?.name || left;
+    const rightName = window._manualClassesById?.get(right)?.name || right;
+    return leftName.localeCompare(rightName, 'zh-CN');
+  });
 }
 
 function manualTeacherIdsForItem(classId, item) {
@@ -531,7 +549,7 @@ function manualConflictMap() {
   for (const [classId, draft] of Object.entries(drafts)) {
     if (!window._manualClassesById?.has(classId)) continue;
     for (const [slotId, itemId] of Object.entries(draft || {})) {
-      const item = manualStoredItem(itemId);
+      const item = manualStoredItem(itemId, classId);
       if (!item) continue;
       const entry = {
         classId,
@@ -561,13 +579,13 @@ function manualConflictMap() {
   return conflicts;
 }
 
-function manualCourseCategory(course) {
+function manualCourseCategory(course, classId = manualCurrentClassId()) {
   if (course.type === 'ap') return 'ap';
   if (course.type === 'required_elective') return 'elective';
   if (course.type !== 'required') return 'other';
   const assignments = (window._manualTeachingAssignments || [])
     .filter(assignment => assignment.course_id === course.id);
-  const currentClass = window._manualClassesById?.get(manualCurrentClassId());
+  const currentClass = window._manualClassesById?.get(classId);
   const sameGradeAssignments = currentClass ? assignments.filter(assignment => {
     const assignedIds = Array.isArray(assignment.class_ids)
       ? assignment.class_ids
@@ -615,8 +633,7 @@ function renderManualCoursePool() {
   });
 }
 
-function saveManualCourseToSlot(slotId, itemId) {
-  const classId = manualCurrentClassId();
+function saveManualCourseToSlot(slotId, itemId, classId = manualCurrentClassId()) {
   if (!classId || !itemId) return;
   const drafts = readManualDrafts();
   drafts[classId] = { ...(drafts[classId] || {}), [slotId]: itemId };
@@ -624,13 +641,24 @@ function saveManualCourseToSlot(slotId, itemId) {
   renderManualTimetableGrid();
 }
 
-function removeManualCourseFromSlot(slotId) {
-  const classId = manualCurrentClassId();
+function removeManualCourseFromSlot(slotId, classId = manualCurrentClassId()) {
   const drafts = readManualDrafts();
   if (!drafts[classId]?.[slotId]) return;
   delete drafts[classId][slotId];
   writeManualDrafts(drafts);
   renderManualTimetableGrid();
+}
+
+function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons = [], label = '', placeholder = '拖入课程' }) {
+  const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
+  const labelMarkup = label ? `<span class="manual-slot-lane-label">${label}</span>` : '';
+  if (!item) return `${labelMarkup}<span class="manual-slot-placeholder">${placeholder}</span>`;
+  return `${labelMarkup}
+    <div class="manual-slot-course">
+      <span>${manualPoolItemLabel(item)}</span>
+      <button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-id="${targetClassId}" aria-label="删除课程">×</button>
+    </div>
+    ${conflictReasons.length ? `<span class="manual-slot-conflict-mark" aria-label="${conflictTitle}" title="${conflictTitle}"></span>` : ''}`;
 }
 
 function renderManualTimetableGrid() {
@@ -640,37 +668,67 @@ function renderManualTimetableGrid() {
   const drafts = readManualDrafts();
   const draft = drafts[classId] || {};
   const conflicts = manualConflictMap();
+  const currentClass = window._manualClassesById?.get(classId);
+  const adminClassIds = currentClass?.class_type === 'teaching'
+    ? manualAdminClassIdsForTeachingClass(classId)
+    : [];
   const days = ['周一', '周二', '周三', '周四', '周五'];
   let html = '<div class="manual-grid-head">节次</div>' + days.map(day => `<div class="manual-grid-head">${day}</div>`).join('');
   for (let period = 1; period <= 10; period++) {
     html += `<div class="manual-grid-period">第 ${period} 节</div>`;
     for (let day = 1; day <= 5; day++) {
       const slotId = manualSlotId(day, period);
-      const savedItemId = draft[slotId];
-      // Existing manual drafts stored a course ID directly. Keep those drafts
-      // readable after introducing grouped, synchronized course cards.
-      const item = manualStoredItem(savedItemId);
+      const item = manualStoredItem(draft[slotId], classId);
       const conflictReasons = [...(conflicts.get(`${classId}:${slotId}`) || [])];
-      const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
-      html += `<div class="manual-slot ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}" title="${conflictTitle}">
-        ${item ? `<div class="manual-slot-course"><span>${manualPoolItemLabel(item)}</span><button type="button" class="manual-slot-remove" data-slot-id="${slotId}" aria-label="删除课程">×</button></div>${conflictReasons.length ? `<span class="manual-slot-conflict-mark" aria-label="${conflictTitle}" title="${conflictTitle}"></span>` : ''}` : '<span class="manual-slot-placeholder">拖入课程</span>'}
+      if (!adminClassIds.length) {
+        const conflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
+        html += `<div class="manual-slot manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}" data-target-class-id="${classId}" title="${conflictTitle}">
+          ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons })}
+        </div>`;
+        continue;
+      }
+
+      const lanes = adminClassIds.map(adminClassId => {
+        const adminItem = manualStoredItem(drafts[adminClassId]?.[slotId], adminClassId);
+        const adminConflicts = [...(conflicts.get(`${adminClassId}:${slotId}`) || [])];
+        const adminClass = window._manualClassesById?.get(adminClassId);
+        const conflictTitle = adminConflicts.length ? `课程冲突：${adminConflicts.join('、')}` : '';
+        return `<div class="manual-admin-lane manual-drop-target ${adminItem ? `has-course category-${adminItem.category || 'other'}` : ''} ${adminConflicts.length ? 'has-conflict' : ''}"
+          data-slot-id="${slotId}" data-target-class-id="${adminClassId}" title="${conflictTitle}">
+          ${manualCourseSlotMarkup({
+            item: adminItem,
+            slotId,
+            targetClassId: adminClassId,
+            conflictReasons: adminConflicts,
+            label: adminClass?.name || adminClassId,
+            placeholder: '拖入行政班课程',
+          })}
+        </div>`;
+      }).join('');
+      const teachingConflictTitle = conflictReasons.length ? `课程冲突：${conflictReasons.join('、')}` : '';
+      html += `<div class="manual-slot manual-teaching-slot ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''} ${conflictReasons.length ? 'has-conflict' : ''}" data-slot-id="${slotId}">
+        <div class="manual-teaching-main manual-drop-target ${item ? `has-course category-${item.category || 'other'}` : ''} ${conflictReasons.length ? 'has-conflict' : ''}"
+          data-slot-id="${slotId}" data-target-class-id="${classId}" title="${teachingConflictTitle}">
+          ${manualCourseSlotMarkup({ item, slotId, targetClassId: classId, conflictReasons, label: '教学班' })}
+        </div>
+        <div class="manual-admin-lanes" aria-label="行政班学生去向">${lanes}</div>
       </div>`;
     }
   }
   grid.innerHTML = html;
-  grid.querySelectorAll('.manual-slot').forEach(slot => {
-    slot.addEventListener('dragover', event => { event.preventDefault(); slot.classList.add('drag-over'); });
-    slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
-    slot.addEventListener('drop', event => {
+  grid.querySelectorAll('.manual-drop-target').forEach(target => {
+    target.addEventListener('dragover', event => { event.preventDefault(); target.classList.add('drag-over'); });
+    target.addEventListener('dragleave', () => target.classList.remove('drag-over'));
+    target.addEventListener('drop', event => {
       event.preventDefault();
-      slot.classList.remove('drag-over');
+      target.classList.remove('drag-over');
       const itemId = event.dataTransfer.getData('application/x-manual-item')
         || event.dataTransfer.getData('application/x-manual-course');
-      saveManualCourseToSlot(slot.dataset.slotId, itemId);
+      saveManualCourseToSlot(target.dataset.slotId, itemId, target.dataset.targetClassId);
     });
   });
   grid.querySelectorAll('.manual-slot-remove').forEach(button => {
-    button.addEventListener('click', () => removeManualCourseFromSlot(button.dataset.slotId));
+    button.addEventListener('click', () => removeManualCourseFromSlot(button.dataset.slotId, button.dataset.targetClassId));
   });
 }
 
