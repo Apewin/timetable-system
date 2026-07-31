@@ -384,6 +384,7 @@ tr:hover {
 .manual-grid-period { font-size: 13px; }
 
 .manual-slot {
+  position: relative;
   min-height: 76px;
   padding: 7px;
   background: var(--white);
@@ -397,6 +398,33 @@ tr:hover {
 }
 
 .manual-slot.has-course { background: var(--manual-course-surface, #e8f5e9); }
+.manual-slot.has-conflict {
+  outline: 2px solid rgba(244, 67, 54, 0.75);
+  outline-offset: -2px;
+}
+.manual-slot-conflict-mark,
+.manual-slot-conflict-mark::before,
+.manual-slot-conflict-mark::after {
+  position: absolute;
+  pointer-events: none;
+}
+.manual-slot-conflict-mark {
+  inset: 0;
+  z-index: 2;
+}
+.manual-slot-conflict-mark::before,
+.manual-slot-conflict-mark::after {
+  content: '';
+  top: 50%;
+  left: -6%;
+  width: 112%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(244, 67, 54, 0.82);
+  box-shadow: 0 1px 1px rgba(183, 28, 28, 0.18);
+}
+.manual-slot-conflict-mark::before { transform: rotate(21deg); }
+.manual-slot-conflict-mark::after { transform: rotate(-21deg); }
 .manual-slot-placeholder { color: var(--gray-400); font-size: 12px; }
 
 .manual-slot-course {
