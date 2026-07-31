@@ -38,6 +38,8 @@ test('calls the model once and validates its JSON response', async () => {
     calls++;
     const request = JSON.parse(options.body);
     assert.equal(request.messages.length, 2);
+    assert.match(request.messages[0].content, /不推测、不补全/);
+    assert.match(request.messages[0].content, /不确定字段保留空值/);
     return {
       ok: true,
       json: async () => ({

@@ -3782,6 +3782,7 @@ document.addEventListener('DOMContentLoaded', init);
 // ==================== 高三 A/B/C 其他选课导入 ====================
 
 let pendingElectiveSelectionImport = null;
+let pendingElectiveSelectionUploadFile = null;
 
 function initElectiveSelectionImportHandlers() {
   const uploadArea = document.getElementById('elective-selection-upload-area');
@@ -3821,6 +3822,7 @@ async function handleElectiveSelectionImportFile(file) {
     showToast('高三 A/B/C 选课表只支持 .xlsx 或 .xls 文件', 'warning');
     return;
   }
+  pendingElectiveSelectionUploadFile = file;
   showToast('正在识别高三 A/B/C 选课并核对学生...', 'info');
   try {
     const formData = new FormData();
@@ -3959,6 +3961,9 @@ function renderElectiveSelectionImportPreview() {
       </div>
     </div>
     <div class="student-import-preview-actions">
+      <button type="button" class="btn btn-primary" onclick="organizeElectiveSelectionImportWithAi()">
+        ✨ 大模型整理
+      </button>
       <button type="button" class="btn btn-secondary" onclick="clearElectiveSelectionImport()">清空预览</button>
       <button type="button" class="btn btn-primary" onclick="confirmElectiveSelectionImport()" ${data.can_confirm ? '' : 'disabled'}>
         确认更新 ${data.unique_students} 名学生
@@ -3969,7 +3974,26 @@ function renderElectiveSelectionImportPreview() {
 
 window.clearElectiveSelectionImport = function() {
   pendingElectiveSelectionImport = null;
+  pendingElectiveSelectionUploadFile = null;
   renderElectiveSelectionImportPreview();
+};
+
+window.organizeElectiveSelectionImportWithAi = async function() {
+  if (!pendingElectiveSelectionUploadFile) return;
+  showToast('正在请求大模型整理高三 A/B/C 选课表…', 'info');
+  try {
+    const formData = new FormData();
+    formData.append('file', pendingElectiveSelectionUploadFile);
+    formData.append('ai_organize', 'true');
+    const response = await fetch('/api/elective-selections/import/preview', { method: 'POST', body: formData });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
+    pendingElectiveSelectionImport = result.data;
+    renderElectiveSelectionImportPreview();
+    showToast('大模型已整理完成，请核对预览后确认', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
 };
 
 window.confirmElectiveSelectionImport = async function() {
@@ -4002,6 +4026,7 @@ window.confirmElectiveSelectionImport = async function() {
 // ==================== AP 选课表多工作表导入 ====================
 
 let pendingApSelectionImport = null;
+let pendingApSelectionUploadFile = null;
 
 function initApSelectionImportHandlers() {
   const uploadArea = document.getElementById('ap-selection-upload-area');
@@ -4042,6 +4067,7 @@ async function handleApSelectionImportFile(file) {
     showToast('AP 选课表只支持 .xlsx 或 .xls 文件', 'warning');
     return;
   }
+  pendingApSelectionUploadFile = file;
   showToast('正在读取所有工作表并匹配学生...', 'info');
   try {
     const formData = new FormData();
@@ -4203,6 +4229,7 @@ function renderApSelectionImportPreview() {
           <option value="merge">只添加本次选课，保留原有 AP 选课</option>
         </select>
       </label>
+      <button type="button" class="btn btn-primary" onclick="organizeApSelectionImportWithAi()">✨ 大模型整理</button>
       <button type="button" class="btn btn-secondary" onclick="clearApSelectionImport()">清空预览</button>
       <button type="button" class="btn btn-primary" onclick="confirmApSelectionImport()" ${data.can_confirm ? '' : 'disabled'}>
         确认更新 ${data.unique_students} 名学生
@@ -4213,7 +4240,26 @@ function renderApSelectionImportPreview() {
 
 window.clearApSelectionImport = function() {
   pendingApSelectionImport = null;
+  pendingApSelectionUploadFile = null;
   renderApSelectionImportPreview();
+};
+
+window.organizeApSelectionImportWithAi = async function() {
+  if (!pendingApSelectionUploadFile) return;
+  showToast('正在请求大模型整理 AP 选课表…', 'info');
+  try {
+    const formData = new FormData();
+    formData.append('file', pendingApSelectionUploadFile);
+    formData.append('ai_organize', 'true');
+    const response = await fetch('/api/ap-selections/import/preview', { method: 'POST', body: formData });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
+    pendingApSelectionImport = result.data;
+    renderApSelectionImportPreview();
+    showToast('大模型已整理完成，请核对预览后确认', 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
 };
 
 window.confirmApSelectionImport = async function() {
@@ -4305,6 +4351,7 @@ async function handleStudentImportFiles(fileList) {
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('expected_type', 'students');
       const response = await fetch('/api/import/excel', { method: 'POST', body: formData });
       const result = await response.json();
       if (!result.ok) throw new Error(result.errors?.[0]?.msg || '名单识别失败');
@@ -4351,7 +4398,12 @@ function renderStudentImportPreview() {
         <div class="student-import-file">
           <div class="student-import-file-header">
             <strong>${escapeImportHtml(data.filename)}</strong>
-            <button type="button" class="btn btn-danger btn-sm" onclick="removeStudentImport(${index})">移除</button>
+            <div class="student-import-file-actions">
+              <button type="button" class="btn btn-primary btn-sm" onclick="organizeStudentImportWithAi(${index})" ${item.aiOrganizing ? 'disabled' : ''}>
+                ${item.aiOrganizing ? '大模型整理中…' : '✨ 大模型整理'}
+              </button>
+              <button type="button" class="btn btn-danger btn-sm" onclick="removeStudentImport(${index})">移除</button>
+            </div>
           </div>
           <div class="student-import-mapping">
             文件名识别：${gradeLabel}；有效学生 ${data.parsed_count}/${data.total_rows} 人；
@@ -4393,6 +4445,31 @@ function renderStudentImportPreview() {
     </div>
   `;
 }
+
+window.organizeStudentImportWithAi = async function(index) {
+  const item = pendingStudentImports[index];
+  if (!item?.file || item.aiOrganizing) return;
+  item.aiOrganizing = true;
+  renderStudentImportPreview();
+  showToast(`正在请求大模型整理 ${item.data.filename}…`, 'info');
+  try {
+    const formData = new FormData();
+    formData.append('file', item.file);
+    formData.append('expected_type', 'students');
+    formData.append('ai_organize', 'true');
+    const response = await fetch('/api/import/excel', { method: 'POST', body: formData });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
+    if (result.data.type !== 'students') throw new Error('大模型整理后仍不是可导入的学生名单');
+    pendingStudentImports[index] = { ...item, data: result.data, aiOrganizing: false };
+    renderStudentImportPreview();
+    showToast('大模型已整理完成，请核对完整名单后再确认导入', 'success');
+  } catch (error) {
+    item.aiOrganizing = false;
+    renderStudentImportPreview();
+    showToast(error.message, 'error');
+  }
+};
 
 window.removeStudentImport = function(index) {
   pendingStudentImports.splice(index, 1);

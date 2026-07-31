@@ -205,14 +205,16 @@ export async function interpretWorkbook(workbook, {
   config = getAiConfig({ includeSecret: true }),
 } = {}) {
   if (!supportedTypes.has(expectedType)) throw new Error(`不支持的工作簿识别类型: ${expectedType}`);
-  if (!config.apiKey) throw new Error('规则解析失败，且模型 API Key 尚未配置；请在系统设置中配置后重试');
+  if (!config.apiKey) throw new Error('大模型 API Key 尚未配置；请先在系统设置中保存 DeepSeek 或兼容接口的配置');
   const snapshot = workbookSnapshot(workbook);
   const content = await callChat([
     {
       role: 'system',
       content: [
         '你是学校排课系统的 Excel 结构转换器。',
-        '你的职责仅是把上传表格忠实转换成标准结构，不推测、不补全、不创建学生或课程。',
+        '你的职责仅是把上传表格忠实转换成标准结构，不推测、不补全、不创建学生、课程、班级或选课。',
+        '必须保留可见的有效数据行；对不确定字段保留空值并在 notes 说明，绝不能根据姓名、年级或课程常识猜测。',
+        '不要执行排课、分班或数据更新；你的输出只用于人工确认前的结构整理。',
         '只返回 JSON：{"document_type":"","confidence":0到1,"notes":[],"sheets":[{"name":"","title":"","headers":[],"rows":[[]]}]}。',
         schemaFor(expectedType),
       ].join('\n'),

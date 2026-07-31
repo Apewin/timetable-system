@@ -875,25 +875,8 @@ function parseUploadedWorkbook(workbook, filename, state) {
   return { parsed, matrix, objectRows, studentHeader, isCourseArrangement };
 }
 
-app.post('/api/import/excel', upload.single('file'), (req, res) => reply(res, async () => {
-  if (!req.file) throw new Error('请选择要导入的 Excel 或 CSV 文件');
-  const filename = decodedUploadFilename(req.file.originalname);
-  const state = repository.read();
-  const sourceWorkbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-  let recognitionMethod = 'rules';
-  let ai;
-  let result = parseUploadedWorkbook(sourceWorkbook, filename, state);
-  if (result.parsed.type === 'unknown') {
-    ai = await interpretWorkbook(sourceWorkbook, {
-      expectedType: studentGradeFromFilename(filename) ? 'students' : 'generic',
-      filename,
-      reason: '未能从表头识别学生、教师、课程或教室数据类型',
-    });
-    result = parseUploadedWorkbook(ai.workbook, filename, state);
-    recognitionMethod = 'ai';
-  }
+function importPreviewResponse(result, filename, { recognitionMethod = 'rules', ai } = {}) {
   const { parsed, objectRows, studentHeader, isCourseArrangement } = result;
-  if (parsed.type === 'unknown') throw new Error('模型已尝试转换，但仍无法识别学生、教师、课程或教室数据类型');
   return {
     filename,
     type: parsed.type,
@@ -911,6 +894,40 @@ app.post('/api/import/excel', upload.single('file'), (req, res) => reply(res, as
       notes: ai.interpretation.notes,
     } : undefined,
   };
+}
+
+app.post('/api/import/excel', upload.single('file'), (req, res) => reply(res, async () => {
+  if (!req.file) throw new Error('请选择要导入的 Excel 或 CSV 文件');
+  const filename = decodedUploadFilename(req.file.originalname);
+  const state = repository.read();
+  const sourceWorkbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+  const expectedType = req.body?.expected_type === 'students' ? 'students' : 'generic';
+  const aiRequested = req.body?.ai_organize === 'true';
+  let result = parseUploadedWorkbook(sourceWorkbook, filename, state);
+  if (aiRequested) {
+    const ai = await interpretWorkbook(sourceWorkbook, {
+      expectedType: expectedType === 'students' || studentGradeFromFilename(filename) ? 'students' : 'generic',
+      filename,
+      reason: '用户点击“大模型整理”请求按系统标准整理该工作簿',
+    });
+    result = parseUploadedWorkbook(ai.workbook, filename, state);
+    if (result.parsed.type === 'unknown') throw new Error('模型整理后仍无法识别学生、教师、课程或教室数据类型');
+    return importPreviewResponse(result, filename, { recognitionMethod: 'ai', ai });
+  }
+  if (result.parsed.type === 'unknown' && expectedType === 'students') {
+    return {
+      ...importPreviewResponse({
+        ...result,
+        parsed: {
+          type: 'students', data: [], errors: [{ row: 0, msg: '未识别到标准学生名单表头；可点击“大模型整理”尝试转换' }],
+          headers: [], importContext: { grade: studentGradeFromFilename(filename) },
+        },
+      }, filename),
+      needs_ai_organize: true,
+    };
+  }
+  if (result.parsed.type === 'unknown') throw new Error('未能从表头识别学生、教师、课程或教室数据类型；可使用“大模型整理”尝试转换');
+  return importPreviewResponse(result, filename);
 }));
 
 app.post('/api/import/confirm', (req, res) => reply(res, () => {
@@ -935,14 +952,12 @@ app.post('/api/ap-selections/import/preview', upload.single('file'), (req, res) 
   const filename = decodedUploadFilename(req.file.originalname);
   const state = repository.read();
   let preview = parseApSelectionBuffer(req.file.buffer, state, filename);
-  if (preview.recognized_sheet_count === 0 || preview.unmapped_course_sheets.length > 0) {
+  if (req.body?.ai_organize === 'true') {
     const sourceWorkbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const ai = await interpretWorkbook(sourceWorkbook, {
       expectedType: 'ap_selections',
       filename,
-      reason: preview.recognized_sheet_count === 0
-        ? '没有识别到 AP 课程名单工作表'
-        : `${preview.unmapped_course_sheets.length} 个工作表标题无法映射课程`,
+      reason: '用户点击“大模型整理”请求按系统标准整理 AP 多工作表选课文件',
     });
     preview = parseApSelectionBuffer(
       XLSX.write(ai.workbook, { type: 'buffer', bookType: 'xlsx' }),
@@ -971,13 +986,11 @@ app.post('/api/elective-selections/import/preview', upload.single('file'), (req,
   const state = repository.read();
   const sourceWorkbook = XLSX.read(req.file.buffer, { type: 'buffer' });
   let preview = parseElectiveSelectionWorkbook(sourceWorkbook, state, filename);
-  if (preview.recognized_sheet_count === 0 || (preview.matched_rows === 0 && preview.invalid.length > 0)) {
+  if (req.body?.ai_organize === 'true') {
     const ai = await interpretWorkbook(sourceWorkbook, {
       expectedType: 'elective_selections',
       filename,
-      reason: preview.recognized_sheet_count === 0
-        ? '没有识别到 A/B/C 选课表头或课程名单标题'
-        : '已找到表格结构，但课程/组别无法对应',
+      reason: '用户点击“大模型整理”请求按系统标准整理高三 A/B/C 选课文件',
     });
     preview = parseElectiveSelectionWorkbook(ai.workbook, state, filename);
     return {
