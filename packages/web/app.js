@@ -992,15 +992,20 @@ async function loadManualTimetable() {
   window._manualPlan = manualPlan;
   window._manualScheduleAvailable = status.solve_status === 'valid';
   const selector = document.getElementById('manual-class-select');
+  const selectableClasses = teachingClasses
+    .map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  // Administrative classes remain available to the teaching-class grid for
+  // its split lanes, but are not scheduling entry points themselves.
   const classes = [
-    ...teachingClasses.map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` })),
+    ...selectableClasses,
     ...adminClasses.map(item => ({ ...item, class_type: 'admin', label: `行政班 · ${item.name}` })),
-  ].sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  ];
   window._manualClassesById = new Map(classes.map(item => [item.id, item]));
   const hydratedFromBackend = hydrateManualDrafts(manualPlan);
   const previous = selector.value;
-  selector.innerHTML = classes.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
-  if (classes.some(item => item.id === previous)) selector.value = previous;
+  selector.innerHTML = selectableClasses.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
+  if (selectableClasses.some(item => item.id === previous)) selector.value = previous;
   const refreshManualPoolItems = () => {
     // Course category depends on the currently selected class (for example,
     // a required course can be administrative in one grade and teaching in another).
