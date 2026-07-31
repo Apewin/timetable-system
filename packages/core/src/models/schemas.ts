@@ -29,6 +29,7 @@ export const courseSchema = z.object({
     z.number().int().min(10).max(12),
     z.array(z.number().int().min(10).max(12)).min(1),
   ]).optional(),
+  applicable_class_ids: z.array(entityIdSchema).min(1).optional(),
   type: z.enum(["required", "required_elective", "ap", "other"]),
   required_room_type: roomTypeSchema.optional(),
   weekly_hours: z.number().int().positive(),

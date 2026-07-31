@@ -25,6 +25,7 @@ export interface Course {
   id: EntityId;
   name: string;
   grade?: number | number[];  // 适用年级；数组表示允许跨年级选课/混班
+  applicable_class_ids?: EntityId[];  // 高二分层必修课适用的教学班；未设置表示全部
   type: "required" | "required_elective" | "ap" | "other";  // 必修 / 必修选修课 / AP选修 / 其他（班会社团自习等）
   required_room_type?: RoomType;  // AP课指定学科教室类型
   weekly_hours: number;  // 默认周课时

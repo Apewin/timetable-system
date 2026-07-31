@@ -11,7 +11,8 @@ import { solveSchedule } from './cpsat-solver.mjs';
 import { validateSchedule } from './schedule-validator.mjs';
 import { approvalGatedRules, enforceApprovalGates, relaxApprovedRules } from './approval-gate.mjs';
 import {
-  normalizeCourseGradeRange,
+  normalizeCourseScope,
+  validateCourseClassScopes,
   validateCourseGradeSelections,
   validateSelectionBlocks,
 } from './section-builder.mjs';
@@ -1082,13 +1083,16 @@ const editableEntities = new Set([
 
 function changedState(state, entity, items) {
   const normalizedItems = entity === 'courses'
-    ? items.map(normalizeCourseGradeRange)
+    ? items.map(normalizeCourseScope)
     : items;
   const next = { ...state, [entity]: normalizedItems };
   if (entity === 'constraints') validateRules(items);
   if (entity === 'selection_blocks') validateSelectionBlocks(next);
   if (entity === 'courses' || entity === 'students' || entity === 'selection_blocks') {
     validateCourseGradeSelections(next);
+  }
+  if (entity === 'courses' || entity === 'teaching_classes' || entity === 'teaching_assignments') {
+    validateCourseClassScopes(next);
   }
   if (state.schedule) next.solve_status = 'stale';
   return next;

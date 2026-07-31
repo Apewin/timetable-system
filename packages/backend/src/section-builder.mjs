@@ -56,9 +56,43 @@ export function normalizeCourseGradeRange(course) {
   return normalized;
 }
 
+export function courseClassRange(course) {
+  if (course?.applicable_class_ids === undefined || course?.applicable_class_ids === null) return null;
+  if (!Array.isArray(course.applicable_class_ids) || !course.applicable_class_ids.length) {
+    throw new Error(`课程 ${course.id || '（未命名）'} 的高二适用班级不能为空`);
+  }
+  if (!course.applicable_class_ids.every(classId => typeof classId === 'string' && classId.trim())) {
+    throw new Error(`课程 ${course.id || '（未命名）'} 的适用班级必须是班级 ID 数组`);
+  }
+  return [...new Set(course.applicable_class_ids)];
+}
+
+export function normalizeCourseScope(course) {
+  const normalized = normalizeCourseGradeRange(course);
+  const grades = courseGradeRange(normalized);
+  if (grades && !grades.includes(11)) {
+    const withoutHighTwoClasses = { ...normalized };
+    delete withoutHighTwoClasses.applicable_class_ids;
+    return withoutHighTwoClasses;
+  }
+  const classIds = courseClassRange(normalized);
+  if (!classIds) {
+    const unrestricted = { ...normalized };
+    delete unrestricted.applicable_class_ids;
+    return unrestricted;
+  }
+  return { ...normalized, applicable_class_ids: classIds.sort() };
+}
+
 function gradeAllowed(course, grade) {
   const grades = courseGradeRange(course);
   return !grades || grades.includes(Number(grade));
+}
+
+function classAllowed(course, group, classType) {
+  const classIds = courseClassRange(course);
+  if (!classIds || classType !== 'teaching' || Number(group.grade) !== 11) return true;
+  return classIds.includes(group.id);
 }
 
 /**
@@ -80,6 +114,25 @@ export function validateCourseGradeSelections(state, courses = byId(state.course
         `学生 ${student.name || student.id}（${student.id}，高${Number(student.grade) - 9}）`
         + `已选择 ${course.name || course.id}，不在该课程的新适用年级范围内；请先调整该生选课`,
       );
+    }
+  }
+}
+
+export function validateCourseClassScopes(state, courses = byId(state.courses)) {
+  const teachingClasses = byId(state.teaching_classes);
+  for (const course of courses.values()) {
+    const classIds = courseClassRange(course);
+    if (!classIds) continue;
+    const grades = courseGradeRange(course);
+    if (grades && !grades.includes(11)) {
+      throw new Error(`课程 ${course.id} 未包含高二，不能设置高二适用班级`);
+    }
+    for (const classId of classIds) {
+      const teachingClass = teachingClasses.get(classId);
+      if (!teachingClass) throw new Error(`课程 ${course.id} 引用了不存在的教学班 ${classId}`);
+      if (Number(teachingClass.grade) !== 11) {
+        throw new Error(`课程 ${course.id} 的适用班级 ${classId} 不是高二教学班`);
+      }
     }
   }
 }
@@ -145,6 +198,11 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
       if (!gradeAllowed(course, group.grade)) {
         throw new Error(`课程 ${course.id} 不适用于 ${group.name || classId} 所在年级`);
       }
+      // A teacher assignment may deliberately list all parallel teaching
+      // classes. The editable course scope is the effective subset and
+      // therefore suppresses out-of-scope tasks rather than invalidating the
+      // broader staffing record.
+      if (!classAllowed(course, group, assignment.class_type)) continue;
       const candidates = compatibleRooms(state, course, group.student_ids.length);
       if (!candidates.length) throw new Error(`班级 ${classId} 的 ${course.id} 没有容量足够的教室`);
       const fixedRoom = assignment.class_type === 'admin' ? group.fixed_room_id : null;
@@ -414,6 +472,7 @@ function applySectionOverrides(sections, state) {
 export function buildSections(state) {
   const courses = byId(state.courses);
   validateCourseGradeSelections(state, courses);
+  validateCourseClassScopes(state, courses);
   validateSelectionBlocks(state, courses);
   const adminClasses = byId(state.admin_classes);
   const teachingClasses = byId(state.teaching_classes);

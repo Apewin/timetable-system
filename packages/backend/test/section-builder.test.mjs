@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   buildSections,
   normalizeCourseGradeRange,
+  normalizeCourseScope,
   validateCourseGradeSelections,
 } from '../src/section-builder.mjs';
 
@@ -55,6 +56,50 @@ test('normalizes a narrowed grade range and removes obsolete section requirement
   assert.deepEqual(narrowed.section_requirements, [
     { grades: [11], count: 1, teacher_id: 'T11' },
   ]);
+});
+
+test('generates layered required-course tasks only for selected high-two teaching classes', () => {
+  const sections = buildSections(state({
+    students: [
+      { id: 'S1', grade: 11, ap_courses: [], elective_choices: {} },
+      { id: 'S2', grade: 11, ap_courses: [], elective_choices: {} },
+    ],
+    courses: [{
+      id: 'HONOR',
+      name: '分层必修',
+      type: 'required',
+      grade: 11,
+      applicable_class_ids: ['TC_G11_1'],
+      weekly_hours: 2,
+    }],
+    teaching_classes: [
+      { id: 'TC_G11_1', name: '高二教学1班', grade: 11, student_ids: ['S1'], fixed_room_id: 'R' },
+      { id: 'TC_G11_2', name: '高二教学2班', grade: 11, student_ids: ['S2'], fixed_room_id: 'R' },
+    ],
+    teachers: [{ id: 'T', can_teach: ['HONOR'] }],
+    rooms: [{ id: 'R', type: 'general', capacity: 30 }],
+    teaching_assignments: [{
+      id: 'TA',
+      class_type: 'teaching',
+      class_ids: ['TC_G11_1', 'TC_G11_2'],
+      course_id: 'HONOR',
+      teacher_id: 'T',
+      weekly_hours: 2,
+    }],
+  }));
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].class_id, 'TC_G11_1');
+  assert.deepEqual(sections[0].student_ids, ['S1']);
+});
+
+test('removes the high-two class scope when high two is removed from a course', () => {
+  const normalized = normalizeCourseScope({
+    id: 'ONLY_G12',
+    grade: 12,
+    applicable_class_ids: ['TC_G11_1'],
+  });
+  assert.equal(normalized.grade, 12);
+  assert.equal(normalized.applicable_class_ids, undefined);
 });
 
 test('uses per-grade teacher and section requirements without treating teacher count as a section limit', () => {

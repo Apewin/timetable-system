@@ -677,13 +677,38 @@ function renderRoomsList(data) {
 
 // 加载课程列表
 async function loadCourses() {
-  const data = await api('/courses');
+  const [data, teachingClasses, teachingAssignments] = await Promise.all([
+    api('/courses'),
+    api('/teaching_classes'),
+    api('/teaching_assignments'),
+  ]);
   window._coursesData = data;
+  window._teachingClassesData = teachingClasses;
+  window._teachingAssignmentsData = teachingAssignments;
   const gradeFilter = document.getElementById('filter-course-grade');
+  const classFilter = document.getElementById('filter-course-class');
   const searchInput = document.getElementById('search-courses');
-  gradeFilter.onchange = applyCourseFilters;
+  const highTwoClasses = teachingClasses
+    .filter(item => Number(item.grade) === 11)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  classFilter.innerHTML = '<option value="">全部高二教学班</option>'
+    + highTwoClasses.map(item => `<option value="${item.id}">${item.name}</option>`).join('');
+  gradeFilter.onchange = () => {
+    syncCourseClassFilter();
+    applyCourseFilters();
+  };
+  classFilter.onchange = applyCourseFilters;
   searchInput.oninput = applyCourseFilters;
+  syncCourseClassFilter();
   applyCourseFilters();
+}
+
+function syncCourseClassFilter() {
+  const isHighTwo = document.getElementById('filter-course-grade')?.value === '11';
+  const wrap = document.getElementById('filter-course-class-wrap');
+  const select = document.getElementById('filter-course-class');
+  wrap?.classList.toggle('hidden', !isHighTwo);
+  if (!isHighTwo && select) select.value = '';
 }
 
 function courseAppliesToGrade(course, grade) {
@@ -724,6 +749,56 @@ function renderCourseGradeOptions(course = { grade: [10, 11, 12] }) {
   `;
 }
 
+function highTwoTeachingClasses() {
+  return (window._teachingClassesData || [])
+    .filter(item => Number(item.grade) === 11)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function effectiveCourseClassIds(course = {}) {
+  if (Array.isArray(course.applicable_class_ids)) return course.applicable_class_ids;
+  const highTwoClassIds = new Set(highTwoTeachingClasses().map(item => item.id));
+  const assigned = (window._teachingAssignmentsData || [])
+    .filter(item => item.course_id === course.id && item.class_type === 'teaching')
+    .flatMap(item => Array.isArray(item.class_ids) ? item.class_ids : item.class_id ? [item.class_id] : [])
+    .filter(classId => highTwoClassIds.has(classId));
+  return assigned.length ? [...new Set(assigned)] : [...highTwoClassIds];
+}
+
+function courseAppliesToClass(course, classId) {
+  return !classId || effectiveCourseClassIds(course).includes(classId);
+}
+
+function courseClassLabel(course) {
+  const selected = new Set(effectiveCourseClassIds(course));
+  const classes = highTwoTeachingClasses().filter(item => selected.has(item.id));
+  return classes.length ? classes.map(item => item.name).join('、') : '未设置';
+}
+
+function renderCourseClassOptions(course = {}) {
+  const isExistingCourse = Boolean(course.id) || Array.isArray(course.applicable_class_ids);
+  const selected = new Set(isExistingCourse
+    ? effectiveCourseClassIds(course)
+    : highTwoTeachingClasses().map(item => item.id));
+  return `
+    <div class="class-range-options" role="group" aria-label="高二适用教学班">
+      ${highTwoTeachingClasses().map(item => `
+        <label class="class-range-option">
+          <input type="checkbox" name="class_scope" value="${item.id}" ${selected.has(item.id) ? 'checked' : ''}>
+          <span>${item.name}</span>
+        </label>
+      `).join('')}
+    </div>
+    <div class="form-help">仅用于高二分层必修课；未被勾选的教学班不会生成该课程的排课任务。</div>
+  `;
+}
+
+function syncCourseClassEditor(form) {
+  const highTwoSelected = [...form.querySelectorAll('input[name="grade_scope"]:checked')]
+    .some(input => Number(input.value) === 11);
+  form.querySelector('[data-high-two-class-scope]')?.classList.toggle('hidden', !highTwoSelected);
+}
+
 function courseTypeLabel(type) {
   return ({ required: '必修', ap: 'AP选修', required_elective: '必修选修', other: '活动/其他' })[type] || type || '-';
 }
@@ -731,20 +806,23 @@ function courseTypeLabel(type) {
 function applyCourseFilters() {
   const allCourses = window._coursesData || [];
   const grade = document.getElementById('filter-course-grade')?.value || '';
+  const classId = grade === '11' ? document.getElementById('filter-course-class')?.value || '' : '';
   const keyword = document.getElementById('search-courses')?.value.toLowerCase().trim() || '';
   const filtered = allCourses.filter(course => {
     const gradeMatch = !grade || courseAppliesToGrade(course, grade);
+    const classMatch = courseAppliesToClass(course, classId);
     const keywordMatch = !keyword
       || course.id.toLowerCase().includes(keyword)
       || course.name.toLowerCase().includes(keyword)
       || course.type.toLowerCase().includes(keyword)
-      || courseGradeLabel(course).includes(keyword);
-    return gradeMatch && keywordMatch;
+      || courseGradeLabel(course).includes(keyword)
+      || (grade === '11' && courseClassLabel(course).toLowerCase().includes(keyword));
+    return gradeMatch && classMatch && keywordMatch;
   });
-  renderCoursesList(filtered, { grade, total: allCourses.length });
+  renderCoursesList(filtered, { grade, classId, total: allCourses.length });
 }
 
-function renderCoursesList(data, { grade = '', total = data.length } = {}) {
+function renderCoursesList(data, { grade = '', classId = '', total = data.length } = {}) {
   const content = document.getElementById('courses-list');
   if (data.length === 0) {
     content.innerHTML = `<div class="empty-state"><p>${grade ? `高${Number(grade) - 9}暂无匹配课程` : '暂无课程数据'}</p></div>`;
@@ -761,6 +839,7 @@ function renderCoursesList(data, { grade = '', total = data.length } = {}) {
             <th>ID</th>
             <th>名称</th>
             <th>适用年级</th>
+            ${grade === '11' ? '<th>适用班级</th>' : ''}
             <th>类型</th>
             <th>周课时</th>
             <th>教室类型</th>
@@ -775,6 +854,7 @@ function renderCoursesList(data, { grade = '', total = data.length } = {}) {
               <td>${c.id}</td>
               <td>${c.name}</td>
               <td>${courseGradeLabel(c)}</td>
+              ${grade === '11' ? `<td>${courseClassLabel(c)}</td>` : ''}
               <td>${courseTypeLabel(c.type)}</td>
               <td>${c.weekly_hours}</td>
               <td>${c.required_room_type || '-'}</td>
@@ -2701,6 +2781,12 @@ window.editEntity = async function(entity, id) {
 
       case 'courses':
         title = '编辑课程';
+        if (!window._teachingClassesData || !window._teachingAssignmentsData) {
+          [window._teachingClassesData, window._teachingAssignmentsData] = await Promise.all([
+            api('/teaching_classes'),
+            api('/teaching_assignments'),
+          ]);
+        }
         formHtml = `
           <form id="form-edit-course">
             <div class="form-group">
@@ -2723,6 +2809,10 @@ window.editEntity = async function(entity, id) {
             <div class="form-group">
               <label>适用年级</label>
               ${renderCourseGradeOptions(item)}
+            </div>
+            <div class="form-group" data-high-two-class-scope>
+              <label>适用班级（高二）</label>
+              ${renderCourseClassOptions(item)}
             </div>
             <div class="form-group">
               <label>每周课时</label>
@@ -2851,6 +2941,7 @@ window.editEntity = async function(entity, id) {
 
     // 显示模态框
     showModal(title, formHtml);
+    const form = document.querySelector(`form[id^="form-edit-"]`);
 
     // 添加下拉框事件监听（教师编辑页面）
     if (entity === 'teachers') {
@@ -2861,9 +2952,14 @@ window.editEntity = async function(entity, id) {
         });
       }
     }
+    if (entity === 'courses') {
+      form.querySelectorAll('input[name="grade_scope"]').forEach(input => {
+        input.addEventListener('change', () => syncCourseClassEditor(form));
+      });
+      syncCourseClassEditor(form);
+    }
 
     // 添加表单提交事件
-    const form = document.querySelector(`form[id^="form-edit-"]`);
     if (form) {
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -2875,7 +2971,7 @@ window.editEntity = async function(entity, id) {
           if (key === 'id') continue; // 跳过 ID 字段
 
           // 特殊处理 can_teach（复选框）
-          if (key === 'can_teach' || key === 'grade_scope') {
+          if (key === 'can_teach' || key === 'grade_scope' || key === 'class_scope') {
             // 跳过，后面单独处理
             continue;
           } else if (key === 'grade' || key === 'max_per_day' || key === 'max_per_week' || key === 'weekly_hours' || key === 'capacity') {
@@ -2898,6 +2994,16 @@ window.editEntity = async function(entity, id) {
             return;
           }
           updateData.grade = grades.length === 1 ? grades[0] : grades;
+          if (grades.includes(11)) {
+            const classIds = formData.getAll('class_scope');
+            if (!classIds.length) {
+              showToast('高二课程请至少选择一个适用教学班', 'error');
+              return;
+            }
+            updateData.applicable_class_ids = classIds;
+          } else {
+            updateData.applicable_class_ids = null;
+          }
         }
 
         try {
@@ -3755,6 +3861,10 @@ function init() {
           <label>适用年级</label>
           ${renderCourseGradeOptions()}
         </div>
+        <div class="form-group" data-high-two-class-scope>
+          <label>适用班级（高二）</label>
+          ${renderCourseClassOptions()}
+        </div>
         <div class="form-group">
           <label>每周课时</label>
           <input type="number" name="weekly_hours" value="4">
@@ -3770,7 +3880,12 @@ function init() {
       </form>
     `);
 
-    document.getElementById('form-add-course').addEventListener('submit', async (e) => {
+    const addCourseForm = document.getElementById('form-add-course');
+    addCourseForm.querySelectorAll('input[name="grade_scope"]').forEach(input => {
+      input.addEventListener('change', () => syncCourseClassEditor(addCourseForm));
+    });
+    syncCourseClassEditor(addCourseForm);
+    addCourseForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const formData = new FormData(e.target);
       const grades = formData.getAll('grade_scope').map(Number);
@@ -3778,11 +3893,17 @@ function init() {
         showToast('请至少选择一个适用年级', 'error');
         return;
       }
+      const classIds = formData.getAll('class_scope');
+      if (grades.includes(11) && !classIds.length) {
+        showToast('高二课程请至少选择一个适用教学班', 'error');
+        return;
+      }
       const data = {
         id: formData.get('id'),
         name: formData.get('name'),
         type: formData.get('type'),
         grade: grades.length === 1 ? grades[0] : grades,
+        applicable_class_ids: grades.includes(11) ? classIds : undefined,
         weekly_hours: parseInt(formData.get('weekly_hours')),
         required_room_type: formData.get('required_room_type') || undefined,
         prefer_morning: false,
