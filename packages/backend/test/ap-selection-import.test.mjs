@@ -27,8 +27,8 @@ const state = {
     { id: 'AP_CS', name: 'AP Computer Science', type: 'ap' },
   ],
   students: [
-    { id: 'S1', name: '张三', pinyin_name: 'Zhang San', english_name: 'Alex', ap_courses: ['AP_CS'] },
-    { id: 'S2', name: '李四', pinyin_name: 'Li Si', english_name: 'Taylor', ap_courses: [] },
+    { id: 'S1', name: '张三', pinyin_name: 'Zhang San', english_name: 'Alex', grade: 11, ap_courses: ['AP_CS'] },
+    { id: 'S2', name: '李四', pinyin_name: 'Li Si', english_name: 'Taylor', grade: 11, ap_courses: [] },
   ],
 };
 
@@ -39,6 +39,7 @@ test('parses AP rosters across worksheets and ignores helper sheets', () => {
   assert.equal(preview.matched_rows, 2);
   assert.equal(preview.unique_students, 2);
   assert.equal(preview.can_confirm, true);
+  assert.equal(preview.changes.find(change => change.student_id === 'S1').grade, 11);
   assert.deepEqual(preview.changes.find(change => change.student_id === 'S1').course_ids, ['AP_BIO']);
 });
 
@@ -48,4 +49,15 @@ test('replace mode updates only students present in the imported workbook', () =
   assert.deepEqual(applied.students.find(student => student.id === 'S1').ap_courses, ['AP_BIO']);
   assert.deepEqual(applied.students.find(student => student.id === 'S2').ap_courses, ['AP_CS']);
   assert.equal(applied.updated, 2);
+});
+
+test('rejects an AP course imported for a student outside its grade scope', () => {
+  const scopedState = {
+    courses: [{ id: 'AP_PHYSC', name: 'AP Physics C', type: 'ap', grade: 12 }],
+    students: [{ id: 'S1', name: '张三', grade: 11, ap_courses: [] }],
+  };
+  assert.throws(
+    () => applyApSelectionChanges(scopedState, [{ student_id: 'S1', course_ids: ['AP_PHYSC'] }]),
+    /不适用于/,
+  );
 });

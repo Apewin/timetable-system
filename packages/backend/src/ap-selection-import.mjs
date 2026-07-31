@@ -34,6 +34,13 @@ function courseKey(value) {
   return aliases[key] || key;
 }
 
+function courseAppliesToStudentGrade(course, grade) {
+  const grades = (Array.isArray(course?.grade) ? course.grade : [course?.grade])
+    .map(Number)
+    .filter(Number.isFinite);
+  return !grades.length || grades.includes(Number(grade));
+}
+
 function findRosterHeader(matrix) {
   for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 20); rowIndex++) {
     const headers = (matrix[rowIndex] || []).map(compact);
@@ -97,6 +104,7 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
   const sheets = [];
   const unmatched = [];
   const ambiguous = [];
+  const gradeMismatches = [];
   const unmappedCourseSheets = [];
   const ignoredSheets = [];
   let matchedRows = 0;
@@ -136,9 +144,21 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
     let sheetMatched = 0;
     let sheetUnmatched = 0;
     let sheetAmbiguous = 0;
+    let sheetGradeMismatch = 0;
     for (const row of rows) {
       const match = matchStudent(row, students);
       if (match.status === 'matched') {
+        if (!courseAppliesToStudentGrade(course, match.student.grade)) {
+          sheetGradeMismatch++;
+          gradeMismatches.push({
+            ...row,
+            student_id: match.student.id,
+            student_grade: match.student.grade,
+            course_id: course.id,
+            course_name: course.name,
+          });
+          continue;
+        }
         sheetMatched++;
         matchedRows++;
         if (!selectedByStudent.has(match.student.id)) selectedByStudent.set(match.student.id, new Set());
@@ -161,6 +181,7 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
       matched: sheetMatched,
       unmatched: sheetUnmatched,
       ambiguous: sheetAmbiguous,
+      grade_mismatch: sheetGradeMismatch,
     });
   }
 
@@ -173,6 +194,8 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
       student_id: studentId,
       student_name: student.name,
       english_name: student.english_name || '',
+      grade: student.grade,
+      admin_class_id: student.admin_class_id || '',
       previous_course_ids: previous,
       previous_course_names: previous.map(id => courseNameById.get(id) || id),
       course_ids: next,
@@ -183,7 +206,7 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
   }).sort((left, right) => left.student_id.localeCompare(right.student_id, 'zh-CN', { numeric: true }));
 
   const recognizedSheets = sheets.filter(sheet => sheet.status === 'recognized');
-  const issueCount = unmatched.length + ambiguous.length + unmappedCourseSheets.length;
+  const issueCount = unmatched.length + ambiguous.length + gradeMismatches.length + unmappedCourseSheets.length;
   return {
     filename,
     total_sheets: workbook.SheetNames.length,
@@ -194,6 +217,7 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
     unique_students: changes.length,
     unmatched,
     ambiguous,
+    grade_mismatches: gradeMismatches,
     unmapped_course_sheets: unmappedCourseSheets,
     issue_count: issueCount,
     can_confirm: recognizedSheets.length > 0 && changes.length > 0 && issueCount === 0,
@@ -210,12 +234,22 @@ export function applyApSelectionChanges(state, changes, mode = 'replace') {
   if (!Array.isArray(changes) || changes.length === 0) throw new Error('没有可更新的 AP 选课数据');
   if (!['replace', 'merge'].includes(mode)) throw new Error('导入模式必须是 replace 或 merge');
   const apCourseIds = new Set((state.courses || []).filter(course => course.type === 'ap').map(course => course.id));
+  const courseById = new Map((state.courses || []).map(course => [course.id, course]));
+  const studentById = new Map((state.students || []).map(student => [student.id, student]));
   const changeByStudent = new Map();
   for (const change of changes) {
     if (!change?.student_id || !Array.isArray(change.course_ids)) throw new Error('AP 选课变更数据不完整');
     if (changeByStudent.has(change.student_id)) throw new Error(`学生 ${change.student_id} 在导入数据中重复`);
+    const student = studentById.get(change.student_id);
+    if (!student) throw new Error(`找不到学生: ${change.student_id}`);
     const unique = [...new Set(change.course_ids)];
-    for (const courseId of unique) if (!apCourseIds.has(courseId)) throw new Error(`${courseId} 不是系统中的 AP 课程`);
+    for (const courseId of unique) {
+      if (!apCourseIds.has(courseId)) throw new Error(`${courseId} 不是系统中的 AP 课程`);
+      const course = courseById.get(courseId);
+      if (!courseAppliesToStudentGrade(course, student.grade)) {
+        throw new Error(`${course.name || courseId} 不适用于 ${student.name || student.id}（年级 ${student.grade}）`);
+      }
+    }
     changeByStudent.set(change.student_id, unique);
   }
   let updated = 0;

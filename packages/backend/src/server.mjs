@@ -949,7 +949,21 @@ app.post('/api/import/confirm', (req, res) => reply(res, () => {
 function apSelectionRecords(state) {
   return (state.students || [])
     .filter(student => (student.ap_courses || []).length)
-    .map(student => ({ id: student.id, student_id: student.id, course_ids: [...student.ap_courses] }));
+    .map(student => ({
+      id: student.id,
+      student_id: student.id,
+      grade: student.grade,
+      admin_class_id: student.admin_class_id,
+      teaching_class_id: student.teaching_class_id,
+      course_ids: [...student.ap_courses],
+    }));
+}
+
+function courseAppliesToStudentGrade(course, grade) {
+  const grades = (Array.isArray(course?.grade) ? course.grade : [course?.grade])
+    .map(Number)
+    .filter(Number.isFinite);
+  return !grades.length || grades.includes(Number(grade));
 }
 
 app.post('/api/ap-selections/import/preview', upload.single('file'), (req, res) => reply(res, async () => {
@@ -1049,6 +1063,13 @@ function updateStudentApSelection(state, studentId, courseIds) {
   }
   const index = (state.students || []).findIndex(student => student.id === studentId);
   if (index < 0) throw new Error(`学生不存在: ${studentId}`);
+  const student = state.students[index];
+  for (const courseId of courseIds) {
+    const course = courses.get(courseId);
+    if (!courseAppliesToStudentGrade(course, student.grade)) {
+      throw new Error(`${course.name || courseId} 不适用于 ${student.name || studentId}（年级 ${student.grade}）`);
+    }
+  }
   const students = [...state.students];
   students[index] = { ...students[index], ap_courses: [...courseIds] };
   return students[index];

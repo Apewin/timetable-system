@@ -1738,7 +1738,7 @@ function renderAPCourseCard(course, isRequired) {
             ${course.students.map(s => `
               <div class="student-item">
                 <span class="student-name">${s.student_name}</span>
-                <span class="student-info">高${s.grade} | ${s.admin_class}</span>
+                <span class="student-info">${seniorGradeLabel(s.grade)} | ${s.admin_class}</span>
                 ${s.source === 'required'
                   ? '<span class="source-badge required">必修</span>'
                   : '<span class="source-badge elective">选修</span>'
@@ -1809,15 +1809,18 @@ window.removeStudentFromCourse = async function(studentId, courseId) {
 // 向课程添加学生
 window.addStudentToCourse = async function(courseId) {
   try {
-    const [students, selections] = await Promise.all([
+    const [students, selections, courses] = await Promise.all([
       api('/students'),
-      api('/ap_selections')
+      api('/ap_selections'),
+      api('/courses'),
     ]);
+    const course = courses.find(item => item.id === courseId);
 
     // 找出没有选这门课的学生
     const availableStudents = students.filter(s => {
       const selection = selections.find(sel => sel.student_id === s.id);
-      return !selection || !selection.course_ids.includes(courseId);
+      return courseAppliesToGrade(course || {}, s.grade)
+        && (!selection || !selection.course_ids.includes(courseId));
     });
 
     if (availableStudents.length === 0) {
@@ -1832,7 +1835,7 @@ window.addStudentToCourse = async function(courseId) {
           <label>选择学生</label>
           <select name="student_id" class="select" required>
             <option value="">选择学生</option>
-            ${availableStudents.map(s => `<option value="${s.id}">${s.name} (${s.id}) - 高${s.grade}</option>`).join('')}
+            ${availableStudents.map(s => `<option value="${s.id}">${s.name} (${s.id}) - ${seniorGradeLabel(s.grade)}</option>`).join('')}
           </select>
         </div>
         <div class="form-actions">
@@ -4542,6 +4545,11 @@ function renderApSelectionImportPreview() {
       name: `${item.chinese_name}${item.english_name ? ` (${item.english_name})` : ''}`,
       detail: `匹配到多个学生：${(item.candidate_ids || []).join(', ')}`,
     })),
+    ...(data.grade_mismatches || []).map(item => ({
+      location: `${item.sheet_name} 第 ${item.excel_row} 行`,
+      name: `${item.chinese_name} (${seniorGradeLabel(item.student_grade)})`,
+      detail: `${item.course_name} 不适用于该学生年级`,
+    })),
   ];
 
   const usedAi = data.recognition_method === 'ai';
@@ -4582,9 +4590,9 @@ function renderApSelectionImportPreview() {
                 <td>${escapeImportHtml(sheet.course_name || '-')}</td>
                 <td>${sheet.rows || 0}</td>
                 <td>${sheet.matched || 0}</td>
-                <td class="${sheet.status === 'recognized' && !sheet.unmatched && !sheet.ambiguous ? 'ap-import-status-ok' : 'ap-import-status-warning'}">
+                <td class="${sheet.status === 'recognized' && !sheet.unmatched && !sheet.ambiguous && !sheet.grade_mismatch ? 'ap-import-status-ok' : 'ap-import-status-warning'}">
                   ${sheet.status === 'recognized'
-                    ? (sheet.unmatched || sheet.ambiguous ? `${sheet.unmatched || 0} 未匹配 / ${sheet.ambiguous || 0} 有歧义` : '已匹配')
+                    ? (sheet.unmatched || sheet.ambiguous || sheet.grade_mismatch ? `${sheet.unmatched || 0} 未匹配 / ${sheet.ambiguous || 0} 有歧义 / ${sheet.grade_mismatch || 0} 年级不符` : '已匹配')
                     : '课程未识别'}
                 </td>
               </tr>
@@ -4631,13 +4639,14 @@ function renderApSelectionImportPreview() {
       </div>
       <div class="student-import-preview-table">
         <table>
-          <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>当前 AP 选课</th><th>导入后 AP 选课</th></tr></thead>
+          <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>年级</th><th>当前 AP 选课</th><th>导入后 AP 选课</th></tr></thead>
           <tbody>
             ${data.changes.map(change => `
               <tr>
                 <td>${escapeImportHtml(change.student_id)}</td>
                 <td>${escapeImportHtml(change.student_name)}</td>
                 <td>${escapeImportHtml(change.english_name || '-')}</td>
+                <td>${escapeImportHtml(seniorGradeLabel(change.grade))}</td>
                 <td>${escapeImportHtml((change.previous_course_names || []).join('、') || '无')}</td>
                 <td>${escapeImportHtml((change.course_names || []).join('、') || '无')}</td>
               </tr>
