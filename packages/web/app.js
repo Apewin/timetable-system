@@ -336,6 +336,60 @@ function manualCourseLabel(course) {
   return `${course.name || course.id}${course.weekly_hours ? ` · ${course.weekly_hours} 节/周` : ''}`;
 }
 
+function manualCoursePoolItems(courses, selectionBlocks = []) {
+  const courseById = new Map(courses.map(course => [course.id, course]));
+  const bundledCourseIds = new Set();
+  const bundles = [];
+  const addBundle = (id, courseIds, name) => {
+    const bundleCourses = courseIds.map(courseId => courseById.get(courseId)).filter(Boolean);
+    if (bundleCourses.length < 2) return;
+    bundleCourses.forEach(course => bundledCourseIds.add(course.id));
+    bundles.push({
+      id: `bundle:${id}`,
+      kind: 'bundle',
+      name: bundleCourses.map(course => course.name || course.id).join(' / '),
+      group_name: name,
+      course_ids: bundleCourses.map(course => course.id),
+      weekly_hours: Math.max(...bundleCourses.map(course => Number(course.weekly_hours) || 0)),
+      category: 'elective',
+    });
+  };
+
+  for (const block of selectionBlocks) {
+    if (block?.synchronized_time_block !== true) continue;
+    addBundle(block.id, block.allowed_course_ids || [], block.name || '同步选课组');
+  }
+
+  const electiveGroups = new Map();
+  for (const course of courses) {
+    if (course.type !== 'required_elective' || !course.elective_group || bundledCourseIds.has(course.id)) continue;
+    const grade = Array.isArray(course.grade) ? course.grade.join('_') : course.grade;
+    const key = `${grade || 'all'}:${course.elective_group}`;
+    const group = electiveGroups.get(key) || [];
+    group.push(course); electiveGroups.set(key, group);
+  }
+  for (const [key, group] of electiveGroups) {
+    addBundle(`elective_group:${key}`, group.map(course => course.id), `${group[0].elective_group} 组选修`);
+  }
+
+  const individualCourses = courses
+    .filter(course => !bundledCourseIds.has(course.id))
+    .map(course => ({
+      id: course.id,
+      kind: 'course',
+      name: course.name || course.id,
+      course_ids: [course.id],
+      weekly_hours: Number(course.weekly_hours) || 0,
+      category: manualCourseCategory(course),
+    }));
+  return [...bundles, ...individualCourses].sort((left, right) =>
+    left.name.localeCompare(right.name, 'zh-CN'));
+}
+
+function manualPoolItemLabel(item) {
+  return `${item.name}${item.weekly_hours ? ` · ${item.weekly_hours} 节/周` : ''}`;
+}
+
 function manualCourseCategory(course) {
   if (course.type === 'ap') return 'ap';
   if (course.type === 'required_elective') return 'elective';
@@ -370,31 +424,31 @@ function renderManualCoursePool() {
   const count = document.getElementById('manual-course-count');
   if (!pool) return;
   const keyword = (document.getElementById('manual-course-search')?.value || '').trim().toLowerCase();
-  const courses = (window._manualCourses || []).filter(course =>
-    !keyword || `${course.id} ${course.name || ''}`.toLowerCase().includes(keyword));
-  count.textContent = `${courses.length} 门`;
-  pool.innerHTML = courses.map(course => {
-    const category = manualCourseCategory(course);
+  const items = (window._manualPoolItems || []).filter(item =>
+    !keyword || `${item.name} ${item.group_name || ''} ${(item.course_ids || []).join(' ')}`.toLowerCase().includes(keyword));
+  count.textContent = `${items.length} 项`;
+  pool.innerHTML = items.map(item => {
+    const category = item.category;
     return `
-    <div class="manual-course-card category-${category}" draggable="true" data-course-id="${course.id}">
-      <div class="manual-course-name">${course.name || course.id}</div>
-      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${course.id} · ${course.weekly_hours || 0} 节/周</div>
+    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''}" draggable="true" data-manual-item-id="${item.id}">
+      <div class="manual-course-name">${item.name}</div>
+      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设` : `${item.course_ids[0]} · ${item.weekly_hours || 0} 节/周`}</div>
     </div>
   `;
   }).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
   pool.querySelectorAll('.manual-course-card').forEach(card => {
     card.addEventListener('dragstart', event => {
       event.dataTransfer.effectAllowed = 'copy';
-      event.dataTransfer.setData('application/x-manual-course', card.dataset.courseId);
+      event.dataTransfer.setData('application/x-manual-item', card.dataset.manualItemId);
     });
   });
 }
 
-function saveManualCourseToSlot(slotId, courseId) {
+function saveManualCourseToSlot(slotId, itemId) {
   const classId = manualCurrentClassId();
-  if (!classId || !courseId) return;
+  if (!classId || !itemId) return;
   const drafts = readManualDrafts();
-  drafts[classId] = { ...(drafts[classId] || {}), [slotId]: courseId };
+  drafts[classId] = { ...(drafts[classId] || {}), [slotId]: itemId };
   writeManualDrafts(drafts);
   renderManualTimetableGrid();
 }
@@ -414,6 +468,7 @@ function renderManualTimetableGrid() {
   if (!grid || !classId) return;
   const drafts = readManualDrafts();
   const draft = drafts[classId] || {};
+  const itemById = new Map((window._manualPoolItems || []).map(item => [item.id, item]));
   const courseById = new Map((window._manualCourses || []).map(course => [course.id, course]));
   const days = ['周一', '周二', '周三', '周四', '周五'];
   let html = '<div class="manual-grid-head">节次</div>' + days.map(day => `<div class="manual-grid-head">${day}</div>`).join('');
@@ -421,9 +476,14 @@ function renderManualTimetableGrid() {
     html += `<div class="manual-grid-period">第 ${period} 节</div>`;
     for (let day = 1; day <= 5; day++) {
       const slotId = manualSlotId(day, period);
-      const course = courseById.get(draft[slotId]);
-      html += `<div class="manual-slot ${course ? 'has-course' : ''}" data-slot-id="${slotId}">
-        ${course ? `<div class="manual-slot-course"><span>${manualCourseLabel(course)}</span><button type="button" class="manual-slot-remove" data-slot-id="${slotId}" aria-label="删除课程">×</button></div>` : '<span class="manual-slot-placeholder">拖入课程</span>'}
+      const savedItemId = draft[slotId];
+      // Existing manual drafts stored a course ID directly. Keep those drafts
+      // readable after introducing grouped, synchronized course cards.
+      const item = itemById.get(savedItemId) || (courseById.has(savedItemId)
+        ? { id: savedItemId, kind: 'course', name: courseById.get(savedItemId).name || savedItemId, weekly_hours: courseById.get(savedItemId).weekly_hours }
+        : null);
+      html += `<div class="manual-slot ${item ? 'has-course' : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''}" data-slot-id="${slotId}">
+        ${item ? `<div class="manual-slot-course"><span>${manualPoolItemLabel(item)}</span><button type="button" class="manual-slot-remove" data-slot-id="${slotId}" aria-label="删除课程">×</button></div>` : '<span class="manual-slot-placeholder">拖入课程</span>'}
       </div>`;
     }
   }
@@ -434,7 +494,9 @@ function renderManualTimetableGrid() {
     slot.addEventListener('drop', event => {
       event.preventDefault();
       slot.classList.remove('drag-over');
-      saveManualCourseToSlot(slot.dataset.slotId, event.dataTransfer.getData('application/x-manual-course'));
+      const itemId = event.dataTransfer.getData('application/x-manual-item')
+        || event.dataTransfer.getData('application/x-manual-course');
+      saveManualCourseToSlot(slot.dataset.slotId, itemId);
     });
   });
   grid.querySelectorAll('.manual-slot-remove').forEach(button => {
@@ -443,8 +505,8 @@ function renderManualTimetableGrid() {
 }
 
 async function loadManualTimetable() {
-  const [teachingClasses, adminClasses, courses, teachingAssignments] = await Promise.all([
-    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'),
+  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks] = await Promise.all([
+    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'),
   ]);
   window._manualCourses = [...courses].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN'));
   window._manualTeachingAssignments = teachingAssignments;
@@ -457,7 +519,14 @@ async function loadManualTimetable() {
   const previous = selector.value;
   selector.innerHTML = classes.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
   if (classes.some(item => item.id === previous)) selector.value = previous;
+  const refreshManualPoolItems = () => {
+    // Course category depends on the currently selected class (for example,
+    // a required course can be administrative in one grade and teaching in another).
+    window._manualPoolItems = manualCoursePoolItems(window._manualCourses, selectionBlocks);
+  };
+  refreshManualPoolItems();
   selector.onchange = () => {
+    refreshManualPoolItems();
     renderManualCoursePool();
     renderManualTimetableGrid();
   };
