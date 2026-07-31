@@ -499,7 +499,10 @@
               <input id="elective-selection-file-input" type="file" accept=".xlsx,.xls" hidden>
               <strong>将高三 A/B/C 选课表拖到这里</strong>
               <span>格式轻微变化时，会自动尝试模型辅助识别</span>
-              <button type="button" id="btn-select-elective-selection-file" class="btn btn-secondary btn-sm">选择选课表</button>
+              <div class="student-import-dropzone-actions">
+                <button type="button" id="btn-select-elective-selection-file" class="btn btn-secondary btn-sm">选择选课表</button>
+                <button type="button" id="btn-clear-elective-selection-upload" class="btn btn-secondary btn-sm" disabled>清空上传</button>
+              </div>
             </div>
             <div id="elective-selection-import-preview" class="student-import-preview hidden"></div>
           </div>

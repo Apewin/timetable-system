@@ -2181,6 +2181,7 @@ tr:hover {
   color: var(--gray-500);
   font-size: 13px;
 }
+.student-import-dropzone-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 
 .student-import-preview {
   grid-column: 1 / -1;

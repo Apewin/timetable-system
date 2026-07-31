@@ -4217,11 +4217,16 @@ function initElectiveSelectionImportHandlers() {
   const uploadArea = document.getElementById('elective-selection-upload-area');
   const fileInput = document.getElementById('elective-selection-file-input');
   const selectButton = document.getElementById('btn-select-elective-selection-file');
-  if (!uploadArea || !fileInput || !selectButton || uploadArea.dataset.initialized === 'true') return;
+  const clearButton = document.getElementById('btn-clear-elective-selection-upload');
+  if (!uploadArea || !fileInput || !selectButton || !clearButton || uploadArea.dataset.initialized === 'true') return;
   uploadArea.dataset.initialized = 'true';
   selectButton.addEventListener('click', event => {
     event.stopPropagation();
     fileInput.click();
+  });
+  clearButton.addEventListener('click', event => {
+    event.stopPropagation();
+    window.clearElectiveSelectionImport();
   });
   uploadArea.addEventListener('click', event => {
     if (!event.target.closest('button')) fileInput.click();
@@ -4244,6 +4249,11 @@ function initElectiveSelectionImportHandlers() {
   });
 }
 
+function updateElectiveSelectionClearButton() {
+  const clearButton = document.getElementById('btn-clear-elective-selection-upload');
+  if (clearButton) clearButton.disabled = !pendingElectiveSelectionUploadFile && !pendingElectiveSelectionImport;
+}
+
 async function handleElectiveSelectionImportFile(file) {
   if (!file) return;
   const extension = file.name.split('.').pop()?.toLowerCase();
@@ -4252,6 +4262,7 @@ async function handleElectiveSelectionImportFile(file) {
     return;
   }
   pendingElectiveSelectionUploadFile = file;
+  updateElectiveSelectionClearButton();
   showToast('正在识别高三 A/B/C 选课并核对学生...', 'info');
   try {
     const formData = new FormData();
@@ -4393,7 +4404,7 @@ function renderElectiveSelectionImportPreview() {
       <button type="button" class="btn btn-primary" onclick="organizeElectiveSelectionImportWithAi()">
         ✨ 大模型整理
       </button>
-      <button type="button" class="btn btn-secondary" onclick="clearElectiveSelectionImport()">清空预览</button>
+      <button type="button" class="btn btn-secondary" onclick="clearElectiveSelectionImport()">清空上传</button>
       <button type="button" class="btn btn-primary" onclick="confirmElectiveSelectionImport()" ${data.can_confirm ? '' : 'disabled'}>
         确认更新 ${data.unique_students} 名学生
       </button>
@@ -4404,7 +4415,11 @@ function renderElectiveSelectionImportPreview() {
 window.clearElectiveSelectionImport = function() {
   pendingElectiveSelectionImport = null;
   pendingElectiveSelectionUploadFile = null;
+  const fileInput = document.getElementById('elective-selection-file-input');
+  if (fileInput) fileInput.value = '';
   renderElectiveSelectionImportPreview();
+  updateElectiveSelectionClearButton();
+  showToast('已清空待识别的上传文件和预览', 'info');
 };
 
 window.organizeElectiveSelectionImportWithAi = async function() {
@@ -4445,6 +4460,7 @@ window.confirmElectiveSelectionImport = async function() {
     });
     pendingElectiveSelectionImport = null;
     renderElectiveSelectionImportPreview();
+    updateElectiveSelectionClearButton();
     showToast(`已更新 ${result.updated_students} 名学生的 A/B/C 选课`, 'success');
     await loadElectiveSelections();
   } catch (error) {
