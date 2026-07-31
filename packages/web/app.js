@@ -486,9 +486,15 @@ function renderManualTimetableGrid() {
       // Existing manual drafts stored a course ID directly. Keep those drafts
       // readable after introducing grouped, synchronized course cards.
       const item = itemById.get(savedItemId) || (courseById.has(savedItemId)
-        ? { id: savedItemId, kind: 'course', name: courseById.get(savedItemId).name || savedItemId, weekly_hours: courseById.get(savedItemId).weekly_hours }
+        ? {
+          id: savedItemId,
+          kind: 'course',
+          name: courseById.get(savedItemId).name || savedItemId,
+          weekly_hours: courseById.get(savedItemId).weekly_hours,
+          category: manualCourseCategory(courseById.get(savedItemId)),
+        }
         : null);
-      html += `<div class="manual-slot ${item ? 'has-course' : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''}" data-slot-id="${slotId}">
+      html += `<div class="manual-slot ${item ? `has-course category-${item.category || 'other'}` : ''} ${item?.kind === 'bundle' ? 'has-bundle' : ''}" data-slot-id="${slotId}">
         ${item ? `<div class="manual-slot-course"><span>${manualPoolItemLabel(item)}</span><button type="button" class="manual-slot-remove" data-slot-id="${slotId}" aria-label="删除课程">×</button></div>` : '<span class="manual-slot-placeholder">拖入课程</span>'}
       </div>`;
     }
