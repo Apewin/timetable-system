@@ -336,6 +336,12 @@ function manualCourseLabel(course) {
   return `${course.name || course.id}${course.weekly_hours ? ` · ${course.weekly_hours} 节/周` : ''}`;
 }
 
+function manualCoursesForCurrentClass(courses) {
+  const currentClass = window._manualClassesById?.get(manualCurrentClassId());
+  if (!currentClass) return [];
+  return courses.filter(course => courseAppliesToGrade(course, currentClass.grade));
+}
+
 function manualCoursePoolItems(courses, selectionBlocks = []) {
   const courseById = new Map(courses.map(course => [course.id, course]));
   const bundledCourseIds = new Set();
@@ -522,7 +528,12 @@ async function loadManualTimetable() {
   const refreshManualPoolItems = () => {
     // Course category depends on the currently selected class (for example,
     // a required course can be administrative in one grade and teaching in another).
-    window._manualPoolItems = manualCoursePoolItems(window._manualCourses, selectionBlocks);
+    // Grade scope is also respected here so a class only sees courses that
+    // its students can actually take, including valid cross-grade courses.
+    window._manualPoolItems = manualCoursePoolItems(
+      manualCoursesForCurrentClass(window._manualCourses),
+      selectionBlocks,
+    );
   };
   refreshManualPoolItems();
   selector.onchange = () => {
