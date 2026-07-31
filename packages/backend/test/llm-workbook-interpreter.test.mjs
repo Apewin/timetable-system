@@ -38,6 +38,7 @@ test('calls the model once and validates its JSON response', async () => {
     calls++;
     const request = JSON.parse(options.body);
     assert.equal(request.messages.length, 2);
+    assert.deepEqual(request.response_format, { type: 'json_object' });
     assert.match(request.messages[0].content, /不推测、不补全/);
     assert.match(request.messages[0].content, /不确定字段保留空值/);
     assert.match(request.messages[0].content, /并排放置多份纵向课程名单/);
@@ -73,4 +74,36 @@ test('calls the model once and validates its JSON response', async () => {
   });
   assert.equal(calls, 1);
   assert.equal(result.interpretation.confidence, 0.95);
+});
+
+test('retries once when JSON mode returns an empty model response', async () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['名单']]), 'Raw');
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    return {
+      ok: true,
+      json: async () => calls === 1
+        ? { choices: [{ finish_reason: 'stop', message: { content: '' } }] }
+        : {
+          choices: [{
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                document_type: 'elective_selections',
+                sheets: [{ name: 'ABC', headers: ['中文姓名', 'B组'], rows: [['张三', '商业']] }],
+              }),
+            },
+          }],
+        },
+    };
+  };
+  const result = await interpretWorkbook(workbook, {
+    expectedType: 'elective_selections',
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.interpretation.sheets[0].rows[0][0], '张三');
 });
