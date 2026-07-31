@@ -42,6 +42,9 @@ test('calls the model once and validates its JSON response', async () => {
     assert.match(request.messages[0].content, /不确定字段保留空值/);
     assert.match(request.messages[0].content, /并排放置多份纵向课程名单/);
     assert.match(request.messages[0].content, /德语名单/);
+    assert.match(request.messages[0].content, /并排的多列区块/);
+    assert.match(request.messages[0].content, /力学基础学生名单/);
+    assert.match(request.messages[0].content, /只有姓名、没有课程标题的汇总工作表/);
     assert.match(request.messages[0].content, /GERMAN（德语）/);
     return {
       ok: true,
