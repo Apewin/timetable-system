@@ -336,6 +336,35 @@ function manualCourseLabel(course) {
   return `${course.name || course.id}${course.weekly_hours ? ` · ${course.weekly_hours} 节/周` : ''}`;
 }
 
+function manualCourseCategory(course) {
+  if (course.type === 'ap') return 'ap';
+  if (course.type === 'required_elective') return 'elective';
+  if (course.type !== 'required') return 'other';
+  const assignments = (window._manualTeachingAssignments || [])
+    .filter(assignment => assignment.course_id === course.id);
+  const currentClass = window._manualClassesById?.get(manualCurrentClassId());
+  const sameGradeAssignments = currentClass ? assignments.filter(assignment => {
+    const assignedIds = Array.isArray(assignment.class_ids)
+      ? assignment.class_ids
+      : assignment.class_id ? [assignment.class_id] : [];
+    return assignedIds.some(classId =>
+      Number(window._manualClassesById?.get(classId)?.grade) === Number(currentClass.grade));
+  }) : assignments;
+  const classTypes = new Set((sameGradeAssignments.length ? sameGradeAssignments : assignments)
+    .map(assignment => assignment.class_type));
+  return classTypes.has('teaching') ? 'teaching-required' : 'admin-required';
+}
+
+function manualCourseCategoryLabel(category) {
+  return ({
+    'admin-required': '行政班必修',
+    'teaching-required': '教学班必修',
+    ap: 'AP 选修',
+    elective: '非必修选修',
+    other: '其他',
+  })[category] || '其他';
+}
+
 function renderManualCoursePool() {
   const pool = document.getElementById('manual-course-pool');
   const count = document.getElementById('manual-course-count');
@@ -344,12 +373,15 @@ function renderManualCoursePool() {
   const courses = (window._manualCourses || []).filter(course =>
     !keyword || `${course.id} ${course.name || ''}`.toLowerCase().includes(keyword));
   count.textContent = `${courses.length} 门`;
-  pool.innerHTML = courses.map(course => `
-    <div class="manual-course-card" draggable="true" data-course-id="${course.id}">
+  pool.innerHTML = courses.map(course => {
+    const category = manualCourseCategory(course);
+    return `
+    <div class="manual-course-card category-${category}" draggable="true" data-course-id="${course.id}">
       <div class="manual-course-name">${course.name || course.id}</div>
-      <div class="manual-course-meta">${course.id} · ${course.weekly_hours || 0} 节/周</div>
+      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${course.id} · ${course.weekly_hours || 0} 节/周</div>
     </div>
-  `).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
+  `;
+  }).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
   pool.querySelectorAll('.manual-course-card').forEach(card => {
     card.addEventListener('dragstart', event => {
       event.dataTransfer.effectAllowed = 'copy';
@@ -411,19 +443,24 @@ function renderManualTimetableGrid() {
 }
 
 async function loadManualTimetable() {
-  const [teachingClasses, adminClasses, courses] = await Promise.all([
-    api('/teaching_classes'), api('/admin_classes'), api('/courses'),
+  const [teachingClasses, adminClasses, courses, teachingAssignments] = await Promise.all([
+    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'),
   ]);
   window._manualCourses = [...courses].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN'));
+  window._manualTeachingAssignments = teachingAssignments;
   const selector = document.getElementById('manual-class-select');
   const classes = [
-    ...teachingClasses.map(item => ({ ...item, label: `教学班 · ${item.name}` })),
-    ...adminClasses.map(item => ({ ...item, label: `行政班 · ${item.name}` })),
+    ...teachingClasses.map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` })),
+    ...adminClasses.map(item => ({ ...item, class_type: 'admin', label: `行政班 · ${item.name}` })),
   ].sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  window._manualClassesById = new Map(classes.map(item => [item.id, item]));
   const previous = selector.value;
   selector.innerHTML = classes.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
   if (classes.some(item => item.id === previous)) selector.value = previous;
-  selector.onchange = renderManualTimetableGrid;
+  selector.onchange = () => {
+    renderManualCoursePool();
+    renderManualTimetableGrid();
+  };
   document.getElementById('manual-course-search').oninput = renderManualCoursePool;
   document.getElementById('manual-clear-class').onclick = () => {
     const classId = manualCurrentClassId();
