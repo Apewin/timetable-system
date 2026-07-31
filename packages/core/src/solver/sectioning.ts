@@ -7,7 +7,6 @@ import type {
   TimetableState,
   ApSection,
   TeachingTask,
-  Student,
   Course,
 } from "../models/types.js";
 

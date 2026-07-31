@@ -9,7 +9,6 @@ import type {
   TimeSlot,
   SlotId,
   HardViolation,
-  Room,
 } from "../models/types.js";
 
 // 排课结果
@@ -18,12 +17,6 @@ export interface TimetableResult {
   hard_violations: HardViolation[];
   soft_score: number;
   ok: boolean;
-}
-
-// Occurrence（任务的一个课时）
-interface Occurrence {
-  taskId: string;
-  index: number;  // 第几个课时
 }
 
 // 生成所有时段
@@ -39,17 +32,6 @@ function generateTimeSlots(config: TimetableState["config"]): TimeSlot[] {
     }
   }
   return slots;
-}
-
-// 将任务拆分成多个occurrence
-function splitTasksToOccurrences(tasks: TeachingTask[]): Occurrence[] {
-  const occurrences: Occurrence[] = [];
-  tasks.forEach(task => {
-    for (let i = 0; i < task.weekly_hours; i++) {
-      occurrences.push({ taskId: task.id, index: i });
-    }
-  });
-  return occurrences;
 }
 
 // 检查硬约束
@@ -353,7 +335,7 @@ export function calculateSoftScore(
     dayMap.set(day, (dayMap.get(day) || 0) + 1);
   });
 
-  courseDayCount.forEach((dayMap, courseId) => {
+  courseDayCount.forEach((dayMap) => {
     // 同课同日>1次，罚分
     dayMap.forEach((count) => {
       if (count > 1) {
@@ -402,7 +384,7 @@ function greedyInitialSolution(
     if (lockedAssignments.some(a => a.task_id === task.id)) return;
 
     const course = state.courses.find(c => c.id === task.course_id);
-    let remaining = task.weekly_hours - (assignments.filter(a => a.task_id === task.id).length);
+    const remaining = task.weekly_hours - (assignments.filter(a => a.task_id === task.id).length);
 
     for (let i = 0; i < remaining; i++) {
       // 找最早可用的slot

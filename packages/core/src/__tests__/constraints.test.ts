@@ -2,7 +2,7 @@
  * 约束单测
  */
 import { describe, it, expect } from "vitest";
-import { checkHardConstraints, calculateSoftScore } from "../solver/timetable.js";
+import { checkHardConstraints } from "../solver/timetable.js";
 import type { TimetableState, TeachingTask, Assignment, SlotId } from "../models/types.js";
 
 // 创建测试用的空状态
