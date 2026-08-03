@@ -33,6 +33,7 @@
             <li><a href="#" data-view="class-timetable">🏫 按班级</a></li>
             <li><a href="#" data-view="teacher-timetable">👨‍🏫 按教师</a></li>
             <li><a href="#" data-view="student-timetable">👨‍🎓 按学生</a></li>
+            <li><a href="#" data-view="ap-group-timetable">🧩 AP 分流组</a></li>
             <li><a href="#" data-view="room-timetable">🚪 按教室</a></li>
           </ul>
         </div>
@@ -576,6 +577,19 @@
             </div>
           </div>
           <div id="student-timetable-content" class="content">请选择学生</div>
+        </div>
+
+        <div id="view-ap-group-timetable" class="view">
+          <h2>AP 分流组课表</h2>
+          <div class="toolbar">
+            <div class="search-select-group">
+              <input type="text" id="search-ap-group" class="search-input" placeholder="🔍 搜索 AP 课程、分流组或教师...">
+              <select id="select-ap-group" class="select">
+                <option value="">选择 AP 分流组</option>
+              </select>
+            </div>
+          </div>
+          <div id="ap-group-timetable-content" class="content">请选择 AP 分流组</div>
         </div>
 
         <div id="view-teacher-timetable" class="view">

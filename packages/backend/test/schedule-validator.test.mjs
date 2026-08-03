@@ -27,6 +27,46 @@ test('accepts a conflict-free schedule with a valid selected-course partition', 
   assert.equal(result.soft_score, 0);
 });
 
+test('rejects an internal gap in a student daily timetable', () => {
+  const rules = [{
+    id: 'student-daily-prefix',
+    type: 'no_internal_gaps',
+    hard: true,
+    scope: 'student',
+    target_ids: ['S1'],
+    params: {},
+  }];
+  const result = validateSchedule(problem(rules), { meetings: [
+    { section_id: 'CORE', slot_id: 'D1P1', room_id: 'R1' },
+    { section_id: 'AP1', slot_id: 'D1P3', room_id: 'R1' },
+    { section_id: 'AP2', slot_id: 'D1P2', room_id: 'R1' },
+  ] });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.hard_violations.some(item =>
+    item.rule_id === 'student-daily-prefix'
+    && item.target_id === 'S1'
+    && item.day === 1));
+});
+
+test('allows configured fixed activities outside the ordinary lesson prefix', () => {
+  const rules = [{
+    id: 'student-daily-prefix',
+    type: 'no_internal_gaps',
+    hard: true,
+    scope: 'student',
+    target_ids: ['S1'],
+    params: { ignore_course_ids: ['CORE'] },
+  }];
+  const result = validateSchedule(problem(rules), { meetings: [
+    { section_id: 'CORE', slot_id: 'D1P10', room_id: 'R1' },
+    { section_id: 'AP1', slot_id: 'D1P1', room_id: 'R1' },
+    { section_id: 'AP2', slot_id: 'D1P2', room_id: 'R1' },
+  ] });
+
+  assert.equal(result.ok, true, JSON.stringify(result.hard_violations));
+});
+
 test('rejects a student collision and an invalid parallel-section membership', () => {
   const result = validateSchedule(problem(), {
     sections: [{ id: 'AP1', student_ids: ['S1', 'S2'] }, { id: 'AP2', student_ids: ['S2'] }],
@@ -82,4 +122,39 @@ test('treats an administrative lock as a hard invariant', () => {
   });
   assert.equal(result.ok, false);
   assert.ok(result.hard_violations.some(item => item.rule_id === 'kernel.lock_preserved'));
+});
+
+test('ignores room-derived section capacity during timetable validation', () => {
+  const result = validateSchedule(problem(), {
+    sections: [{ id: 'AP1', student_ids: ['S1', 'S2'], capacity: 1 }],
+    meetings: [
+      { section_id: 'CORE', slot_id: 'D1P1', room_id: 'R1' },
+      { section_id: 'AP1', slot_id: 'D1P2', room_id: 'R1' },
+      { section_id: 'AP2', slot_id: 'D1P3', room_id: 'R1' },
+    ],
+  });
+  assert.equal(
+    result.hard_violations.filter(item => item.rule_id === 'kernel.section_capacity').length,
+    0,
+  );
+  assert.equal(result.hard_violations.some(item => item.rule_id.startsWith('kernel.room_')), false);
+});
+
+test('tracks selected-course membership across a malformed section with an empty eligible roster', () => {
+  const result = validateSchedule(problem(), {
+    sections: [
+      { id: 'AP1', student_ids: ['S1'], eligible_student_ids: [] },
+      { id: 'AP2', student_ids: ['S2'] },
+    ],
+    meetings: [
+      { section_id: 'CORE', slot_id: 'D1P1', room_id: 'R1' },
+      { section_id: 'AP1', slot_id: 'D1P2', room_id: 'R1' },
+      { section_id: 'AP2', slot_id: 'D1P3', room_id: 'R1' },
+    ],
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.hard_violations.some(item =>
+    item.rule_id === 'kernel.eligible_membership' && item.student_id === 'S1'));
+  assert.ok(!result.hard_violations.some(item =>
+    item.rule_id === 'kernel.selected_course_membership' && item.student_id === 'S1'));
 });

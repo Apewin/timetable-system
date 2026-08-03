@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "node server.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\"",
+    "server:legacy": "node server.js",
+    "start": "concurrently --kill-others-on-fail \"pnpm --dir ../backend start\" \"vite\"",
     "build": "vite build",
+    "test": "node --test test/**/*.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

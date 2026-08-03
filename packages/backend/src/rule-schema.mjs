@@ -6,6 +6,7 @@ export const RULE_TYPES = new Set([
   'forbid_slots',
   'preferred_slots',
   'max_occurrences_per_day',
+  'no_internal_gaps',
   'max_consecutive_lessons',
   'max_consecutive_days_in_period',
   'synchronized_slots',
@@ -40,6 +41,16 @@ function validateTypeParameters(rule) {
     case 'max_consecutive_lessons':
       positiveInteger(params.max, rule, 'max');
       break;
+    case 'no_internal_gaps':
+      if (rule.scope !== 'student') throw new Error(`规则 ${rule.id} 的 no_internal_gaps 只能作用于 student`);
+      if (!rule.hard) throw new Error(`规则 ${rule.id} 的 no_internal_gaps 必须是硬约束`);
+      if (params.ignore_course_ids !== undefined
+        && (!Array.isArray(params.ignore_course_ids)
+          || !params.ignore_course_ids.length
+          || !params.ignore_course_ids.every(value => typeof value === 'string' && value))) {
+        throw new Error(`规则 ${rule.id} 的 params.ignore_course_ids 必须是非空课程 ID 数组`);
+      }
+      break;
     case 'max_consecutive_days_in_period':
       positiveInteger(params.max, rule, 'max');
       positiveInteger(params.period, rule, 'period');
@@ -54,6 +65,13 @@ function validateTypeParameters(rule) {
       for (const field of ['left_class_types', 'right_class_types']) {
         if (!Array.isArray(params[field]) || !params[field].length || !params[field].every(value => typeof value === 'string')) {
           throw new Error(`规则 ${rule.id} 的 params.${field} 必须是非空 class_type 数组`);
+        }
+      }
+      {
+        const right = new Set(params.right_class_types);
+        const overlap = params.left_class_types.filter(value => right.has(value));
+        if (overlap.length) {
+          throw new Error(`规则 ${rule.id} 的左右 class_type 不能重叠: ${[...new Set(overlap)].join('、')}`);
         }
       }
       if (params.grades !== undefined && (!Array.isArray(params.grades) || !params.grades.length || !params.grades.every(Number.isInteger))) {

@@ -2,21 +2,49 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { compileRules } from '../src/rule-compiler.mjs';
 
-test('selects cross-grade teachers through section data, without naming a course', () => {
+test('can target only students with all required selection blocks completed', () => {
   const state = {
-    teachers: [{ id: 'T_CROSS' }, { id: 'T_SINGLE' }],
-    students: [{ id: 'S11', grade: 11 }, { id: 'S12', grade: 12 }],
+    students: [
+      { id: 'COMPLETE', grade: 12, elective_choices: { group_b: 'BUSINESS' } },
+      { id: 'INCOMPLETE', grade: 12, elective_choices: {} },
+    ],
+    selection_blocks: [{
+      id: 'G12_B',
+      grades: [12],
+      required: true,
+      choice_key: 'group_b',
+    }],
+  };
+  const rules = [{
+    id: 'student-daily-prefix',
+    type: 'no_internal_gaps',
+    hard: true,
+    scope: 'student',
+    params: { selector: { require_complete_required_choices: true } },
+  }];
+
+  const [compiled] = compileRules(state, rules);
+
+  assert.deepEqual(compiled.target_ids, ['COMPLETE']);
+});
+
+test('can target students by their modeled weekly course load', () => {
+  const state = {
+    students: [{ id: 'FULL' }, { id: 'SHORT' }],
   };
   const sections = [
-    { id: 'G11_AP', teacher_id: 'T_CROSS', class_type: 'ap', eligible_student_ids: ['S11'] },
-    { id: 'G12_AP', teacher_id: 'T_CROSS', class_type: 'ap', eligible_student_ids: ['S12'] },
-    { id: 'CORE', teacher_id: 'T_CROSS', class_type: 'teaching', student_ids: ['S11'] },
-    { id: 'SINGLE', teacher_id: 'T_SINGLE', class_type: 'ap', eligible_student_ids: ['S11'] },
+    { id: 'FULL_LOAD', student_ids: ['FULL'], weekly_hours: 5 },
+    { id: 'SHORT_LOAD', student_ids: ['SHORT'], weekly_hours: 2 },
   ];
-  const [rule] = compileRules(state, [{
-    id: 'cross-grade', type: 'priority', hard: false, weight: 1, scope: 'teacher',
-    params: { selector: { teaches_grades: [11, 12], section_class_types: ['ap'] }, rank: 1 },
-  }], { sections });
-  assert.deepEqual(rule.target_ids, ['T_CROSS']);
-  assert.deepEqual(rule.section_target_ids, ['G11_AP', 'G12_AP']);
+  const rules = [{
+    id: 'student-daily-prefix',
+    type: 'no_internal_gaps',
+    hard: true,
+    scope: 'student',
+    params: { selector: { min_weekly_hours: 4 } },
+  }];
+
+  const [compiled] = compileRules(state, rules, { sections });
+
+  assert.deepEqual(compiled.target_ids, ['FULL']);
 });

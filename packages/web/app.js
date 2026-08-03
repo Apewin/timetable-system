@@ -2,6 +2,16 @@
  * 排课系统 Web 前端应用
  */
 
+import {
+  manualPlacementScopeForSections,
+  manualDeckSectionsForClassCourse,
+  manualPoolItemRemaining,
+  manualPoolItemTotalHours,
+  manualSectionsForClassCourse,
+  manualTeacherIdsForClassItem,
+  shouldCollapseAdminSections,
+} from './manual-course-scope.mjs';
+
 const API_BASE = '/api';
 
 // 辅助函数：从slot中获取课程名称
@@ -353,6 +363,9 @@ async function loadViewData(viewName) {
     case 'student-timetable':
       await loadStudentSelect();
       break;
+    case 'ap-group-timetable':
+      await loadApGroupSelect();
+      break;
     case 'teacher-timetable':
       await loadTeacherSelect();
       break;
@@ -421,13 +434,21 @@ function manualCoursesForCurrentClass(courses) {
 }
 
 function manualSectionsForCourse(classInfo, courseId) {
-  return (window._manualSections || []).filter(section => {
-    if (section.course_id !== courseId) return false;
-    if (['ap', 'elective'].includes(section.class_type)) {
-      return !(section.grades || []).length || section.grades.map(Number).includes(Number(classInfo?.grade));
-    }
-    return section.class_id === classInfo?.id && section.class_type === classInfo?.class_type;
-  });
+  return manualSectionsForClassCourse(
+    window._manualSections || [],
+    classInfo,
+    courseId,
+    window._manualClassesById,
+  );
+}
+
+function manualDeckSectionsForCourse(classInfo, courseId) {
+  return manualDeckSectionsForClassCourse(
+    window._manualSections || [],
+    classInfo,
+    courseId,
+    window._manualClassesById,
+  );
 }
 
 function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) {
@@ -450,6 +471,7 @@ function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) 
       section_ids: [...new Set(sectionIds)],
       weekly_hours: Math.max(...bundleCourses.map(course => Number(course.weekly_hours) || 0)),
       category: 'elective',
+      manual_unlimited: false,
     });
   };
 
@@ -475,15 +497,37 @@ function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) 
     .flatMap(course => {
       const sections = manualSectionsForCourse(classInfo, course.id);
       if (!sections.length) return [];
+      const deckSections = manualDeckSectionsForCourse(classInfo, course.id);
       const category = manualCourseCategory(course, classInfo?.id);
-      if (sections.length === 1) return [{
+      const placementScope = manualPlacementScopeForSections(sections, classInfo);
+      const usesGradeTeachingDeck = classInfo?.class_type === 'teaching'
+        && sections.some(section => section.class_type === 'teaching'
+          && section.class_id === classInfo.id)
+        && deckSections.length > 1;
+      // One administrative course may have one canonical section per
+      // administrative class.  It must still be one draggable card: after the
+      // drop the user chooses the target administrative class, at which point
+      // that class resolves its own exact section.
+      if (sections.length === 1 || shouldCollapseAdminSections(sections, classInfo)) return [{
         id: course.id,
         kind: 'course',
         name: course.name || course.id,
         course_ids: [course.id],
-        section_ids: [sections[0].id],
+        // In a teaching-class view an administrative course is one card, but
+        // that card draws from every same-grade administrative-class section.
+        // Keeping all IDs here makes the deck total and remaining count use
+        // exactly the same inventory.
+        section_ids: shouldCollapseAdminSections(sections, classInfo)
+          ? sections.map(section => section.id)
+          : usesGradeTeachingDeck
+            ? deckSections.map(section => section.id)
+            : [sections[0].id],
+        local_section_ids: sections.map(section => section.id),
         weekly_hours: Number(course.weekly_hours) || 0,
         category,
+        placement_scope: placementScope,
+        deck_scope: usesGradeTeachingDeck ? 'grade_teaching' : 'class',
+        manual_unlimited: course.manual_unlimited === true,
       }];
       return sections.map((section, index) => ({
         id: `section:${section.id}`,
@@ -493,6 +537,8 @@ function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) 
         section_ids: [section.id],
         weekly_hours: Number(course.weekly_hours) || 0,
         category,
+        placement_scope: placementScope,
+        manual_unlimited: course.manual_unlimited === true,
       }));
     });
   return [...bundles, ...individualCourses].sort((left, right) =>
@@ -512,9 +558,21 @@ function manualStoredItem(itemId, classId = manualCurrentClassId()) {
   const stored = items.find(item => item.id === itemId);
   if (stored) {
     return stored.kind === 'course' && course
-      ? { ...stored, category: manualCourseCategory(course, classId) }
+      ? {
+        ...stored,
+        // The visible grade-wide deck must be narrowed back to the selected
+        // teaching class when a card becomes an actual manual placement.
+        section_ids: stored.deck_scope === 'grade_teaching'
+          ? manualSectionsForCourse(window._manualClassesById?.get(classId), course.id)
+            .filter(section => section.class_type === 'teaching' && section.class_id === classId)
+            .map(section => section.id)
+          : stored.section_ids,
+        category: manualCourseCategory(course, classId),
+      }
       : stored;
   }
+  const classInfo = window._manualClassesById?.get(classId);
+  const sections = course ? manualSectionsForCourse(classInfo, course.id) : [];
   return course ? {
       id: itemId,
       kind: 'course',
@@ -522,9 +580,11 @@ function manualStoredItem(itemId, classId = manualCurrentClassId()) {
       course_ids: [course.id],
       section_ids: itemId?.startsWith('section:')
         ? [itemId.slice('section:'.length)]
-        : manualSectionsForCourse(window._manualClassesById?.get(classId), course.id).map(section => section.id),
+        : sections.map(section => section.id),
       weekly_hours: course.weekly_hours,
       category: manualCourseCategory(course, classId),
+      placement_scope: manualPlacementScopeForSections(sections, classInfo),
+      manual_unlimited: course.manual_unlimited === true,
     } : null;
 }
 
@@ -571,12 +631,11 @@ function manualAdminClassIdsForTeachingClass(classId) {
 }
 
 function manualTeacherIdsForItem(classId, item) {
-  const courseIds = new Set(item.course_ids || []);
-  return new Set((window._manualTeachingAssignments || [])
-    .filter(assignment => courseIds.has(assignment.course_id)
-      && manualAssignmentClassIds(assignment).includes(classId)
-      && assignment.teacher_id)
-    .map(assignment => assignment.teacher_id));
+  return manualTeacherIdsForClassItem(
+    window._manualTeachingAssignments || [],
+    classId,
+    item,
+  );
 }
 
 function manualSetIntersects(left, right) {
@@ -661,21 +720,62 @@ function manualCourseCategoryLabel(category) {
   })[category] || '其他';
 }
 
+function manualSectionUsageCounts() {
+  const usage = new Map();
+  for (const [classId, draft] of Object.entries(readManualDrafts())) {
+    if (!window._manualClassesById?.has(classId)) continue;
+    for (const itemId of Object.values(draft || {})) {
+      const item = manualStoredItem(itemId, classId);
+      if (!item) continue;
+      for (const sectionId of item.section_ids || []) {
+        usage.set(sectionId, (usage.get(sectionId) || 0) + 1);
+      }
+    }
+  }
+  return usage;
+}
+
+function manualRemainingUses(item, usageCounts = manualSectionUsageCounts()) {
+  return manualPoolItemRemaining(
+    item,
+    new Map((window._manualSections || []).map(section => [section.id, section])),
+    usageCounts,
+  );
+}
+
 function renderManualCoursePool() {
   const pool = document.getElementById('manual-course-pool');
   const count = document.getElementById('manual-course-count');
   if (!pool) return;
   const keyword = (document.getElementById('manual-course-search')?.value || '').trim().toLowerCase();
-  const items = (window._manualPoolItems || []).filter(item =>
-    !keyword || `${item.name} ${item.group_name || ''} ${(item.course_ids || []).join(' ')}`.toLowerCase().includes(keyword));
+  const usageCounts = manualSectionUsageCounts();
+  const sectionsById = new Map((window._manualSections || []).map(section => [section.id, section]));
+  const items = (window._manualPoolItems || [])
+    .map(item => ({
+      ...item,
+      remaining_uses: manualPoolItemRemaining(item, sectionsById, usageCounts),
+      total_hours: manualPoolItemTotalHours(item, sectionsById),
+      current_class_remaining: item.deck_scope === 'grade_teaching'
+        ? manualPoolItemRemaining({ ...item, section_ids: item.local_section_ids, deck_scope: 'class' }, sectionsById, usageCounts)
+        : null,
+    }))
+    .map(item => ({
+      ...item,
+      scheduled_uses: item.remaining_uses === Infinity
+        ? null
+        : Math.max(0, item.total_hours - item.remaining_uses),
+    }))
+    .filter(item => item.remaining_uses > 0)
+    .filter(item => !keyword
+      || `${item.name} ${item.group_name || ''} ${(item.course_ids || []).join(' ')}`.toLowerCase().includes(keyword));
   count.textContent = `${items.length} 项`;
   const locked = manualPlanIsConfirmed();
   pool.innerHTML = items.map(item => {
     const category = item.category;
     return `
-    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${locked ? 'is-disabled' : ''}" draggable="${locked ? 'false' : 'true'}" data-manual-item-id="${item.id}">
+    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${locked || item.current_class_remaining === 0 ? 'is-disabled' : ''}" draggable="${locked || item.current_class_remaining === 0 ? 'false' : 'true'}" data-manual-item-id="${item.id}" data-manual-placement-scope="${item.placement_scope || 'class'}">
       <div class="manual-course-name">${item.name}</div>
-      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设` : `${item.section_ids?.[0] || item.course_ids[0]} · ${item.weekly_hours || 0} 节/周`}</div>
+      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设 · 每组` : item.deck_scope === 'grade_teaching' ? '年级教学班合计' : item.placement_scope === 'admin' && item.kind === 'course' ? '行政班合计' : item.section_ids?.[0] || item.course_ids[0]}${item.remaining_uses === Infinity ? ' · 可重复安排' : ` · 每周 ${item.total_hours} 节 · 已排 ${item.scheduled_uses}/${item.total_hours} 节`}${item.current_class_remaining === 0 ? ' · 本班已排完' : item.current_class_remaining != null ? ` · 本班剩余 ${item.current_class_remaining} 节` : ''}<span class="manual-course-remaining">${item.remaining_uses === Infinity ? '不限次数' : `年级剩余 ${item.remaining_uses} 次`}</span></div>
     </div>
   `;
   }).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
@@ -789,9 +889,15 @@ function renderManualPlanControls(message = '') {
 
 function saveManualCourseToSlot(slotId, itemId, classId = manualCurrentClassId()) {
   if (!classId || !itemId || manualPlanIsConfirmed()) return;
+  const item = manualStoredItem(itemId, classId);
+  if (!item || manualRemainingUses(item) <= 0) {
+    showToast('这门课的规定课时已经全部排完', 'error');
+    return;
+  }
   const drafts = readManualDrafts();
   drafts[classId] = { ...(drafts[classId] || {}), [slotId]: itemId };
   writeManualDrafts(drafts);
+  renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
   queueManualDraftSync();
@@ -803,6 +909,7 @@ function removeManualCourseFromSlot(slotId, classId = manualCurrentClassId()) {
   if (!drafts[classId]?.[slotId]) return;
   delete drafts[classId][slotId];
   writeManualDrafts(drafts);
+  renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
   queueManualDraftSync();
@@ -815,6 +922,7 @@ function saveManualCourseToAdminClasses(slotId, itemId, adminClassIds) {
     drafts[adminClassId] = { ...(drafts[adminClassId] || {}), [slotId]: itemId };
   }
   writeManualDrafts(drafts);
+  renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
   queueManualDraftSync();
@@ -822,17 +930,29 @@ function saveManualCourseToAdminClasses(slotId, itemId, adminClassIds) {
 
 function openManualAdminPlacementDialog(teachingClassId, slotId, itemId) {
   const adminClassIds = manualAdminClassIdsForTeachingClass(teachingClassId);
-  if (adminClassIds.length === 1) {
-    saveManualCourseToAdminClasses(slotId, itemId, adminClassIds);
+  const usageCounts = manualSectionUsageCounts();
+  const availableClassIds = adminClassIds.filter(classId => {
+    const targetItem = manualStoredItem(itemId, classId);
+    return targetItem && manualRemainingUses(targetItem, usageCounts) > 0;
+  });
+  if (!availableClassIds.length) {
+    showToast('这门行政班课程的规定课时已经全部排完', 'error');
+    renderManualCoursePool();
+    return;
+  }
+  if (availableClassIds.length === 1) {
+    saveManualCourseToAdminClasses(slotId, itemId, availableClassIds);
     return;
   }
   const item = manualStoredItem(itemId, teachingClassId);
-  const names = adminClassIds.map(id => window._manualClassesById?.get(id)?.name || id);
+  const names = availableClassIds.map(id => window._manualClassesById?.get(id)?.name || id);
   showModal('安排行政班课程', `
     <p>将“${item?.name || itemId}”安排到哪一个行政班？选择“两个行政班同上”后，教学班课表会自动合并为一个课程格。</p>
     <div class="form-actions manual-admin-target-actions">
-      ${adminClassIds.map((id, index) => `<button type="button" class="btn btn-secondary manual-admin-target-choice" data-target-class-ids="${id}">${names[index]}</button>`).join('')}
-      <button type="button" class="btn btn-primary manual-admin-target-choice" data-target-class-ids="${adminClassIds.join(',')}">两个行政班同上</button>
+      ${availableClassIds.map((id, index) => `<button type="button" class="btn btn-secondary manual-admin-target-choice" data-target-class-ids="${id}">${names[index]}</button>`).join('')}
+      ${availableClassIds.length === adminClassIds.length
+        ? `<button type="button" class="btn btn-primary manual-admin-target-choice" data-target-class-ids="${availableClassIds.join(',')}">两个行政班同上</button>`
+        : ''}
     </div>
   `);
   document.querySelectorAll('.manual-admin-target-choice').forEach(button => {
@@ -959,7 +1079,7 @@ function renderManualTimetableGrid() {
       const item = manualStoredItem(itemId, target.dataset.targetClassId);
       if (target.dataset.manualPlacementMode === 'teaching-or-admin'
         && targetClass?.class_type === 'teaching'
-        && item?.category === 'admin-required') {
+        && item?.placement_scope === 'admin') {
         openManualAdminPlacementDialog(target.dataset.targetClassId, target.dataset.slotId, itemId);
         return;
       }
@@ -972,6 +1092,7 @@ function renderManualTimetableGrid() {
       const drafts = readManualDrafts();
       targetIds.filter(Boolean).forEach(targetId => delete drafts[targetId]?.[button.dataset.slotId]);
       writeManualDrafts(drafts);
+      renderManualCoursePool();
       renderManualTimetableGrid();
       renderManualPlanControls();
       queueManualDraftSync();
@@ -1076,19 +1197,17 @@ async function loadManualTimetable() {
       const seconds = Math.round((Date.now() - startedAt) / 1000);
       const stage = seconds < 45
         ? 'AI 排课阶段 1/2：DeepSeek 正在分析约束和课程优先级'
-        : 'AI 排课阶段 2/2：CP-SAT 正在保留金框课程并补全剩余课表';
+        : 'AI 排课阶段 2/2：可行优先排课器正在保留金框课程、构造完整课表并择优';
       renderManualPlanControls(`${stage}（已用 ${seconds} 秒）…`);
     }, 1000);
     try {
-      const result = await api('/manual-plan/ai-solve', {
-        method: 'POST',
-        body: JSON.stringify({
-          use_ai_strategy: true,
-          optimize_soft: true,
-          max_time_seconds: 120,
-          instruction: '保留全部手动必要条件；优先处理跨年级教师和高约束课程，再补全其他课程。',
-        }),
-      });
+      const result = await solveWithRequiredApproval({
+        use_ai_strategy: true,
+        feasible_first: true,
+        candidate_count: 1,
+        max_time_seconds: 120,
+        instruction: '保留全部手动必要条件；优先处理跨年级教师和高约束课程，再补全其他课程。',
+      }, '/manual-plan/ai-solve');
       const duration = ((result.solve_duration_ms || 0) / 1000).toFixed(1);
       if (!result.solved) {
         renderManualPlanControls(`AI 补全未找到可行解：${result.reason || result.status}（求解 ${duration} 秒）。金框课程没有被破坏。`);
@@ -1100,9 +1219,22 @@ async function loadManualTimetable() {
       };
       window._manualScheduleAvailable = true;
       const warning = result.ai_warnings?.length ? `；${result.ai_warnings.join('；')}` : '';
-      renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，硬约束校验通过${warning}`);
-      showToast(`AI 排课完成，用时 ${duration} 秒`);
-      if (confirm('完整课表已生成并通过硬约束校验。现在查看总课表吗？')) {
+      const incompleteChoices = result.incomplete_required_choices || [];
+      const selectionWarning = incompleteChoices.length
+        ? `；${new Set(incompleteChoices.map(item => item.student_id)).size} 名学生尚未完成选课，已暂不分配对应选修课`
+        : '';
+      const reviewCount = result.review_items?.length || 0;
+      const reviewWarning = reviewCount
+        ? `；课程靠前规则有 ${reviewCount} 项待人工复核`
+        : '';
+      renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${reviewWarning}${selectionWarning}${warning}`);
+      const hasWarning = incompleteChoices.length || reviewCount;
+      showToast(reviewCount
+        ? `完整课表已生成；${reviewCount} 项课程靠前问题待人工复核`
+        : incompleteChoices.length
+          ? `AI 排课完成；${new Set(incompleteChoices.map(item => item.student_id)).size} 名学生待补选课`
+          : `AI 排课完成，用时 ${duration} 秒`, hasWarning ? 'warning' : 'success');
+      if (confirm(`完整课表已生成，核心硬约束校验通过${reviewCount ? `，另有 ${reviewCount} 项课程靠前问题待人工复核` : ''}。现在查看总课表吗？`)) {
         await switchView('overview-timetable');
       }
     } catch (error) {
@@ -1465,12 +1597,14 @@ function renderRoomsList(data) {
 
 // 加载课程列表
 async function loadCourses() {
-  const [data, teachingClasses, teachingAssignments] = await Promise.all([
+  const [data, adminClasses, teachingClasses, teachingAssignments] = await Promise.all([
     api('/courses'),
+    api('/admin_classes'),
     api('/teaching_classes'),
     api('/teaching_assignments'),
   ]);
   window._coursesData = data;
+  window._adminClassesData = adminClasses;
   window._teachingClassesData = teachingClasses;
   window._teachingAssignmentsData = teachingAssignments;
   const gradeFilter = document.getElementById('filter-course-grade');
@@ -1521,6 +1655,104 @@ function courseGradeValues(course = {}) {
   return (Array.isArray(course.grade) ? course.grade : [course.grade])
     .map(Number)
     .filter(grade => [10, 11, 12].includes(grade));
+}
+
+function isFixedClassCourse(course = {}) {
+  return course.type === 'required' || course.type === 'other';
+}
+
+function courseClassTypeLabel(classType) {
+  return classType === 'admin' ? '行政班上课' : classType === 'teaching' ? '教学班上课' : '未配置';
+}
+
+function classDataById() {
+  return new Map([
+    ...(window._adminClassesData || []),
+    ...(window._teachingClassesData || []),
+  ].map(item => [item.id, item]));
+}
+
+function courseDeliveryGrades(course = {}) {
+  const configured = courseGradeValues(course);
+  if (configured.length) return configured;
+  const classes = classDataById();
+  const fromAssignments = (window._teachingAssignmentsData || [])
+    .filter(assignment => assignment.course_id === course.id)
+    .flatMap(assignment => (Array.isArray(assignment.class_ids) ? assignment.class_ids : [assignment.class_id]))
+    .map(classId => Number(classes.get(classId)?.grade))
+    .filter(grade => [10, 11, 12].includes(grade));
+  return [...new Set(fromAssignments)].sort((left, right) => left - right);
+}
+
+function inferredCourseDeliveryClassType(course, grade) {
+  const saved = course.delivery_class_type_by_grade?.[String(grade)];
+  if (saved === 'admin' || saved === 'teaching') return saved;
+  const classes = classDataById();
+  const types = new Set((window._teachingAssignmentsData || [])
+    .filter(assignment => assignment.course_id === course.id)
+    .filter(assignment => (Array.isArray(assignment.class_ids) ? assignment.class_ids : [assignment.class_id])
+      .some(classId => Number(classes.get(classId)?.grade) === Number(grade)))
+    .map(assignment => assignment.class_type)
+    .filter(classType => classType === 'admin' || classType === 'teaching'));
+  return types.size === 1 ? [...types][0] : null;
+}
+
+function courseDeliveryLabel(course) {
+  if (course.type === 'ap') return 'AP 选课分流';
+  if (course.type === 'required_elective') return '必修选修分流';
+  const labels = courseDeliveryGrades(course).map(grade => {
+    const classType = inferredCourseDeliveryClassType(course, grade);
+    return `${seniorGradeLabel(grade)}：${classType ? courseClassTypeLabel(classType) : '混合/未配置'}`;
+  });
+  return labels.length ? labels.join('<br>') : '未配置';
+}
+
+function renderCourseDeliveryOptions(course = { grade: [10, 11, 12], type: 'required' }) {
+  const grades = [10, 11, 12];
+  const fixedClass = isFixedClassCourse(course);
+  return `
+    <div class="course-delivery-options ${fixedClass ? '' : 'hidden'}" data-course-delivery-scope>
+      ${grades.map(grade => {
+        const classType = inferredCourseDeliveryClassType(course, grade) || 'teaching';
+        return `
+          <label class="course-delivery-option" data-delivery-grade="${grade}">
+            <span>${seniorGradeLabel(grade)}</span>
+            <select name="delivery_class_type_${grade}">
+              <option value="admin" ${classType === 'admin' ? 'selected' : ''}>行政班上课</option>
+              <option value="teaching" ${classType === 'teaching' ? 'selected' : ''}>教学班上课</option>
+            </select>
+          </label>
+        `;
+      }).join('')}
+    </div>
+    <div class="form-help" data-course-delivery-help data-fixed-delivery-help>
+      保存时会同步该年级的教师分工与班级范围；这会使当前课表失效，需重新排课。
+    </div>
+    <div class="form-help ${fixedClass ? 'hidden' : ''}" data-selection-delivery-help>
+      AP 选修和必修选修按学生选课分流，不能设置为行政班或教学班上课。
+    </div>
+  `;
+}
+
+function courseDeliveryMapFromForm(formData, grades, courseType) {
+  if (!['required', 'other'].includes(courseType)) return null;
+  return Object.fromEntries(grades.map(grade => [
+    grade,
+    formData.get(`delivery_class_type_${grade}`) || 'teaching',
+  ]));
+}
+
+function syncCourseDeliveryEditor(form) {
+  const type = form.querySelector('[name="type"]')?.value;
+  const fixedClass = type === 'required' || type === 'other';
+  const selectedGrades = new Set([...form.querySelectorAll('input[name="grade_scope"]:checked')]
+    .map(input => Number(input.value)));
+  form.querySelector('[data-course-delivery-scope]')?.classList.toggle('hidden', !fixedClass);
+  form.querySelector('[data-fixed-delivery-help]')?.classList.toggle('hidden', !fixedClass);
+  form.querySelector('[data-selection-delivery-help]')?.classList.toggle('hidden', fixedClass);
+  form.querySelectorAll('[data-delivery-grade]').forEach(row => {
+    row.classList.toggle('hidden', !selectedGrades.has(Number(row.dataset.deliveryGrade)) || !fixedClass);
+  });
 }
 
 function renderCourseGradeOptions(course = { grade: [10, 11, 12] }) {
@@ -1589,7 +1821,12 @@ function renderCourseClassOptions(course = {}) {
 function syncCourseClassEditor(form) {
   const highTwoSelected = [...form.querySelectorAll('input[name="grade_scope"]:checked')]
     .some(input => Number(input.value) === 11);
-  form.querySelector('[data-high-two-class-scope]')?.classList.toggle('hidden', !highTwoSelected);
+  const highTwoDelivery = form.querySelector('[name="delivery_class_type_11"]')?.value;
+  const fixedClass = ['required', 'other'].includes(form.querySelector('[name="type"]')?.value);
+  form.querySelector('[data-high-two-class-scope]')?.classList.toggle(
+    'hidden',
+    !fixedClass || !highTwoSelected || highTwoDelivery !== 'teaching',
+  );
 }
 
 function courseTypeLabel(type) {
@@ -1634,6 +1871,7 @@ function renderCoursesList(data, { grade = '', classId = '', total = data.length
             <th>适用年级</th>
             ${grade === '11' ? '<th>适用班级</th>' : ''}
             <th>类型</th>
+            <th>上课班型</th>
             <th>周课时</th>
             <th>教室类型</th>
             <th>优先上午</th>
@@ -1649,6 +1887,7 @@ function renderCoursesList(data, { grade = '', classId = '', total = data.length
               <td>${courseGradeLabel(c)}</td>
               ${grade === '11' ? `<td>${courseClassLabel(c)}</td>` : ''}
               <td>${courseTypeLabel(c.type)}</td>
+              <td>${courseDeliveryLabel(c)}</td>
               <td>${c.weekly_hours}</td>
               <td>${c.required_room_type || '-'}</td>
               <td>${c.prefer_morning ? '是' : '-'}</td>
@@ -2963,6 +3202,7 @@ const ruleTypeHints = {
   forbid_slots: '禁止目标在给定时段上课。',
   preferred_slots: '偏好目标在给定时段上课；通常设为软规则。',
   max_occurrences_per_day: '限制同一目标每天最多出现几节。',
+  no_internal_gaps: '学生每天已排课程必须从第 1 节连续向后占位，空位只能留在当天末尾；仅支持 student 硬规则。',
   max_consecutive_lessons: '限制同一目标一天中连续课时的最大长度；本校“连续不超过三节”应设为 student 范围。',
   max_consecutive_days_in_period: '限制目标连续几天出现在同一节次。',
   priority: '仅影响求解变量的优先顺序，不改变硬约束。',
@@ -3116,6 +3356,100 @@ async function loadStudentSelect() {
     (item) => `${item.id} ${item.name} ${item.english_name || ''} ${item.pinyin_name || ''}`,
     (item) => `${item.id} - ${item.name}${item.english_name ? ` (${item.english_name})` : ''}`,
   );
+}
+
+function apGroupOptionLabel(section, courses, teachers) {
+  const course = courses.get(section.course_id);
+  const teacher = teachers.get(section.teacher_id);
+  const grades = (section.grades || []).map(seniorGradeLabel).join('、') || '未设置年级';
+  const courseName = course?.name || section.course_id;
+  const teacherName = teacher?.name || section.teacher_id || '待定教师';
+  const sectionNumber = section.id.split('_').pop();
+  return `${courseName} · Section ${sectionNumber} | ${grades} | ${teacherName} | ${section.student_ids?.length || 0} 人`;
+}
+
+// AP 分流组仅基于当前已排出的 section，确保列表与课表中的实际分班一致。
+async function loadApGroupSelect() {
+  const state = await api('/state');
+  const courses = new Map((state.courses || []).map(course => [course.id, course]));
+  const teachers = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
+  const groups = (state.schedule?.sections || [])
+    .filter(section => section.class_type === 'ap')
+    .sort((left, right) => apGroupOptionLabel(left, courses, teachers)
+      .localeCompare(apGroupOptionLabel(right, courses, teachers), 'zh-CN'));
+
+  window._apGroupSections = groups;
+  window._apGroupCourses = courses;
+  window._apGroupTeachers = teachers;
+
+  const select = document.getElementById('select-ap-group');
+  select.innerHTML = '<option value="">选择 AP 分流组</option>' +
+    groups.map(section => `<option value="${section.id}">${apGroupOptionLabel(section, courses, teachers)}</option>`).join('');
+
+  initSearchFilter(
+    'search-ap-group',
+    'select-ap-group',
+    groups,
+    (section) => `${section.id} ${apGroupOptionLabel(section, courses, teachers)} ${section.course_id} ${section.teacher_id || ''}`,
+    (section) => apGroupOptionLabel(section, courses, teachers),
+  );
+
+  const content = document.getElementById('ap-group-timetable-content');
+  if (!groups.length) {
+    content.innerHTML = '<div class="empty-state"><p>当前课表中没有可查看的 AP 分流组。请先完成排课。</p></div>';
+  }
+}
+
+async function renderApGroupTimetable(sectionId) {
+  const [state, data] = await Promise.all([
+    api('/state'),
+    api(`/timetable/section/${encodeURIComponent(sectionId)}`),
+  ]);
+  const section = (state.schedule?.sections || []).find(item => item.id === sectionId);
+  const container = document.getElementById('ap-group-timetable-content');
+  if (!section || section.class_type !== 'ap') {
+    container.innerHTML = '<div class="empty-state"><p>未找到该 AP 分流组，请刷新后重新选择。</p></div>';
+    return;
+  }
+
+  const courses = new Map((state.courses || []).map(course => [course.id, course]));
+  const teachers = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
+  const students = new Map((state.students || []).map(student => [student.id, student]));
+  const courseName = courses.get(section.course_id)?.name || section.course_id;
+  const teacherName = teachers.get(section.teacher_id)?.name || section.teacher_id || '待定教师';
+  const grades = (section.grades || []).map(seniorGradeLabel).join('、') || '未设置年级';
+  const sectionNumber = section.id.split('_').pop();
+
+  renderDetailedTimetable(
+    'ap-group-timetable-content',
+    data,
+    `${courseName} · Section ${sectionNumber}`,
+    `AP 分流组 | ${grades} | 教师：${teacherName} | ${section.student_ids?.length || 0} 人`,
+  );
+
+  const roster = (section.student_ids || [])
+    .map(id => students.get(id) || { id, name: id })
+    .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id), 'zh-CN'));
+  container.insertAdjacentHTML('beforeend', `
+    <div class="ap-group-roster">
+      <h3>分流组学生名单（${roster.length} 人）</h3>
+      ${roster.length ? `
+        <div class="table-container">
+          <table>
+            <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文姓名</th><th>年级</th><th>行政班</th><th>教学班</th></tr></thead>
+            <tbody>${roster.map(student => `<tr>
+              <td>${student.id}</td>
+              <td>${student.name || '-'}</td>
+              <td>${student.english_name || '-'}</td>
+              <td>${seniorGradeLabel(student.grade)}</td>
+              <td>${student.admin_class_id || '-'}</td>
+              <td>${student.teaching_class_id || '-'}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>
+      ` : '<p class="empty-state">该分流组暂未分配学生。</p>'}
+    </div>
+  `);
 }
 
 // 加载教师选择框
@@ -3591,8 +3925,9 @@ window.editEntity = async function(entity, id) {
 
       case 'courses':
         title = '编辑课程';
-        if (!window._teachingClassesData || !window._teachingAssignmentsData) {
-          [window._teachingClassesData, window._teachingAssignmentsData] = await Promise.all([
+        if (!window._adminClassesData || !window._teachingClassesData || !window._teachingAssignmentsData) {
+          [window._adminClassesData, window._teachingClassesData, window._teachingAssignmentsData] = await Promise.all([
+            api('/admin_classes'),
             api('/teaching_classes'),
             api('/teaching_assignments'),
           ]);
@@ -3619,6 +3954,10 @@ window.editEntity = async function(entity, id) {
             <div class="form-group">
               <label>适用年级</label>
               ${renderCourseGradeOptions(item)}
+            </div>
+            <div class="form-group">
+              <label>上课组织方式</label>
+              ${renderCourseDeliveryOptions(item)}
             </div>
             <div class="form-group" data-high-two-class-scope>
               <label>适用班级（Senior 2）</label>
@@ -3764,8 +4103,19 @@ window.editEntity = async function(entity, id) {
     }
     if (entity === 'courses') {
       form.querySelectorAll('input[name="grade_scope"]').forEach(input => {
+        input.addEventListener('change', () => {
+          syncCourseDeliveryEditor(form);
+          syncCourseClassEditor(form);
+        });
+      });
+      form.querySelectorAll('[name^="delivery_class_type_"]').forEach(input => {
         input.addEventListener('change', () => syncCourseClassEditor(form));
       });
+      form.querySelector('[name="type"]')?.addEventListener('change', () => {
+        syncCourseDeliveryEditor(form);
+        syncCourseClassEditor(form);
+      });
+      syncCourseDeliveryEditor(form);
       syncCourseClassEditor(form);
     }
 
@@ -3781,7 +4131,7 @@ window.editEntity = async function(entity, id) {
           if (key === 'id') continue; // 跳过 ID 字段
 
           // 特殊处理 can_teach（复选框）
-          if (key === 'can_teach' || key === 'grade_scope' || key === 'class_scope') {
+          if (key === 'can_teach' || key === 'grade_scope' || key === 'class_scope' || key.startsWith('delivery_class_type_')) {
             // 跳过，后面单独处理
             continue;
           } else if (key === 'grade' || key === 'max_per_day' || key === 'max_per_week' || key === 'weekly_hours' || key === 'capacity') {
@@ -3804,7 +4154,12 @@ window.editEntity = async function(entity, id) {
             return;
           }
           updateData.grade = grades.length === 1 ? grades[0] : grades;
-          if (grades.includes(11)) {
+          updateData.delivery_class_type_by_grade = courseDeliveryMapFromForm(
+            formData,
+            grades,
+            formData.get('type'),
+          );
+          if (grades.includes(11) && updateData.delivery_class_type_by_grade?.[11] === 'teaching') {
             const classIds = formData.getAll('class_scope');
             if (!classIds.length) {
               showToast('Senior 2 课程请至少选择一个适用教学班', 'error');
@@ -4080,14 +4435,14 @@ async function aiSolve() {
 // A protected soft rule is never waived as a side effect of clicking solve.
 // The second request is sent only after the operator explicitly confirms the
 // exact rule ids the first attempt could not preserve.
-async function solveWithRequiredApproval(body = {}) {
-  let result = await api('/solve', { method: 'POST', body: JSON.stringify(body) });
+async function solveWithRequiredApproval(body = {}, endpoint = '/solve') {
+  let result = await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
   if (result.solved || result.status !== 'NEEDS_APPROVAL_TO_RELAX') return result;
   const blocked = result.blocked_by || [];
   const labels = blocked.map(rule => `${rule.id}（${rule.scope}/${rule.type}）`).join('\n');
   const confirmed = confirm(`在不破坏以下受保护软规则的前提下无法排课：\n${labels}\n\n${result.diagnostic || ''}\n\n是否明确批准本次排课放宽这些规则？`);
   if (!confirmed) return result;
-  result = await api('/solve', {
+  result = await api(endpoint, {
     method: 'POST',
     body: JSON.stringify({ ...body, approved_rule_relaxations: blocked.map(rule => rule.id) }),
   });
@@ -4321,7 +4676,7 @@ async function refreshCurrentTimetable() {
 
   // 根据当前视图类型重新加载课表
   switch (currentView) {
-    case 'class-timetable':
+    case 'class-timetable': {
       const classSelect = document.getElementById('select-class');
       if (classSelect.value) {
         const data = await api(`/timetable/class/${classSelect.value}`);
@@ -4333,7 +4688,8 @@ async function refreshCurrentTimetable() {
         );
       }
       break;
-    case 'teacher-timetable':
+    }
+    case 'teacher-timetable': {
       const teacherSelect = document.getElementById('select-teacher');
       if (teacherSelect.value) {
         const data = await api(`/timetable/teacher/${teacherSelect.value}`);
@@ -4346,7 +4702,8 @@ async function refreshCurrentTimetable() {
         );
       }
       break;
-    case 'student-timetable':
+    }
+    case 'student-timetable': {
       const studentSelect = document.getElementById('select-student');
       if (studentSelect.value) {
         const data = await api(`/timetable/student/${studentSelect.value}`);
@@ -4359,7 +4716,13 @@ async function refreshCurrentTimetable() {
         );
       }
       break;
-    case 'room-timetable':
+    }
+    case 'ap-group-timetable': {
+      const groupSelect = document.getElementById('select-ap-group');
+      if (groupSelect.value) await renderApGroupTimetable(groupSelect.value);
+      break;
+    }
+    case 'room-timetable': {
       const roomSelect = document.getElementById('select-room');
       if (roomSelect.value) {
         const data = await api(`/timetable/room/${roomSelect.value}`);
@@ -4372,6 +4735,7 @@ async function refreshCurrentTimetable() {
         );
       }
       break;
+    }
     case 'overview-timetable':
       await loadOverviewTimetable();
       break;
@@ -4475,6 +4839,10 @@ function init() {
     }
   });
 
+  document.getElementById('select-ap-group').addEventListener('change', async (e) => {
+    if (e.target.value) await renderApGroupTimetable(e.target.value);
+  });
+
   document.getElementById('select-teacher').addEventListener('change', async (e) => {
     if (e.target.value) {
       const data = await api(`/timetable/teacher/${e.target.value}`);
@@ -4539,7 +4907,7 @@ function init() {
     showToast(`已生成 ${data.tasks_generated} 个教学任务`);
   });
 
-  document.getElementById('btn-add-constraint').addEventListener('click', () => openConstraintDialog());
+  document.getElementById('btn-add-constraint').addEventListener('click', () => window.openConstraintDialog());
 
   // 添加教师按钮
   document.getElementById('btn-add-teacher').addEventListener('click', async () => {
@@ -4676,6 +5044,10 @@ function init() {
           <label>适用年级</label>
           ${renderCourseGradeOptions()}
         </div>
+        <div class="form-group">
+          <label>上课组织方式</label>
+          ${renderCourseDeliveryOptions()}
+        </div>
         <div class="form-group" data-high-two-class-scope>
           <label>适用班级（Senior 2）</label>
           ${renderCourseClassOptions()}
@@ -4697,8 +5069,19 @@ function init() {
 
     const addCourseForm = document.getElementById('form-add-course');
     addCourseForm.querySelectorAll('input[name="grade_scope"]').forEach(input => {
+      input.addEventListener('change', () => {
+        syncCourseDeliveryEditor(addCourseForm);
+        syncCourseClassEditor(addCourseForm);
+      });
+    });
+    addCourseForm.querySelectorAll('[name^="delivery_class_type_"]').forEach(input => {
       input.addEventListener('change', () => syncCourseClassEditor(addCourseForm));
     });
+    addCourseForm.querySelector('[name="type"]')?.addEventListener('change', () => {
+      syncCourseDeliveryEditor(addCourseForm);
+      syncCourseClassEditor(addCourseForm);
+    });
+    syncCourseDeliveryEditor(addCourseForm);
     syncCourseClassEditor(addCourseForm);
     addCourseForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -4709,7 +5092,8 @@ function init() {
         return;
       }
       const classIds = formData.getAll('class_scope');
-      if (grades.includes(11) && !classIds.length) {
+      const deliveryClassTypes = courseDeliveryMapFromForm(formData, grades, formData.get('type'));
+      if (grades.includes(11) && deliveryClassTypes?.[11] === 'teaching' && !classIds.length) {
         showToast('Senior 2 课程请至少选择一个适用教学班', 'error');
         return;
       }
@@ -4718,7 +5102,8 @@ function init() {
         name: formData.get('name'),
         type: formData.get('type'),
         grade: grades.length === 1 ? grades[0] : grades,
-        applicable_class_ids: grades.includes(11) ? classIds : undefined,
+        delivery_class_type_by_grade: deliveryClassTypes,
+        applicable_class_ids: grades.includes(11) && deliveryClassTypes?.[11] === 'teaching' ? classIds : undefined,
         weekly_hours: parseInt(formData.get('weekly_hours')),
         required_room_type: formData.get('required_room_type') || undefined,
         prefer_morning: false,
@@ -5780,7 +6165,7 @@ window.confirmAllImports = async function() {
     showToast(`导入完成，但 ${failedFiles.length} 个文件失败: ${failedFiles.join(', ')}`, 'warning');
   }
 
-  cancelAllImports();
+  window.cancelAllImports();
   loadViewData(getCurrentView());
 }
 
@@ -5870,7 +6255,7 @@ async function updateExportTargets() {
   let options = '<option value="">选择对象</option>';
 
   switch (dimension) {
-    case 'class':
+    case 'class': {
       const [adminClasses, teachingClasses] = await Promise.all([
         api('/admin_classes'),
         api('/teaching_classes'),
@@ -5882,25 +6267,30 @@ async function updateExportTargets() {
       options += teachingClasses.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
       options += '</optgroup>';
       break;
+    }
 
-    case 'teacher':
+    case 'teacher': {
       const teachers = await api('/teachers');
       options += teachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
       break;
+    }
 
-    case 'student':
+    case 'student': {
       const students = await api('/students');
       options += students.map(s => `<option value="${s.id}">${s.name}${s.english_name ? ` (${s.english_name})` : ''}</option>`).join('');
       break;
+    }
 
-    case 'room':
+    case 'room': {
       const rooms = await api('/rooms');
       options += rooms.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
       break;
+    }
 
-    case 'all':
+    case 'all': {
       options = '<option value="all">全部课表</option>';
       break;
+    }
   }
 
   target.innerHTML = options;
@@ -6891,7 +7281,7 @@ window.startFormalSolve = async function() {
         `;
 
         // 自动请求AI建议
-        await requestAISuggestions();
+        await window.requestAISuggestions();
       } else {
         contentDiv.innerHTML = `
           <div class="validation-result success">

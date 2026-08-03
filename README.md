@@ -1,13 +1,12 @@
 # 排课系统
 
-AP课程选科走班排课系统，为国际课程学校设计。
+面向国际课程学校的选科、分班、手动锁定和全校联合排课系统。
 
 ## 技术栈
 
-- **TypeScript** monorepo (pnpm workspaces)
-- **packages/core**: 领域库（model + solver + validate + state，纯逻辑无IO）
-- **packages/cli**: Node CLI (citty)
-- **packages/web**: 前端（后置）
+- **packages/backend**：当前唯一生产后端，包含 rules-first 规则编译、CP-SAT 求解、独立校验与数据导入
+- **packages/web**：当前网页前端，开发端口 `3000`，将 `/api` 转发到后端 `3001`
+- **packages/core / packages/cli / packages/web/server.js**：早期原型，仅供历史对照，不参与当前网页排课
 
 ## 快速开始
 
@@ -15,37 +14,18 @@ AP课程选科走班排课系统，为国际课程学校设计。
 # 安装依赖
 pnpm install
 
-# 构建
-pnpm build
-
-# 初始化项目
-cd /path/to/project
-tt init --name "学校名称"
-
-# 添加数据
-tt teacher add --id T1 --name 张伟 --canTeach MATH,PHYS
-tt room add --id R1 --name 物理实验室 --type physics --capacity 30
-tt course add --id MATH --name 数学 --type required --weeklyHours 4
-tt student add --id S1 --name 李明 --grade 1 --adminClass AC1 --teachingClass TC1
-
-# 校验数据
-tt validate-input
-
-# 生成教学任务
-tt build-tasks
-
-# 求解
-tt solve
-
-# 查看课表
-tt show --by student --id S1
-tt show --by teacher --id T1
-
-# 导出
-tt export --format html --output timetable.html
+# 同时启动当前后端和网页
+pnpm --filter @timetable/web start
 ```
 
-## CLI 命令
+浏览器打开 `http://localhost:3000/`。也可以使用 `pnpm dev` 启动整个工作区的开发监听。
+
+不要运行 `packages/web/server.js`；它是弃用的旧后端。只有显式执行
+`pnpm --filter @timetable/web server:legacy` 才会启动它。
+
+## 旧版 CLI（弃用）
+
+以下命令属于 `packages/core` / `packages/cli` 原型，不是当前网页后端的数据或算法入口。
 
 ### 基础命令
 - `tt init`: 初始化项目
@@ -106,3 +86,12 @@ tt export --format html --output timetable.html
 5. ✅ `tt lock` 一节课后重排，锁定不被改
 6. ✅ 同输入同 `--seed` → 同输出
 7. ✅ 约束单测全绿
+
+## 当前排课策略
+
+网页后端默认使用 `bounded-feasible-first`：在固定时间预算内生成少量完整候选并择优，不做全局最优证明，也不穷举全部分班组合。
+
+- 课时数完整、教师/学生不重叠、固定时段、手动金框和同步课组始终是不可放宽条件。
+- “学生每天课程从第一节连续向后排列”在自动补全阶段作为高权重人工复核指标；它不会再让一张已经排满且无冲突的课表被整体丢弃。
+- 系统优先返回完整候选，再按人工复核项数量和普通软规则分数择优。课表会记录 `review_items`、`quality_score` 和实际求解时间。
+- 如需运行旧的严格精确模式，可在 API 请求中显式传入 `feasible_first: false`。

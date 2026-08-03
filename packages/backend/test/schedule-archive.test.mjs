@@ -15,8 +15,16 @@ const state = {
     version: 4,
     solver_status: 'OPTIMAL',
     solve_duration_ms: 321,
-    assignments: [{ section_id: 'SEC1', student_id: 'S1', slot_id: 'D1P1' }],
-    meetings: [{ section_id: 'SEC1', slot_id: 'D1P1' }],
+    sections: [{
+      id: 'SEC1', course_id: 'MATH', teacher_id: 'T1', room_id: 'R1',
+      class_id: 'TC1', class_type: 'teaching', student_ids: ['S1'],
+    }],
+    assignments: [{
+      task_id: 'SEC1:S1:D1P1', section_id: 'SEC1', student_id: 'S1',
+      slot_id: 'D1P1', room_id: 'R1', teacher_id: 'T1', course_id: 'MATH',
+      class_id: 'TC1', class_type: 'teaching',
+    }],
+    meetings: [{ section_id: 'SEC1', slot_id: 'D1P1', room_id: 'R1' }],
     locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
     validation: { ok: true, hard_violations: [] },
   },
@@ -30,7 +38,8 @@ test('creates an immutable schedule snapshot with the display context', () => {
   state.courses[0].name = '已修改课程';
   state.schedule.assignments[0].slot_id = 'D2P2';
 
-  assert.equal(archive.schedule.assignments[0].slot_id, 'D1P1');
+  assert.equal(archive.schedule.assignments, undefined);
+  assert.equal(archive.assignments_count, 1);
   assert.equal(archive.context.courses[0].name, '数学');
   assert.deepEqual(archiveSummary(archive), {
     id: 'ARCHIVE_20260731T080000000Z',
@@ -44,6 +53,8 @@ test('creates an immutable schedule snapshot with the display context', () => {
     manual_lock_count: 1,
     validation: { ok: true, hard_violations: [] },
   });
+  state.courses[0].name = '数学';
+  state.schedule.assignments[0].slot_id = 'D1P1';
 });
 
 test('builds an archived state that remains viewable after current data changes', () => {
@@ -54,4 +65,6 @@ test('builds an archived state that remains viewable after current data changes'
   assert.equal(archivedState.solve_status, 'valid');
   assert.equal(archivedState.students[0].id, 'S1');
   assert.equal(archivedState.schedule.version, 4);
+  assert.deepEqual(archivedState.schedule.assignments, state.schedule.assignments);
+  assert.deepEqual(archivedState.assignments, state.schedule.assignments);
 });

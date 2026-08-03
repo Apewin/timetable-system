@@ -1,3 +1,5 @@
+import { validateClassIdentity } from './state-integrity.mjs';
+
 /**
  * Converts the school's source data into schedulable sections.
  *
@@ -67,8 +69,68 @@ export function courseClassRange(course) {
   return [...new Set(course.applicable_class_ids)];
 }
 
+/**
+ * A required/activity course may be delivered through a different stable
+ * grouping in each grade.  Keep the choice on the course so the course
+ * editor is the source of truth, while teacher assignments retain staffing
+ * and weekly-hour details.
+ */
+export function courseDeliveryClassTypeForGrade(course, grade) {
+  const scope = course?.delivery_class_type_by_grade;
+  if (scope === undefined || scope === null) return null;
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) {
+    throw new Error(`课程 ${course?.id || '（未命名）'} 的授课班型必须按年级保存`);
+  }
+  const value = scope[String(Number(grade))];
+  if (value === undefined || value === null || value === '') return null;
+  if (!['admin', 'teaching'].includes(value)) {
+    throw new Error(`课程 ${course?.id || '（未命名）'} 的授课班型只能是行政班或教学班`);
+  }
+  return value;
+}
+
+export function normalizeCourseDeliveryScope(course) {
+  const rawScope = course?.delivery_class_type_by_grade;
+  if (rawScope === undefined) return course;
+  if (rawScope === null) {
+    const withoutDeliveryScope = { ...course };
+    delete withoutDeliveryScope.delivery_class_type_by_grade;
+    return withoutDeliveryScope;
+  }
+  if (!rawScope || typeof rawScope !== 'object' || Array.isArray(rawScope)) {
+    throw new Error(`课程 ${course?.id || '（未命名）'} 的授课班型必须按年级保存`);
+  }
+  // AP 和必修选修课始终按学生选课分流，不应伪装成固定班课程。
+  if (['ap', 'required_elective'].includes(course.type)) {
+    const withoutDeliveryScope = { ...course };
+    delete withoutDeliveryScope.delivery_class_type_by_grade;
+    return withoutDeliveryScope;
+  }
+  const allowedGrades = courseGradeRange(course);
+  const scope = {};
+  for (const [rawGrade, rawClassType] of Object.entries(rawScope)) {
+    const grade = Number(rawGrade);
+    if (!Number.isInteger(grade) || !SCHOOL_GRADES.includes(grade)) {
+      throw new Error(`课程 ${course?.id || '（未命名）'} 的授课班型年级无效: ${rawGrade}`);
+    }
+    if (allowedGrades && !allowedGrades.includes(grade)) {
+      throw new Error(`课程 ${course?.id || '（未命名）'} 未适用于 Senior ${grade - 9}，不能设置该年级授课班型`);
+    }
+    if (!['admin', 'teaching'].includes(rawClassType)) {
+      throw new Error(`课程 ${course?.id || '（未命名）'} 的授课班型只能是行政班或教学班`);
+    }
+    scope[grade] = rawClassType;
+  }
+  if (!Object.keys(scope).length) {
+    const withoutDeliveryScope = { ...course };
+    delete withoutDeliveryScope.delivery_class_type_by_grade;
+    return withoutDeliveryScope;
+  }
+  return { ...course, delivery_class_type_by_grade: scope };
+}
+
 export function normalizeCourseScope(course) {
-  const normalized = normalizeCourseGradeRange(course);
+  const normalized = normalizeCourseDeliveryScope(normalizeCourseGradeRange(course));
   const grades = courseGradeRange(normalized);
   if (grades && !grades.includes(11)) {
     const withoutHighTwoClasses = { ...normalized };
@@ -121,6 +183,13 @@ export function validateCourseGradeSelections(state, courses = byId(state.course
 export function validateCourseClassScopes(state, courses = byId(state.courses)) {
   const teachingClasses = byId(state.teaching_classes);
   for (const course of courses.values()) {
+    const deliveryScope = course.delivery_class_type_by_grade;
+    if (deliveryScope !== undefined && deliveryScope !== null) {
+      for (const grade of Object.keys(deliveryScope)) courseDeliveryClassTypeForGrade(course, grade);
+      if (['ap', 'required_elective'].includes(course.type)) {
+        throw new Error(`课程 ${course.id} 是选课分流课程，不能设置行政班或教学班授课班型`);
+      }
+    }
     const classIds = courseClassRange(course);
     if (!classIds) continue;
     const grades = courseGradeRange(course);
@@ -140,13 +209,6 @@ export function validateCourseClassScopes(state, courses = byId(state.courses)) 
 function configuredSectionCount(value) {
   if (Array.isArray(value)) return Math.max(1, ...value.filter(Number.isFinite));
   return Number.isInteger(value) && value > 0 ? value : 1;
-}
-
-function compatibleRooms(state, course, studentCount) {
-  return (state.rooms || [])
-    .filter(room => !course.required_room_type || room.type === course.required_room_type)
-    .filter(room => room.capacity >= studentCount)
-    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function defaultTeacher(state, courseId) {
@@ -171,19 +233,21 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
     const classes = assignment.class_type === 'admin' ? adminClasses : teachingClasses;
     const course = courses.get(assignment.course_id);
     if (!course) throw new Error(`教师分工 ${assignment.id} 引用了不存在的课程 ${assignment.course_id}`);
+    if (assignment.synchronized_classes !== undefined
+      && typeof assignment.synchronized_classes !== 'boolean') {
+      throw new Error(`教师分工 ${assignment.id} 的 synchronized_classes 必须是布尔值`);
+    }
 
-    // Activities such as self-study, club, duty and meeting may deliberately
-    // have no recorded supervisor.  They still occupy students and rooms but
-    // must not manufacture a false teacher collision.  A provided teacher,
-    // however, is always validated against the course qualification list.
-    // Some historical imports used one grade-level homeroom placeholder for
-    // several simultaneous administrative meetings.  It is not a real person
-    // and therefore must not turn two concurrent classes into a fake teacher
-    // clash.
-    const sharedMeetingPlaceholder = assignment.course_id === 'MEETING'
-      && assignment.class_type === 'admin'
-      && classIds.length > 1;
-    const unstaffedActivity = !assignment.teacher_id || sharedMeetingPlaceholder;
+    // A per-class staffing assignment represents a role (for example “each
+    // homeroom teacher”), not one real person shared by every listed class.
+    // Until concrete teacher_ids_by_class are supplied, each section occupies
+    // its students without creating a false shared-teacher resource.
+    if (assignment.staffing_mode
+      && !['shared_teacher', 'per_class'].includes(assignment.staffing_mode)) {
+      throw new Error(`教师分工 ${assignment.id} 的 staffing_mode 无效: ${assignment.staffing_mode}`);
+    }
+    const perClassStaffing = assignment.staffing_mode === 'per_class';
+    const unstaffedActivity = !assignment.teacher_id || perClassStaffing;
     if (!unstaffedActivity) {
       const teacher = (state.teachers || []).find(item => item.id === assignment.teacher_id);
       if (!teacher) throw new Error(`教师分工 ${assignment.id} 引用了不存在的教师 ${assignment.teacher_id || '（空）'}`);
@@ -198,24 +262,19 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
       if (!gradeAllowed(course, group.grade)) {
         throw new Error(`课程 ${course.id} 不适用于 ${group.name || classId} 所在年级`);
       }
+      const configuredClassType = courseDeliveryClassTypeForGrade(course, group.grade);
+      if (configuredClassType && configuredClassType !== assignment.class_type) {
+        const expectedLabel = configuredClassType === 'admin' ? '行政班' : '教学班';
+        throw new Error(
+          `课程 ${course.id} 在 Senior ${Number(group.grade) - 9} 设置为${expectedLabel}上课，`
+          + `但教师分工 ${assignment.id} 仍引用${assignment.class_type === 'admin' ? '行政班' : '教学班'}`,
+        );
+      }
       // A teacher assignment may deliberately list all parallel teaching
       // classes. The editable course scope is the effective subset and
       // therefore suppresses out-of-scope tasks rather than invalidating the
       // broader staffing record.
       if (!classAllowed(course, group, assignment.class_type)) continue;
-      const candidates = compatibleRooms(state, course, group.student_ids.length);
-      if (!candidates.length) throw new Error(`班级 ${classId} 的 ${course.id} 没有容量足够的教室`);
-      const fixedRoom = assignment.class_type === 'admin' ? group.fixed_room_id : null;
-      if (fixedRoom && !candidates.some(room => room.id === fixedRoom)) {
-        throw new Error(`行政班 ${classId} 的固定教室 ${fixedRoom} 不适用于 ${course.id}`);
-      }
-      const roomCandidates = fixedRoom
-        ? [fixedRoom]
-        : candidates.sort((left, right) => {
-          if (left.id === group.fixed_room_id) return -1;
-          if (right.id === group.fixed_room_id) return 1;
-          return left.id.localeCompare(right.id);
-        }).map(room => room.id);
       sections.push({
         id: `SEC_${assignment.class_type}_${assignment.id}_${classId}`,
         course_id: course.id,
@@ -223,13 +282,19 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
         class_id: classId,
         class_type: assignment.class_type,
         source: 'required',
+        source_assignment_id: assignment.id,
+        synchronized_group_id: assignment.synchronized_classes ? assignment.id : null,
         weekly_hours: assignment.weekly_hours,
         student_ids: [...group.student_ids],
         eligible_student_ids: [],
-        room_id: roomCandidates[0],
-        room_candidates: roomCandidates,
-        room_binding: fixedRoom ? 'fixed' : 'flexible',
-        warnings: unstaffedActivity ? ['未记录授课教师，作为无教师活动处理'] : [],
+        room_id: null,
+        room_candidates: [],
+        room_binding: 'disabled',
+        capacity: null,
+        staffing_mode: assignment.staffing_mode || 'shared_teacher',
+        warnings: perClassStaffing
+          ? ['每班由各自教师负责，不占用共享教师资源']
+          : unstaffedActivity ? ['未记录授课教师，作为无教师活动处理'] : [],
       });
     }
   }
@@ -261,8 +326,17 @@ function selectedCourseStudents(state, courses) {
   return selected;
 }
 
-/** Validates the declared course options for each named student choice block. */
-export function validateSelectionBlocks(state, courses = new Map((state.courses || []).map(course => [course.id, course]))) {
+/**
+ * Validates the declared course options for each named student choice block.
+ * `allowIncomplete` is used only while building a scheduling problem: chosen
+ * students keep their exact course membership, while students who have not
+ * submitted a choice are left out until their data is imported later.
+ */
+export function validateSelectionBlocks(
+  state,
+  courses = new Map((state.courses || []).map(course => [course.id, course])),
+  { allowIncomplete = false } = {},
+) {
   const ids = new Set();
   for (const block of state.selection_blocks || []) {
     if (!block || typeof block.id !== 'string' || !block.id) throw new Error('选课组必须有 id');
@@ -295,7 +369,9 @@ export function validateSelectionBlocks(state, courses = new Map((state.courses 
     for (const student of state.students || []) {
       if (!block.grades.includes(student.grade)) continue;
       const selected = student.elective_choices?.[block.choice_key];
-      if (!selected && block.required !== false) throw new Error(`学生 ${student.id} 未在选课组 ${block.id} 选择课程`);
+      if (!selected && block.required !== false && !allowIncomplete) {
+        throw new Error(`学生 ${student.id} 未在选课组 ${block.id} 选择课程`);
+      }
       if (selected && !allowed.has(selected)) throw new Error(`学生 ${student.id} 在选课组 ${block.id} 选择了不允许的课程 ${selected}`);
     }
   }
@@ -359,14 +435,7 @@ function selectedSections(state, courses) {
       if (!teacher || !(teacher.can_teach || []).includes(courseId)) {
         throw new Error(`课程 ${courseId} 没有可教授该分班组的教师`);
       }
-      const anyCapacityRoom = compatibleRooms(state, course, 1);
-      if (!anyCapacityRoom.length) throw new Error(`课程 ${courseId} 没有符合教室类型的教室`);
-      const maxCapacity = Math.max(...anyCapacityRoom.map(room => room.capacity));
-      const capacityMinimum = Math.ceil(cohortStudents.length / maxCapacity);
-      if (requirement.synchronized_block_id && capacityMinimum > requirement.count) {
-        throw new Error(`同步选课组 ${requirement.synchronized_block_id} 的 ${courseId} 需要至少 ${capacityMinimum} 个 section，但规则要求 ${requirement.count} 个`);
-      }
-      const sectionCount = requirement.synchronized_block_id ? requirement.count : Math.max(requirement.count, capacityMinimum);
+      const sectionCount = requirement.count;
       const targetSize = Math.ceil(cohortStudents.length / sectionCount);
       const cohortLabel = requirement.grades?.length
         ? `G${[...requirement.grades].sort((left, right) => left - right).join('_G')}`
@@ -375,8 +444,6 @@ function selectedSections(state, courses) {
       for (let index = 0; index < sectionCount; index++) {
         const provisionalStudents = cohortStudents.slice(index * targetSize, (index + 1) * targetSize);
         if (!provisionalStudents.length) continue;
-        const candidates = compatibleRooms(state, course, provisionalStudents.length);
-        if (!candidates.length) throw new Error(`课程 ${courseId} 第 ${index + 1} 个 section 没有容量足够的教室`);
         sections.push({
           id: `SEC_${prefix}_${courseId}_${cohortLabel}_${index + 1}`,
           course_id: courseId,
@@ -390,13 +457,10 @@ function selectedSections(state, courses) {
           // placement.  The solver may move a student between parallel sections.
           student_ids: provisionalStudents.map(student => student.id),
           eligible_student_ids: cohortStudents.map(student => student.id),
-          room_id: candidates[0].id,
-          room_candidates: candidates.map(room => room.id),
-          room_binding: 'flexible',
-          // The final room is selected by the solver; the section's upper
-          // bound is therefore the largest compatible room.  Validation still
-          // checks each actual meeting room against its final roster.
-          capacity: Math.max(...candidates.map(room => room.capacity)),
+          room_id: null,
+          room_candidates: [],
+          room_binding: 'disabled',
+          capacity: null,
           warnings: [],
         });
       }
@@ -462,18 +526,19 @@ function applySectionOverrides(sections, state) {
     const parallel = sections.filter(section => section.course_id === courseId && section.class_type === target.class_type);
     for (const section of parallel) section.student_ids = section.student_ids.filter(id => id !== studentId);
     target.student_ids.push(studentId);
-    if (target.capacity && target.student_ids.length > target.capacity) {
-      throw new Error(`section override ${target.id} 超出容量`);
-    }
   }
   return sections;
 }
 
 export function buildSections(state) {
+  validateClassIdentity(state);
   const courses = byId(state.courses);
   validateCourseGradeSelections(state, courses);
   validateCourseClassScopes(state, courses);
-  validateSelectionBlocks(state, courses);
+  // Timetable construction is allowed to proceed from partial rosters. A
+  // missing choice is diagnostic data, not a contradiction in course times.
+  // Invalid choices still fail validation above and are never scheduled.
+  validateSelectionBlocks(state, courses, { allowIncomplete: true });
   const adminClasses = byId(state.admin_classes);
   const teachingClasses = byId(state.teaching_classes);
   const sections = [

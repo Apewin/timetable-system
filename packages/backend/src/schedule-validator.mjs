@@ -173,6 +173,35 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
       }
       return issues;
     }
+    case 'no_internal_gaps': {
+      const groups = groupedEvents(rule, sections, meetings, studentEvents);
+      const ignoredCourseIds = new Set(params.ignore_course_ids || []);
+      const issues = [];
+      for (const [key, events] of groups) {
+        const byDay = new Map();
+        for (const event of events.filter(item => !ignoredCourseIds.has(item.section.course_id))) {
+          const { day, period } = slotParts(event.slot_id);
+          const periods = byDay.get(day) || new Set();
+          periods.add(period);
+          byDay.set(day, periods);
+        }
+        for (const [day, periodSet] of byDay) {
+          const actualPeriods = [...periodSet].sort((left, right) => left - right);
+          const missingPeriods = Array.from(
+            { length: actualPeriods.at(-1) || 0 },
+            (_, index) => index + 1,
+          ).filter(period => !periodSet.has(period));
+          if (missingPeriods.length) {
+            issues.push(violation(
+              rule.id,
+              `${key} 在第 ${day} 天的课程未从第 1 节连续排列`,
+              { target_id: key, day, actual_periods: actualPeriods, missing_periods: missingPeriods },
+            ));
+          }
+        }
+      }
+      return issues;
+    }
     case 'max_consecutive_lessons': {
       const groups = groupedEvents(rule, sections, meetings, studentEvents);
       return [...groups].flatMap(([key, events]) => {
@@ -211,7 +240,6 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
  */
 export function validateSchedule(problem, solution) {
   const sections = selectedSectionMap(problem, solution);
-  const rooms = indexById(problem.rooms || []);
   const validSlots = new Set(problem.slots.map(slot => slot.id));
   const hard = [];
   const meetings = [];
@@ -220,17 +248,10 @@ export function validateSchedule(problem, solution) {
     const section = sections.get(meeting.section_id);
     if (!section) { hard.push(violation('kernel.section_exists', `未知 section: ${meeting.section_id}`, meeting)); continue; }
     if (!validSlots.has(meeting.slot_id)) { hard.push(violation('kernel.slot_exists', `未知时段: ${meeting.slot_id}`, meeting)); continue; }
-    const roomId = meeting.room_id || section.room_id;
     const key = `${meeting.section_id}@${meeting.slot_id}`;
     if (seenMeetings.has(key)) { hard.push(violation('kernel.section_no_duplicate_slot', `section ${meeting.section_id} 在 ${meeting.slot_id} 重复`, meeting)); continue; }
     seenMeetings.add(key);
-    if (!section.room_candidates.includes(roomId)) {
-      hard.push(violation('kernel.room_eligible', `section ${meeting.section_id} 不能使用教室 ${roomId}`, { ...meeting, room_id: roomId }));
-    }
-    if ((rooms.get(roomId)?.capacity || 0) < section.student_ids.length) {
-      hard.push(violation('kernel.room_capacity', `教室 ${roomId} 容量不足以容纳 section ${meeting.section_id}`, { ...meeting, room_id: roomId }));
-    }
-    meetings.push({ ...meeting, room_id: roomId });
+    meetings.push({ ...meeting, room_id: null });
   }
   for (const section of sections.values()) {
     const count = meetings.filter(meeting => meeting.section_id === section.id).length;
@@ -244,21 +265,27 @@ export function validateSchedule(problem, solution) {
   // Candidate rosters are a partition: every selected student must be in one
   // parallel section of each selected course, neither omitted nor duplicated.
   const memberships = new Map();
+  const eligibleByCourse = new Map();
+  for (const section of sections.values()) for (const studentId of section.eligible_student_ids || []) {
+    const eligible = eligibleByCourse.get(section.course_id) || new Set();
+    eligible.add(studentId);
+    eligibleByCourse.set(section.course_id, eligible);
+  }
   for (const section of sections.values()) {
-    const eligible = new Set(section.eligible_student_ids || []);
+    const sectionEligible = new Set(section.eligible_student_ids || []);
+    const courseEligible = eligibleByCourse.get(section.course_id);
     for (const studentId of section.student_ids || []) {
-      if (eligible.size && !eligible.has(studentId)) hard.push(violation('kernel.eligible_membership', `学生 ${studentId} 不在 ${section.id} 的候选名单`, { section_id: section.id, student_id: studentId }));
-      if (section.capacity && section.student_ids.length > section.capacity) hard.push(violation('kernel.section_capacity', `section ${section.id} 超出容量`, { section_id: section.id }));
-      if (eligible.size) {
+      if (courseEligible?.size) {
+        if (!sectionEligible.has(studentId)) hard.push(violation('kernel.eligible_membership', `学生 ${studentId} 不在 ${section.id} 的候选名单`, { section_id: section.id, student_id: studentId }));
         const key = `${studentId}@${section.course_id}`;
         const list = memberships.get(key) || []; list.push(section.id); memberships.set(key, list);
       }
     }
   }
-  for (const section of sections.values()) for (const studentId of section.eligible_student_ids || []) {
-    const key = `${studentId}@${section.course_id}`;
+  for (const [courseId, eligible] of eligibleByCourse) for (const studentId of eligible) {
+    const key = `${studentId}@${courseId}`;
     const assigned = memberships.get(key) || [];
-    if (assigned.length !== 1) hard.push(violation('kernel.selected_course_membership', `学生 ${studentId} 的 ${section.course_id} 应恰好分入一个 section，实际 ${assigned.length}`, { student_id: studentId, course_id: section.course_id, section_ids: assigned }));
+    if (assigned.length !== 1) hard.push(violation('kernel.selected_course_membership', `学生 ${studentId} 的 ${courseId} 应恰好分入一个 section，实际 ${assigned.length}`, { student_id: studentId, course_id: courseId, section_ids: assigned }));
   }
 
   const byResourceSlot = new Map();
@@ -269,7 +296,6 @@ export function validateSchedule(problem, solution) {
   };
   for (const meeting of meetings) {
     const section = sections.get(meeting.section_id);
-    addResource('room', meeting.room_id, meeting);
     addResource('teacher', section.teacher_id, meeting);
   }
   for (const [key, collisions] of byResourceSlot) if (collisions.length > 1) {
@@ -286,6 +312,7 @@ export function validateSchedule(problem, solution) {
 
   const soft = [];
   for (const rule of problem.rules || []) {
+    if (rule.scope === 'room') continue;
     if (rule.unmatched) {
       const item = violation(rule.id, '规则未匹配到任何目标');
       if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: rule.weight });

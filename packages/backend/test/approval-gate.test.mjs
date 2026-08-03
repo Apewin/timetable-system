@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { approvalGatedRules, enforceApprovalGates, relaxApprovedRules } from '../src/approval-gate.mjs';
 import { solveSchedule } from '../src/cpsat-solver.mjs';
+import { validateRules } from '../src/rule-schema.mjs';
+import { validateSchedule } from '../src/schedule-validator.mjs';
 
 test('keeps an approval-gated student rule hard until its rule id is explicitly approved', async () => {
   const problem = {
@@ -14,6 +16,16 @@ test('keeps an approval-gated student rule hard until its rule id is explicitly 
   const protectedAttempt = await solveSchedule(enforceApprovalGates(problem), { maxTimeSeconds: 5 });
   assert.equal(protectedAttempt.status, 'INFEASIBLE_BY_WORKLOAD');
   assert.equal(approvalGatedRules(problem, ['student-max-three']).length, 0);
-  assert.equal(enforceApprovalGates(problem, ['student-max-three']).rules[0].hard, false);
-  assert.equal(relaxApprovedRules(problem, ['student-max-three']).rules.length, 0);
+  const hardened = enforceApprovalGates(problem);
+  assert.equal(hardened.rules[0].hard, true);
+  assert.equal(hardened.rules[0].requires_approval_to_relax, false);
+  validateRules(hardened.rules);
+
+  const relaxed = relaxApprovedRules(problem, ['student-max-three']);
+  assert.equal(relaxed.rules.length, 1);
+  assert.equal(relaxed.rules[0].hard, false);
+  assert.equal(relaxed.rules[0].requires_approval_to_relax, false);
+  const approvedAttempt = await solveSchedule(relaxed, { maxTimeSeconds: 5, optimizeSoft: true });
+  assert.equal(approvedAttempt.ok, true);
+  assert.ok(validateSchedule(problem, approvedAttempt).soft_score > 0);
 });

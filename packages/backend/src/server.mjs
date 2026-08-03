@@ -8,6 +8,7 @@ import { validateRules } from './rule-schema.mjs';
 import { buildSchedulingProblem } from './problem-builder.mjs';
 import { compileRules } from './rule-compiler.mjs';
 import { solveSchedule } from './cpsat-solver.mjs';
+import { solveFeasibleFirstSchedule } from './feasible-first-solver.mjs';
 import { validateSchedule } from './schedule-validator.mjs';
 import { approvalGatedRules, enforceApprovalGates, relaxApprovedRules } from './approval-gate.mjs';
 import {
@@ -19,7 +20,6 @@ import {
 import { applyApSelectionChanges, parseApSelectionBuffer } from './ap-selection-import.mjs';
 import {
   applyElectiveSelectionChanges,
-  parseElectiveSelectionBuffer,
   parseElectiveSelectionWorkbook,
 } from './elective-selection-import.mjs';
 import {
@@ -32,11 +32,13 @@ import {
 } from './llm-workbook-interpreter.mjs';
 import {
   emptyManualPlan,
+  expandUnlimitedManualHours,
   mergedMeetingLocks,
-  normalizeManualPlacements,
   resolveManualPlan,
 } from './manual-plan.mjs';
 import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from './schedule-archive.mjs';
+import { synchronizeClassMemberships } from './state-integrity.mjs';
+import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
 
 const app = express();
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
@@ -49,11 +51,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 async function reply(res, action) {
   try { return res.json({ ok: true, data: await action() }); }
   catch (error) { return res.status(400).json({ ok: false, errors: [{ code: 'BACKEND_ERROR', msg: error.message }] }); }
-}
-
-function slotOrder(slotId) {
-  const match = /^D(\d+)P(\d+)$/.exec(slotId || '');
-  return match ? Number(match[1]) * 100 + Number(match[2]) : Number.MAX_SAFE_INTEGER;
 }
 
 function timetableGrid(state, by, id) {
@@ -484,18 +481,7 @@ function applyImportedRows(state, type, rows) {
   const ids = new Set(current.map(item => item.id));
   const additions = rows.filter(item => item?.id && !ids.has(item.id));
   const nextItems = [...current, ...additions];
-  let next = changedState(state, type, nextItems);
-  if (type === 'students') {
-    const syncClassMembers = (classes, field) => (classes || []).map(classItem => {
-      const studentIds = nextItems.filter(student => student[field] === classItem.id).map(student => student.id);
-      return { ...classItem, student_ids: studentIds, student_count: studentIds.length };
-    });
-    next = {
-      ...next,
-      admin_classes: syncClassMembers(state.admin_classes, 'admin_class_id'),
-      teaching_classes: syncClassMembers(state.teaching_classes, 'teaching_class_id'),
-    };
-  }
+  const next = changedState(state, type, nextItems);
   return { next, imported: additions.length, skipped: rows.length - additions.length, notes: [] };
 }
 
@@ -515,10 +501,14 @@ function problemForSchedule(state, schedule) {
       id: section.id,
       student_ids: [...(override.student_ids || [])],
       eligible_student_ids: [...(override.eligible_student_ids || section.eligible_student_ids || [])],
-      room_candidates: [...(override.room_candidates || section.room_candidates || [])],
+      room_id: null,
+      room_candidates: [],
+      room_binding: 'disabled',
+      capacity: null,
     };
   });
-  return { ...base, sections, rules: compileRules(state, schedule.rules || state.constraints || [], { sections }) };
+  const activeRules = (schedule.rules || state.constraints || []).filter(rule => rule.scope !== 'room');
+  return { ...base, sections, rules: compileRules(state, activeRules, { sections }) };
 }
 
 function candidateScheduleForSections(state, nextSections) {
@@ -530,7 +520,12 @@ function candidateScheduleForSections(state, nextSections) {
   };
 }
 
-function saveValidatedScheduleEdit(state, nextSections, sectionOverrides = state.section_overrides) {
+function saveValidatedScheduleEdit(
+  state,
+  nextSections,
+  sectionOverrides = state.section_overrides,
+  expectedRevision = repository.revision(state),
+) {
   const schedule = candidateScheduleForSections(state, nextSections);
   const validation = validateSchedule(problemForSchedule(state, schedule), schedule);
   if (!validation.ok) {
@@ -538,14 +533,21 @@ function saveValidatedScheduleEdit(state, nextSections, sectionOverrides = state
     throw new Error(`此次调整不会保存：${first?.message || '违反硬约束'}`);
   }
   const saved = { ...schedule, validation };
-  repository.write({ ...state, section_overrides: sectionOverrides, assignments: saved.assignments, schedule: saved, solve_status: 'valid' });
+  repository.write(
+    { ...state, section_overrides: sectionOverrides, assignments: saved.assignments, schedule: saved, solve_status: 'valid' },
+    { expectedRevision },
+  );
   return { validation, sections: presentationSections({ ...state, schedule: saved }) };
 }
 
 async function saveOrReplanSectionEdit(state, nextSections, sectionOverrides, { replan = false } = {}) {
+  const expectedRevision = repository.revision(state);
   const candidate = candidateScheduleForSections(state, nextSections);
   const directValidation = validateSchedule(problemForSchedule({ ...state, section_overrides: sectionOverrides }, candidate), candidate);
-  if (directValidation.ok) return { ...saveValidatedScheduleEdit(state, nextSections, sectionOverrides), replanned: false };
+  if (directValidation.ok) return {
+    ...saveValidatedScheduleEdit(state, nextSections, sectionOverrides, expectedRevision),
+    replanned: false,
+  };
   if (!replan) {
     const first = directValidation.hard_violations[0];
     throw new Error(`此次调整会与当前课表冲突：${first?.message || '违反硬约束'}；可选择“重新排课后保存”`);
@@ -575,7 +577,10 @@ async function saveOrReplanSectionEdit(state, nextSections, sectionOverrides, { 
     validation,
     locks: state.schedule.locks || [],
   };
-  repository.write({ ...preparedState, assignments: solution.assignments, schedule, solve_status: 'valid' });
+  repository.write(
+    { ...preparedState, assignments: solution.assignments, schedule, solve_status: 'valid' },
+    { expectedRevision },
+  );
   return { validation, sections: presentationSections({ ...preparedState, schedule }), replanned: true };
 }
 
@@ -612,7 +617,12 @@ app.post('/api/solve/preview', (req, res) => reply(res, () => {
   const state = repository.read();
   const rules = req.body?.rules ?? state.constraints ?? [];
   validateRules(rules);
-  const problem = buildSchedulingProblem(state, rules);
+  const lockedMeetings = activeMeetingLocks(state);
+  const problem = expandUnlimitedManualHours(
+    state,
+    buildSchedulingProblem(state, rules),
+    lockedMeetings,
+  );
   return { diagnostics: problem.diagnostics, rules: problem.rules };
 }));
 
@@ -701,7 +711,6 @@ app.post('/api/elective-sections/:id/move-student', (req, res) => reply(res, asy
   const source = parallel.find(section => section.id !== target.id && (section.student_ids || []).includes(studentId));
   if (!source) throw new Error('该学生当前不在此课程的其他平行 section 中');
   if ((target.student_ids || []).includes(studentId)) throw new Error('该学生已在目标 section 中');
-  if (target.capacity && target.student_ids.length >= target.capacity) throw new Error('目标 section 已达到容量上限');
   const sections = state.schedule.sections.map(section => {
     if (section.id === source.id) return { ...section, student_ids: section.student_ids.filter(id => id !== studentId) };
     if (section.id === target.id) return { ...section, student_ids: [...section.student_ids, studentId] };
@@ -714,7 +723,8 @@ app.post('/api/elective-sections/:id/move-student', (req, res) => reply(res, asy
     const locked = (override.locked_student_ids || []).filter(id => id !== studentId);
     if (locked.length) sectionOverrides[section.id] = { ...override, locked_student_ids: locked };
     else {
-      const { locked_student_ids: _removed, ...remaining } = override;
+      const remaining = { ...override };
+      delete remaining.locked_student_ids;
       if (Object.keys(remaining).length) sectionOverrides[section.id] = remaining;
       else delete sectionOverrides[section.id];
     }
@@ -765,9 +775,15 @@ function problemWithAiStrategy(problem, strategy) {
 }
 
 async function solveAndPersist(state, body = {}, { strategy = null, strategyWarnings = [] } = {}) {
+  const expectedRevision = repository.revision(state);
   const rules = body.rules ?? body.constraints ?? state.constraints ?? [];
   validateRules(rules);
-  const problem = buildSchedulingProblem(state, rules);
+  const lockedMeetings = activeMeetingLocks(state);
+  const problem = expandUnlimitedManualHours(
+    state,
+    buildSchedulingProblem(state, rules),
+    lockedMeetings,
+  );
   const approvedRuleIds = body.approved_rule_relaxations || [];
   if (!Array.isArray(approvedRuleIds) || !approvedRuleIds.every(id => typeof id === 'string')) {
     throw new Error('approved_rule_relaxations 必须是规则 ID 数组');
@@ -780,20 +796,39 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     strategy,
   );
   const requestedSeconds = Number(body.max_time_seconds ?? (body.timeout ? Number(body.timeout) / 1000 : 120));
-  const lockedMeetings = activeMeetingLocks(state);
+  const maxTimeSeconds = Math.min(
+    600,
+    Math.max(5, Number.isFinite(requestedSeconds) ? requestedSeconds : 120),
+  );
+  const requestedCandidateCount = Number(body.candidate_count ?? 1);
+  const candidateCount = Number.isFinite(requestedCandidateCount)
+    ? Math.min(5, Math.max(1, Math.floor(requestedCandidateCount)))
+    : 1;
   const solveStartedAt = performance.now();
-  const solution = await solveSchedule(guardedProblem, {
-    maxTimeSeconds: Math.min(600, Math.max(5, Number.isFinite(requestedSeconds) ? requestedSeconds : 120)),
-    optimizeSoft: body.optimize_soft !== false,
-    freezeMembership: body.lock_section_rosters === true,
-    lockedMeetings,
-  });
+  const feasibleFirst = body.feasible_first !== false;
+  const solution = feasibleFirst
+    ? await solveFeasibleFirstSchedule(guardedProblem, {
+      maxTimeSeconds,
+      candidateCount,
+      randomSeed: Number.isInteger(body.random_seed) ? body.random_seed : 20260803,
+      freezeMembership: body.lock_section_rosters === true,
+      lockedMeetings,
+      hintMeetings: state.solve_status === 'valid' ? state.schedule?.meetings || [] : [],
+      hintSections: state.solve_status === 'valid' ? state.schedule?.sections || [] : [],
+    })
+    : await solveSchedule(guardedProblem, {
+      maxTimeSeconds,
+      optimizeSoft: body.optimize_soft !== false,
+      freezeMembership: body.lock_section_rosters === true,
+      lockedMeetings,
+    });
   const solveDurationMs = Math.round(performance.now() - solveStartedAt);
   const diagnosticFields = {
     solve_duration_ms: solveDurationMs,
     manual_lock_count: lockedMeetings.filter(lock => lock.origin === 'manual').length,
     ai_strategy: strategy,
     ai_warnings: strategyWarnings,
+    incomplete_required_choices: problem.diagnostics.incomplete_required_choices || [],
   };
   if (!solution.ok) {
     if (waitingForApproval.length) return {
@@ -811,18 +846,39 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       ...diagnosticFields,
     };
   }
-  const validation = validateSchedule(problem, { ...solution, locks: lockedMeetings });
+  const validationProblem = solution.effective_rules
+    ? { ...guardedProblem, rules: solution.effective_rules }
+    : problem;
+  const validation = validateSchedule(validationProblem, { ...solution, locks: lockedMeetings });
   if (!validation.ok) throw new Error(`求解器结果未通过独立校验: ${validation.hard_violations[0]?.message || '未知错误'}`);
+  const deferredRuleIds = new Set(solution.deferred_rule_ids || []);
+  const savedRules = deferredRuleIds.size
+    ? rules.map(rule => deferredRuleIds.has(rule.id)
+      ? {
+        ...rule,
+        hard: false,
+        weight: Math.max(1, Number(
+          solution.effective_rules.find(item => item.id === rule.id)?.weight || 100,
+        )),
+      }
+      : rule)
+    : rules;
   const schedule = {
     version: (state.schedule?.version || 0) + 1,
     created_at: new Date().toISOString(),
     solver_status: solution.status,
     solve_duration_ms: solveDurationMs,
-    rules,
+    rules: savedRules,
     sections: solution.sections,
     meetings: solution.meetings,
     assignments: solution.assignments,
     validation,
+    algorithm: solution.algorithm || 'exact-cp-sat',
+    deferred_rule_ids: [...deferredRuleIds],
+    review_required: solution.review_required === true,
+    review_items: solution.review_items || [],
+    quality_score: solution.quality_score ?? validation.soft_score,
+    candidate_count: solution.candidate_count || 1,
     relaxation_approvals: approvedRuleIds.filter(id =>
       (problem.rules || []).some(rule => rule.id === id && rule.requires_approval_to_relax === true))
       .map(rule_id => ({ rule_id, approved_at: new Date().toISOString() })),
@@ -841,13 +897,23 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       },
     }
     : state.manual_plan;
-  repository.write({
-    ...state,
-    ...(manualPlan ? { manual_plan: manualPlan } : {}),
-    assignments: solution.assignments,
-    schedule,
-    solve_status: 'valid',
-  });
+  try {
+    repository.write({
+      ...state,
+      ...(manualPlan ? { manual_plan: manualPlan } : {}),
+      assignments: solution.assignments,
+      schedule,
+      solve_status: 'valid',
+    }, { expectedRevision });
+  } catch (error) {
+    if (error.code !== 'STATE_VERSION_CONFLICT') throw error;
+    return {
+      solved: false,
+      status: 'STATE_CHANGED_DURING_SOLVE',
+      reason: '排课期间学生、课程、规则或手动条件已被修改；系统已保留最新修改且没有保存旧快照结果，请重新排课。',
+      ...diagnosticFields,
+    };
+  }
   return {
     solved: true,
     status: solution.status,
@@ -856,6 +922,12 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     hard_violations: validation.hard_violations,
     soft_violations: validation.soft_violations,
     soft_score: validation.soft_score,
+    algorithm: schedule.algorithm,
+    review_required: schedule.review_required,
+    review_items: schedule.review_items,
+    deferred_rule_ids: schedule.deferred_rule_ids,
+    quality_score: schedule.quality_score,
+    candidate_count: schedule.candidate_count,
     approved_rule_relaxations: schedule.relaxation_approvals.map(item => item.rule_id),
     ...diagnosticFields,
   };
@@ -883,8 +955,14 @@ function manualEditingProblem(state) {
           day: Math.floor(index / 10) + 1,
           period: index % 10 + 1,
         })),
-        sections: state.schedule.sections,
-        rooms: state.rooms || [],
+        sections: state.schedule.sections.map(section => ({
+          ...section,
+          room_id: null,
+          room_candidates: [],
+          room_binding: 'disabled',
+          capacity: null,
+        })),
+        rooms: [],
         rules: [],
       },
       catalog_warning: `当前输入尚未通过完整建模校验，手动草稿暂用上一次 section 目录：${error.message}`,
@@ -1387,11 +1465,14 @@ const editableEntities = new Set([
   'teaching_classes', 'teaching_assignments', 'selection_blocks', 'constraints',
 ]);
 
-function changedState(state, entity, items) {
+function changedState(state, entity, items, extra = {}) {
   const normalizedItems = entity === 'courses'
     ? items.map(normalizeCourseScope)
     : items;
-  const next = { ...state, [entity]: normalizedItems };
+  let next = { ...state, ...extra, [entity]: normalizedItems };
+  if (entity === 'students' || entity === 'admin_classes' || entity === 'teaching_classes') {
+    next = synchronizeClassMemberships(next);
+  }
   if (entity === 'constraints') validateRules(items);
   if (entity === 'selection_blocks') validateSelectionBlocks(next);
   if (entity === 'courses' || entity === 'students' || entity === 'selection_blocks') {
@@ -1439,6 +1520,13 @@ app.put('/api/:entity/:id', (req, res) => reply(res, () => {
   if (index < 0) throw new Error(`实体不存在: ${req.params.id}`);
   const updated = { ...current[index], ...req.body, id: current[index].id };
   const items = [...current]; items[index] = updated;
+  if (entity === 'courses') {
+    const normalized = normalizeCourseScope(updated);
+    items[index] = normalized;
+    const teachingAssignments = synchronizeCourseDeliveryAssignments(state, current[index], normalized);
+    repository.write(changedState(state, entity, items, { teaching_assignments: teachingAssignments }));
+    return normalized;
+  }
   repository.write(changedState(state, entity, items));
   return updated;
 }));

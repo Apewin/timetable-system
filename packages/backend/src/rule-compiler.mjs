@@ -27,6 +27,14 @@ function matchesSelector(entity, selector, scope, state, sections) {
   if (selector.weekly_hours && !selector.weekly_hours.includes(entity.weekly_hours)) return false;
   if (selector.max_weekly_hours !== undefined && entity.weekly_hours > selector.max_weekly_hours) return false;
   if (selector.min_weekly_hours !== undefined && entity.weekly_hours < selector.min_weekly_hours) return false;
+  if (selector.require_complete_required_choices === true) {
+    if (scope !== 'student') return false;
+    const hasMissingRequiredChoice = (state.selection_blocks || []).some(block =>
+      block.required !== false
+      && (block.grades || []).includes(entity.grade)
+      && !entity.elective_choices?.[block.choice_key]);
+    if (hasMissingRequiredChoice) return false;
+  }
   if (selector.grades) {
     const grades = scope === 'section' ? gradesForSection(entity, state) : new Set([entity.grade]);
     if (!selector.grades.some(grade => grades.has(grade))) return false;
@@ -46,6 +54,16 @@ function targetEntities(state, rule, sections) {
   if (rule.scope === 'global') return [{ id: 'GLOBAL' }];
   if (rule.scope === 'class') return allClasses(state);
   if (rule.scope === 'section') return sections || [];
+  if (rule.scope === 'student') {
+    const weeklyHours = new Map((state.students || []).map(student => [student.id, 0]));
+    for (const section of sections || []) for (const studentId of section.student_ids || []) {
+      weeklyHours.set(studentId, (weeklyHours.get(studentId) || 0) + (section.weekly_hours || 0));
+    }
+    return (state.students || []).map(student => ({
+      ...student,
+      weekly_hours: weeklyHours.get(student.id) || 0,
+    }));
+  }
   return state[collections[rule.scope]] || [];
 }
 

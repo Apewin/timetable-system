@@ -30,7 +30,8 @@ test('keeps a mixed-grade AP cohort together when its section requirement permit
   assert.equal(sections.length, 1);
   assert.deepEqual(sections[0].student_ids, ['S11', 'S12']);
   assert.deepEqual(sections[0].eligible_student_ids, ['S11', 'S12']);
-  assert.deepEqual(sections[0].room_candidates, ['LAB']);
+  assert.equal(sections[0].room_id, null);
+  assert.deepEqual(sections[0].room_candidates, []);
 });
 
 test('rejects an existing selection outside the edited course grade range', () => {
@@ -123,7 +124,7 @@ test('uses per-grade teacher and section requirements without treating teacher c
   assert.ok(sections.filter(section => section.teacher_id === 'T11').every(section => section.student_ids.includes('S11')));
 });
 
-test('does not bind teaching classes to their nominal classroom before scheduling', () => {
+test('does not bind teaching classes to any classroom during scheduling', () => {
   const sections = buildSections(state({
     students: [{ id: 'S1', grade: 11, ap_courses: [], elective_choices: {} }],
     courses: [{ id: 'C', type: 'required', weekly_hours: 1 }],
@@ -133,8 +134,9 @@ test('does not bind teaching classes to their nominal classroom before schedulin
     teaching_assignments: [{ id: 'TA', class_type: 'teaching', class_ids: ['TC'], course_id: 'C', teacher_id: 'T', weekly_hours: 1 }],
   }));
 
-  assert.equal(sections[0].room_binding, 'flexible');
-  assert.deepEqual(sections[0].room_candidates, ['R1', 'R2']);
+  assert.equal(sections[0].room_binding, 'disabled');
+  assert.equal(sections[0].room_id, null);
+  assert.deepEqual(sections[0].room_candidates, []);
 });
 
 test('rejects a required-course assignment whose teacher is not qualified for the course', () => {
@@ -146,6 +148,33 @@ test('rejects a required-course assignment whose teacher is not qualified for th
     teaching_classes: [{ id: 'TC', student_ids: ['S1'], fixed_room_id: 'R' }],
     teaching_assignments: [{ id: 'TA', class_type: 'teaching', class_ids: ['TC'], course_id: 'C', teacher_id: 'T', weekly_hours: 1 }],
   })), /未配置为可教授/);
+});
+
+test('models per-class staffing as independent teachers instead of one shared teacher resource', () => {
+  const sections = buildSections(state({
+    courses: [{ id: 'ADVISORY', type: 'other', grade: 11, weekly_hours: 1 }],
+    teachers: [{ id: 'HOMEROOM_ROLE', can_teach: ['ADVISORY'] }],
+    rooms: [
+      { id: 'R1', type: 'general', capacity: 30 },
+      { id: 'R2', type: 'general', capacity: 30 },
+    ],
+    admin_classes: [
+      { id: 'AC1', name: '一班', grade: 11, student_ids: [], fixed_room_id: 'R1' },
+      { id: 'AC2', name: '二班', grade: 11, student_ids: [], fixed_room_id: 'R2' },
+    ],
+    teaching_assignments: [{
+      id: 'TA_ADVISORY',
+      class_type: 'admin',
+      class_ids: ['AC1', 'AC2'],
+      course_id: 'ADVISORY',
+      teacher_id: 'HOMEROOM_ROLE',
+      staffing_mode: 'per_class',
+      weekly_hours: 1,
+    }],
+  }));
+
+  assert.equal(sections.length, 2);
+  assert.ok(sections.every(section => section.teacher_id === null));
 });
 
 test('persists selected-section teacher and student transfer overrides into a rebuilt problem', () => {
@@ -170,7 +199,7 @@ test('persists selected-section teacher and student transfer overrides into a re
   assert.ok(second.student_ids.includes('S1'));
 });
 
-test('normalizes the actual school data without changing section or student workload totals', t => {
+test('builds the actual school data without room-derived sections or capacity splits', t => {
   const school = JSON.parse(readFileSync(new URL('../../../timetable.json', import.meta.url), 'utf8'));
   const missingRequiredChoices = (school.selection_blocks || [])
     .filter(block => block.required)
@@ -186,7 +215,7 @@ test('normalizes the actual school data without changing section or student work
   for (const section of sections) for (const studentId of section.student_ids) {
     hours.set(studentId, hours.get(studentId) + section.weekly_hours);
   }
-  assert.equal(sections.length, 135);
-  assert.equal(sections.reduce((total, section) => total + section.weekly_hours, 0), 427);
+  assert.equal(sections.length, 133);
+  assert.equal(sections.reduce((total, section) => total + section.weekly_hours, 0), 417);
   assert.deepEqual([...hours].filter(([, weeklyHours]) => weeklyHours !== 50), []);
 });

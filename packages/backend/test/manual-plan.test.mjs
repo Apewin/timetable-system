@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveManualPlan } from '../src/manual-plan.mjs';
+import {
+  expandUnlimitedManualHours,
+  normalizeManualPlacements,
+  resolveManualPlan,
+} from '../src/manual-plan.mjs';
 
 const state = {
   courses: [
@@ -89,4 +93,75 @@ test('rejects a section ID that does not belong to the selected class course', (
     course_ids: ['MATH'],
     section_ids: ['SEC_CHEM'],
   }]), /不适用于该班级/);
+});
+
+test('rejects duplicate manual placements instead of silently dropping one', () => {
+  const placement = {
+    class_id: 'TC1', slot_id: 'D1P1', item_id: 'MATH', item_name: '数学',
+    course_ids: ['MATH'], section_ids: ['SEC_MATH_TC1'],
+  };
+  assert.throws(() => normalizeManualPlacements([placement, placement]), /重复/);
+});
+
+test('rejects an id shared by an administrative and teaching class', () => {
+  const conflictedState = {
+    ...state,
+    admin_classes: [{ id: 'TC1', name: '冲突行政班', grade: 11 }],
+  };
+  assert.throws(() => resolveManualPlan(conflictedState, problem, [{
+    class_id: 'TC1', slot_id: 'D1P1', item_id: 'MATH', item_name: '数学',
+    course_ids: ['MATH'], section_ids: ['SEC_MATH_TC1'],
+  }]), /行政班和教学班.*重复/);
+});
+
+test('allows an unlimited manual filler course to be locked beyond its configured weekly hours', () => {
+  const unlimitedState = {
+    ...state,
+    courses: [...state.courses, {
+      id: 'SELF_STUDY', name: '自习', type: 'other', manual_unlimited: true,
+    }],
+  };
+  const unlimitedProblem = {
+    ...problem,
+    slots: [...problem.slots, { id: 'D1P3', day: 1, period: 3 }],
+    sections: [...problem.sections, {
+      id: 'SEC_SELF_TC1', course_id: 'SELF_STUDY', class_id: 'TC1', class_type: 'teaching',
+      teacher_id: null, weekly_hours: 2, grades: [11], student_ids: ['S1', 'S2'],
+      eligible_student_ids: [],
+    }],
+  };
+  const placements = ['D1P1', 'D1P2', 'D1P3'].map(slotId => ({
+    class_id: 'TC1', slot_id: slotId, item_id: 'SELF_STUDY', item_name: '自习',
+    course_ids: ['SELF_STUDY'], section_ids: ['SEC_SELF_TC1'],
+  }));
+
+  const result = resolveManualPlan(unlimitedState, unlimitedProblem, placements);
+  assert.equal(result.locks.length, 3);
+  assert.ok(!result.issues.some(issue => issue.code === 'WEEKLY_HOURS_EXCEEDED'));
+});
+
+test('expands an unlimited filler section to cover every confirmed manual lock', () => {
+  const expanded = expandUnlimitedManualHours(
+    { courses: [{ id: 'SELF_STUDY', manual_unlimited: true }] },
+    {
+      sections: [{ id: 'SEC_SELF', course_id: 'SELF_STUDY', weekly_hours: 2 }],
+      diagnostics: {},
+    },
+    ['D1P1', 'D1P2', 'D1P3'].map(slot_id => ({ section_id: 'SEC_SELF', slot_id })),
+  );
+
+  assert.equal(expanded.sections[0].weekly_hours, 3);
+});
+
+test('schedules an unlimited filler section only as many times as it is manually locked', () => {
+  const scheduled = expandUnlimitedManualHours(
+    { courses: [{ id: 'SELF_STUDY', manual_unlimited: true }] },
+    {
+      sections: [{ id: 'SEC_SELF', course_id: 'SELF_STUDY', weekly_hours: 2 }],
+      diagnostics: {},
+    },
+    [{ section_id: 'SEC_SELF', slot_id: 'D1P1' }],
+  );
+
+  assert.equal(scheduled.sections[0].weekly_hours, 1);
 });

@@ -13,10 +13,17 @@ function uniqueBy(items, keyOf) {
 }
 
 function classCatalog(state) {
-  return new Map([
-    ...(state.admin_classes || []).map(item => [item.id, { ...item, class_type: 'admin' }]),
-    ...(state.teaching_classes || []).map(item => [item.id, { ...item, class_type: 'teaching' }]),
-  ]);
+  const catalog = new Map();
+  for (const [collection, classType] of [
+    [state.admin_classes || [], 'admin'],
+    [state.teaching_classes || [], 'teaching'],
+  ]) for (const item of collection) {
+    if (catalog.has(item.id)) {
+      throw new Error(`班级 ID ${item.id} 在行政班和教学班中重复，无法确定手动安排对象`);
+    }
+    catalog.set(item.id, { ...item, class_type: classType });
+  }
+  return catalog;
 }
 
 function normalizePlacement(value, index) {
@@ -50,10 +57,16 @@ function normalizePlacement(value, index) {
 
 export function normalizeManualPlacements(placements) {
   if (!Array.isArray(placements)) throw new Error('手动课表 placements 必须是数组');
-  return uniqueBy(
-    placements.map(normalizePlacement),
-    item => `${item.class_id}\u0000${item.slot_id}\u0000${item.item_id}`,
-  ).sort((left, right) =>
+  const normalized = placements.map(normalizePlacement);
+  const seen = new Set();
+  for (const item of normalized) {
+    const key = `${item.class_id}\u0000${item.slot_id}\u0000${item.item_id}`;
+    if (seen.has(key)) {
+      throw new Error(`手动安排重复：${item.class_id} ${item.slot_id} ${item.item_name || item.item_id}`);
+    }
+    seen.add(key);
+  }
+  return normalized.sort((left, right) =>
     left.class_id.localeCompare(right.class_id)
     || left.slot_id.localeCompare(right.slot_id)
     || left.item_id.localeCompare(right.item_id));
@@ -87,7 +100,7 @@ function expectedSectionsForPlacement(problem, classItem, placement) {
   return selected;
 }
 
-function immediateConflicts(problem, locks) {
+function immediateConflicts(problem, locks, { unlimitedCourseIds = new Set() } = {}) {
   const sectionById = new Map(problem.sections.map(section => [section.id, section]));
   const issues = [];
   const locksBySection = new Map();
@@ -98,7 +111,7 @@ function immediateConflicts(problem, locks) {
   }
   for (const [sectionId, sectionLocks] of locksBySection) {
     const section = sectionById.get(sectionId);
-    if (sectionLocks.length > section.weekly_hours) {
+    if (sectionLocks.length > section.weekly_hours && !unlimitedCourseIds.has(section.course_id)) {
       issues.push({
         code: 'WEEKLY_HOURS_EXCEEDED',
         message: `${sectionId} 只有 ${section.weekly_hours} 节/周，却锁定了 ${sectionLocks.length} 个时段`,
@@ -176,6 +189,9 @@ export function resolveManualPlan(state, problem, rawPlacements) {
   const placements = normalizeManualPlacements(rawPlacements);
   const classes = classCatalog(state);
   const courseIds = new Set((state.courses || []).map(course => course.id));
+  const unlimitedCourseIds = new Set((state.courses || [])
+    .filter(course => course.manual_unlimited === true)
+    .map(course => course.id));
   const locks = [];
   const resolvedPlacements = [];
   for (const placement of placements) {
@@ -214,7 +230,7 @@ export function resolveManualPlan(state, problem, rawPlacements) {
   return {
     placements: resolvedPlacements,
     locks: uniqueLocks,
-    issues: immediateConflicts(problem, uniqueLocks),
+    issues: immediateConflicts(problem, uniqueLocks, { unlimitedCourseIds }),
     counts: {
       visual_placements: resolvedPlacements.length,
       section_locks: uniqueLocks.length,
@@ -231,6 +247,46 @@ export function mergedMeetingLocks(...groups) {
     })).filter(lock => lock.section_id && lock.slot_id),
     lock => `${lock.section_id}\u0000${lock.slot_id}`,
   );
+}
+
+/** Manual-unlimited courses are optional filler activities.  They enter the
+ * solver only at explicitly locked slots; their configured weekly_hours is a
+ * display/default value, not an automatic workload requirement. */
+export function expandUnlimitedManualHours(state, problem, locks = []) {
+  const unlimitedCourseIds = new Set((state.courses || [])
+    .filter(course => course.manual_unlimited === true)
+    .map(course => course.id));
+  if (!unlimitedCourseIds.size) return problem;
+  const lockCounts = new Map();
+  for (const lock of locks) {
+    const slots = lockCounts.get(lock.section_id) || new Set();
+    slots.add(lock.slot_id);
+    lockCounts.set(lock.section_id, slots);
+  }
+  const sections = (problem.sections || []).map(section => {
+    if (!unlimitedCourseIds.has(section.course_id)) return section;
+    const requiredHours = lockCounts.get(section.id)?.size || 0;
+    return requiredHours !== section.weekly_hours
+      ? { ...section, weekly_hours: requiredHours }
+      : section;
+  });
+  if (!problem.diagnostics) return { ...problem, sections };
+  const studentHours = new Map();
+  for (const section of sections) for (const studentId of section.student_ids || []) {
+    studentHours.set(studentId, (studentHours.get(studentId) || 0) + section.weekly_hours);
+  }
+  return {
+    ...problem,
+    sections,
+    diagnostics: {
+      ...problem.diagnostics,
+      meetings: sections.reduce((total, section) => total + section.weekly_hours, 0),
+      student_weekly_hours: Object.fromEntries(studentHours),
+      students_not_at_50_hours: [...studentHours]
+        .filter(([, hours]) => hours !== 50)
+        .map(([id, hours]) => ({ id, hours })),
+    },
+  };
 }
 
 export function emptyManualPlan() {

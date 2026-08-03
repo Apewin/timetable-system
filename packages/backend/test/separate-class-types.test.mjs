@@ -2,6 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { solveSchedule } from '../src/cpsat-solver.mjs';
 import { validateSchedule } from '../src/schedule-validator.mjs';
+import { validateRules } from '../src/rule-schema.mjs';
+
+test('rejects overlapping left and right class types', () => {
+  assert.throws(() => validateRules([{
+    id: 'bad-overlap', type: 'separate_class_types', hard: true, scope: 'global',
+    params: { left_class_types: ['admin', 'elective'], right_class_types: ['elective'] },
+  }]), /左右 class_type 不能重叠.*elective/);
+});
 
 test('keeps administrative and elective sections of the same grade in different slots', async () => {
   const problem = {

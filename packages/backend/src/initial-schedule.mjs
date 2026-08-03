@@ -2,42 +2,13 @@ import { validateSchedule } from './schedule-validator.mjs';
 
 function byId(items) { return new Map(items.map(item => [item.id, item])); }
 
-function roomMatching(problem, sections, meetings) {
-  const rooms = byId(problem.rooms);
-  const sectionById = byId(sections);
-  const bySlot = new Map();
-  for (const meeting of meetings) { const list = bySlot.get(meeting.slot_id) || []; list.push(meeting); bySlot.set(meeting.slot_id, list); }
-  const result = [];
-  for (const atSlot of bySlot.values()) {
-    const candidates = new Map(atSlot.map(meeting => {
-      const section = sectionById.get(meeting.section_id);
-      return [meeting.section_id, section.room_candidates.filter(roomId => rooms.get(roomId)?.capacity >= section.student_ids.length).sort()];
-    }));
-    const owner = new Map();
-    const assign = (sectionId, visited = new Set()) => {
-      for (const roomId of candidates.get(sectionId)) {
-        if (visited.has(roomId)) continue;
-        visited.add(roomId);
-        if (!owner.has(roomId) || assign(owner.get(roomId), visited)) { owner.set(roomId, sectionId); return true; }
-      }
-      return false;
-    };
-    for (const sectionId of [...candidates.keys()].sort((left, right) => candidates.get(left).length - candidates.get(right).length || left.localeCompare(right))) {
-      if (!assign(sectionId)) return null;
-    }
-    const roomForSection = new Map([...owner].map(([roomId, sectionId]) => [sectionId, roomId]));
-    result.push(...atSlot.map(meeting => ({ ...meeting, room_id: roomForSection.get(meeting.section_id) })));
-  }
-  return result;
-}
-
 function expandAssignments(sections, meetings) {
   const sectionById = byId(sections);
   return meetings.flatMap(meeting => {
     const section = sectionById.get(meeting.section_id);
     return section.student_ids.map(studentId => ({
       task_id: `${section.id}:${studentId}:${meeting.slot_id}`,
-      section_id: section.id, student_id: studentId, slot_id: meeting.slot_id, room_id: meeting.room_id,
+      section_id: section.id, student_id: studentId, slot_id: meeting.slot_id, room_id: null,
       teacher_id: section.teacher_id, course_id: section.course_id,
       class_id: section.class_id || section.id, class_type: section.class_type,
     }));
@@ -140,9 +111,11 @@ export function constructInitialSchedule(problem, { lockedMeetings = [] } = {}) 
     const usedDays = dayUse.get(node.section.id) || new Set(); usedDays.add(slotById.get(node.color).day); dayUse.set(node.section.id, usedDays);
     remaining.delete(node);
   }
-  const timeOnlyMeetings = nodes.map(node => ({ section_id: node.section.id, slot_id: node.color }));
-  const meetings = roomMatching(problem, sections, timeOnlyMeetings);
-  if (!meetings) return null;
+  const meetings = nodes.map(node => ({
+    section_id: node.section.id,
+    slot_id: node.color,
+    room_id: null,
+  }));
   const solution = { sections, meetings, locks: lockedMeetings };
   const checked = validateSchedule(problem, solution);
   return checked.ok ? { ...solution, assignments: expandAssignments(sections, meetings), soft_score: checked.soft_score } : null;

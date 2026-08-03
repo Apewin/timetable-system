@@ -119,6 +119,7 @@ test('retries once when JSON mode returns an empty model response', async () => 
 test('uses the model only for a validated scheduling strategy', async () => {
   assert.match(AI_SCHEDULING_STRATEGY_PROMPT, /manual_locks/);
   assert.match(AI_SCHEDULING_STRATEGY_PROMPT, /不得输出最终课表/);
+  assert.match(AI_SCHEDULING_STRATEGY_PROMPT, /自习.*空位/);
   const problem = {
     sections: [{
       id: 'SEC_1', course_id: 'C1', teacher_id: 'T1', class_id: 'TC1',

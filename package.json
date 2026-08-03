@@ -7,7 +7,7 @@
     "build": "pnpm -r build",
     "dev": "pnpm -r --parallel dev",
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint"
+    "lint": "eslint packages/backend packages/web/app.js packages/web/vite.config.js packages/web/manual-course-scope.mjs packages/web/test && pnpm --filter @timetable/core lint"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -17,5 +17,10 @@
     "@ortools-node/cp-sat": "9.15.0-node.0-rc.0",
     "logic-solver": "^2.0.1",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0"
   }
 }
