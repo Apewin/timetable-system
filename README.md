@@ -1,97 +1,237 @@
-# 排课系统
+# AP 课程排课系统
 
-面向国际课程学校的选科、分班、手动锁定和全校联合排课系统。
+面向国际课程学校的选课、分班、手动排课和全校课表生成系统。系统同时处理行政班、教学班、AP 选修班、其他选修班，以及跨年级授课教师和混合年级课程。
 
-## 技术栈
+当前网页流程以 `packages/backend` 的 rules-first 后端为唯一数据和算法入口。
 
-- **packages/backend**：当前唯一生产后端，包含 rules-first 规则编译、CP-SAT 求解、独立校验与数据导入
-- **packages/web**：当前网页前端，开发端口 `3000`，将 `/api` 转发到后端 `3001`
-- **packages/core / packages/cli / packages/web/server.js**：早期原型，仅供历史对照，不参与当前网页排课
+## 当前版本能做什么
+
+- 管理学生、英文名、教师、课程、行政班、教学班和教师分工。
+- 从 Excel 导入学生名单，并根据文件名识别年级；导入前可预览、滚动核对和确认。
+- 导入多工作表 AP 选课表，并将表格姓名匹配到学生数据库。
+- 导入高三 A/B/C 必修选修课组，以及格式不完全统一的其他选课表。
+- 在上传预览区手动点击“大模型整理”，由 DeepSeek 兼容接口整理工作簿；整理完成后仍需人工核对和确认。
+- 为课程配置适用年级、适用班级，以及按年级选择行政班或教学班授课。
+- 生成 AP/其他选修 section，并在课表中显示 `Section N` 和该组人数。
+- 在“排课表”中先拖拽课程建立手动草稿，再确认必要条件；确认后的课程以金色锁框保护。
+- 基于已确认的手动条件执行 AI 补全排课，并记录算法、候选数、质量分数、求解时长和待人工复核项。
+- 查看总课表、班级课表、教师课表、学生课表、AP 分流组课表和教室视图。
+- 保存通过硬约束校验的课表到“过往课表”，记录保存时间并支持回看。
+- 在每个页面使用 AI 助手进行解释、排查和提出待确认操作；教师调换、课程调时等写操作需要明确点击确认。
+
+## 重要模型约定
+
+### 班级与课程
+
+- 行政班和教学班是不同的班级类型，不能在建模时混为一类。
+- 行政班课程根据行政班学生展示；教学班课程根据教学班学生展示。
+- AP 和其他选修课程通过 section 表示，学生在个人课表中看到自己唯一对应的 section。
+- 同一时间存在多个选修课程时，班级课表会显示“几门并行”；个人课表会显示具体课程和 `Section N`。
+- 课程的“授课方式”可以按年级配置为行政班或教学班，修改后会影响任务生成、section 和排课模型。
+
+### 教室
+
+现行 rules-first 排课版本不把教室和容量作为求解变量：排课只处理时间、教师、学生、班级、section 和规则。教室数据仍可维护并在界面展示，但当前自动排课不会因为教室容量或教室冲突阻止课表生成。
+
+### 硬约束与软约束
+
+硬约束无法自动放宽，典型包括：
+
+- 教师同一时段不能重复授课。
+- 同一学生同一时段不能上两门课。
+- section 的周课时必须满足。
+- 手动确认的金框课程、固定时段和同步活动不能被移动。
+- 行政班课程和选修/混编课程的分离规则。
+- 配置为硬规则的每日次数、连续节数、最少上课天数等限制。
+
+软约束用于择优，不保证全部满足，例如课程分散、连堂偏好、时段优先级等。当前默认算法优先寻找完整且无硬冲突的课表，再在有限候选中按软规则择优；不会穷举所有分班组合，也不承诺数学意义上的全局最优。
+
+## 系统结构
+
+```text
+Excel / 页面操作
+        │
+        ▼
+packages/web  ── HTTP /api ──>  packages/backend
+                                  │
+                                  ├─ 状态仓库：timetable.json
+                                  ├─ 规则校验与编译
+                                  ├─ section / 选课建模
+                                  ├─ bounded-feasible-first + CP-SAT
+                                  ├─ 独立课表校验
+                                  └─ DeepSeek：表格整理、策略建议、页面助手
+```
+
+### 目录说明
+
+| 路径 | 用途 |
+| --- | --- |
+| `packages/backend` | 当前唯一网页后端、数据导入、规则编译、排课求解、校验、AI 接口 |
+| `packages/web` | 当前网页界面和 Vite 开发服务器 |
+| `packages/core` | 早期 TypeScript 求解原型，当前网页后端不调用 |
+| `packages/cli` | 早期 CLI 原型，当前网页工作流不使用 |
+| `timetable.json` | 本地运行时状态文件，包含学校数据，不纳入 Git |
+| `backups/`、各类 `*-candidate.json` | 历史求解快照或本地实验文件，不是当前服务入口 |
 
 ## 快速开始
 
-```bash
-# 安装依赖
-pnpm install
+### 环境要求
 
-# 同时启动当前后端和网页
+- Node.js `>=18`
+- pnpm `9`（仓库已声明 `packageManager: pnpm@9.0.0`）
+
+### 安装
+
+```bash
+pnpm install
+```
+
+### 启动当前网页系统
+
+推荐直接启动前端和当前后端：
+
+```bash
 pnpm --filter @timetable/web start
 ```
 
-浏览器打开 `http://localhost:3000/`。也可以使用 `pnpm dev` 启动整个工作区的开发监听。
+启动后访问：
 
-不要运行 `packages/web/server.js`；它是弃用的旧后端。只有显式执行
-`pnpm --filter @timetable/web server:legacy` 才会启动它。
+- 网页：<http://localhost:3000/>
+- 当前 API：<http://localhost:3001/api/status>
 
-## 旧版 CLI（弃用）
+`web start` 会同时启动：
 
-以下命令属于 `packages/core` / `packages/cli` 原型，不是当前网页后端的数据或算法入口。
+- `packages/backend/src/server.mjs`：端口 `3001`
+- Vite：端口 `3000`
 
-### 基础命令
-- `tt init`: 初始化项目
-- `tt status`: 查看项目状态
-- `tt config set-walk-blocks`: 设置走班时段
+不要运行 `packages/web/server.js`，它是弃用的旧后端。当前系统不使用 `3101` 端口。
 
-### 数据管理
-- `tt <entity> add`: 添加实体
-- `tt <entity> list`: 列出实体
-- `tt <entity> edit`: 编辑实体
-- `tt <entity> rm`: 删除实体
+也可以分别启动：
 
-实体类型: teacher, room, course, student, admin-class, teaching-class, teaching-assignment, ap-selection, constraint
+```bash
+# 终端一：当前后端
+pnpm --filter @timetable/backend start
 
-### 校验
-- `tt validate-input`: 校验输入数据完整性
-- `tt validate`: 验证排课结果
+# 终端二：前端开发服务器
+pnpm --filter @timetable/web dev
+```
 
-### 求解
-- `tt build-tasks`: 生成必修教学任务
-- `tt solve sections`: 执行AP分班
-- `tt solve timetable`: 执行排课
-- `tt solve`: 两阶段求解（分班+排课）
+`pnpm dev` 会启动工作区内所有带 `dev` 脚本的包，包含早期 `core/cli` 的 TypeScript 监听任务；日常使用网页系统时不需要运行它。
 
-### 查看与调整
-- `tt show --by <student|teacher|class|room> --id <ID>`: 查看课表
-- `tt lock --task <ID> --slot <SLOT>`: 锁定任务时段
-- `tt unlock --task <ID>`: 解锁任务
-- `tt swap --task <ID> --to <SLOT>`: 手动交换时段
+## DeepSeek / AI 配置
 
-### 导出
-- `tt export --format <csv|html> --output <FILE>`: 导出课表
+AI 不是确定性排课器的唯一依赖。即使没有 API Key，也可以使用数据管理、手动排课和确定性排课功能；以下功能需要配置模型接口：
 
-## 约束系统
+- Excel “大模型整理”。
+- AI 补全排课前的策略建议阶段。
+- 页面右侧 AI 助手。
+- 首页的 API 连接测试。
 
-### 硬约束（违反=课表非法）
-- H1: 老师不重叠
-- H2: 学生不重叠（走班核心）
-- H3: 教室不重叠
-- H4: 教室容量
-- H5: 课时排满
-- H6: 禁排
-- H7: 教室类型匹配
-- H8: 教师日上限
+方式一：复制环境变量模板并填写：
 
-### 软约束（打分优化）
-- S1: 优先排上午（权重5）
-- S2: 连堂（权重8）
-- S3: AP落走班时段（权重10）
-- S5: 课表分散均衡（权重3）
+```bash
+cp .env.example .env.local
+```
 
-## 验收标准
+```dotenv
+DEEPSEEK_API_KEY=你的密钥
+# 可选：兼容 DeepSeek API 的地址
+DEEPSEEK_API_URL=https://api.deepseek.com
+# 可选：模型名称；也可在网页“系统设置”中修改
+DEEPSEEK_MODEL=deepseek-v4-flash
+```
 
-1. ✅ 能建全实体并 `validate-input` 通过
-2. ✅ `tt solve sections` 出 AP sections，色数 ≤ 走班时段数
-3. ✅ `tt solve timetable` 输出课表：所有硬约束 H1-H8 零违反
-4. ✅ `tt show` 能按学生/老师/班级/教室看课表
-5. ✅ `tt lock` 一节课后重排，锁定不被改
-6. ✅ 同输入同 `--seed` → 同输出
-7. ✅ 约束单测全绿
+方式二：打开网页“系统设置”，填写 API 地址、模型名称和 API Key。API Key 只保存在本地配置中，接口返回时会脱敏为“已配置”。
 
-## 当前排课策略
+AI 的安全边界：模型可以解释数据、给出排班方案并生成待确认卡片，但不会因为一句自然语言直接写入学生、教师或课表数据。教师调换、课程调时等操作必须经过页面确认，后端还会再次检查数据版本和全部硬约束。
 
-网页后端默认使用 `bounded-feasible-first`：在固定时间预算内生成少量完整候选并择优，不做全局最优证明，也不穷举全部分班组合。
+## 推荐使用流程
 
-- 课时数完整、教师/学生不重叠、固定时段、手动金框和同步课组始终是不可放宽条件。
-- “学生每天课程从第一节连续向后排列”在自动补全阶段作为高权重人工复核指标；它不会再让一张已经排满且无冲突的课表被整体丢弃。
-- 系统优先返回完整候选，再按人工复核项数量和普通软规则分数择优。课表会记录 `review_items`、`quality_score` 和实际求解时间。
-- 如需运行旧的严格精确模式，可在 API 请求中显式传入 `feasible_first: false`。
+1. 在“学生管理”导入各年级学生名单，先检查预览中的姓名、英文名、学号、行政班和教学班，再确认导入。
+2. 在“AP 选课”和“其他选课”上传选课表；表格不规范时，点击对应区域的“大模型整理”，核对识别结果后再确认更新。
+3. 在“教师管理”“课程管理”“班级管理”“教师分工”中补全授课资格、适用年级、适用班级和授课方式。
+4. 在“约束管理”检查硬约束和软约束。涉及规则放宽时，系统要求明确的批准信息，不会自动放宽受保护规则。
+5. 进入“排课表”，选择教学班，把课程拖到目标时段。行政班课程可以从教学班视角放入对应的行政班分格；冲突会在格子上标记。
+6. 点击“确认必要条件”。确认成功后课程出现金色锁框，并成为 AI 补全的硬条件。
+7. 点击“AI 补全排课”。系统先尝试模型策略，再由确定性求解器完成课表；模型策略失败时会自动退回确定性求解器。
+8. 在“数据校验”和各类课表视图检查结果。重点核对 AP 分流的 `Section N`、行政班去向、教师班级标签和待人工复核项。
+9. 确认无误后，在“排课表”点击“储存课表”，之后可在“过往课表”按保存时间查看。
+
+## 数据导入说明
+
+### 学生名单
+
+支持拖拽或文件选择上传 Excel/CSV。标准字段包括：
+
+- `Student ID` / 学号
+- 中文姓名
+- 英文名（可选）
+- 年级
+- `Class` / 行政班
+- `Teaching Class` / 教学班
+
+文件名中的 `Senior 1/2/3`、`2025级`、`高一/高二/高三` 等信息可用于年级识别。导入流程会展示文件识别结果、可导入人数、异常行和完整名单；只有点击确认后才写入数据库。
+
+### AP 选课
+
+“AP 选课”支持多个工作表。系统会读取工作表标题、学生姓名/学号和课程列，并将姓名与学生数据库匹配。导入预览会显示当前 AP 选课和导入后的变化，确认后才更新学生的 `ap_courses`。
+
+### 高三 A/B/C 与其他选课
+
+“其他选课”用于高三 A/B/C 等选择组，也支持格式差异较大的单课名单。解析器优先使用确定性规则；无法识别时可手动点击“大模型整理”，模型只负责把工作簿转换为系统标准结构，最终仍由页面预览和后端校验决定是否写入。
+
+## 主要 API
+
+所有接口返回统一结构：成功为 `{ "ok": true, "data": ... }`，失败为 `{ "ok": false, "errors": [...] }`。
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /api/status` | 查看服务、数据量和当前课表状态 |
+| `GET /api/state` | 读取当前本地状态 |
+| `GET /api/validate-input` | 校验输入模型并生成诊断 |
+| `POST /api/solve` | 按当前规则求解并保存课表 |
+| `POST /api/manual-plan/ai-solve` | 在已确认金框基础上 AI 补全 |
+| `GET /api/validate` | 独立校验当前课表 |
+| `GET /api/timetable/:by/:id` | 查看学生、教师、班级、section 或教室课表 |
+| `POST /api/import/excel` | 通用 Excel/CSV 预览，可选择 AI 整理 |
+| `POST /api/ap-selections/import/preview` | AP 多工作表选课预览 |
+| `POST /api/elective-selections/import/preview` | 高三 A/B/C 选课预览 |
+| `POST /api/assistant/chat` | 获取页面助手回答和待确认操作 |
+| `POST /api/schedule-archives` | 保存当前有效课表快照 |
+
+实体的增删改查接口仍使用 `/api/:entity`，常用实体包括 `students`、`teachers`、`courses`、`admin_classes`、`teaching_classes`、`teaching_assignments` 和 `constraints`。
+
+## 状态文件与数据安全
+
+默认状态文件是仓库根目录的 `timetable.json`。也可以通过 `STATE_FILE` 指定其他路径：
+
+```bash
+STATE_FILE=/path/to/timetable.json pnpm --filter @timetable/web start
+```
+
+状态文件包含学生和选课等学校数据，已被 `.gitignore` 排除。不要把 `timetable.json`、`.env.local` 或真实 API Key 提交到 Git。需要保留版本时，应使用网页“过往课表”或单独备份状态文件。
+
+## 测试与检查
+
+```bash
+# 后端语法检查
+pnpm --filter @timetable/backend check
+
+# 后端测试
+pnpm --filter @timetable/backend test
+
+# 前端测试
+pnpm --filter @timetable/web test
+
+# 全仓 lint
+pnpm lint
+
+# 全工作区构建
+pnpm build
+```
+
+真实学校数据相关的集成测试可能因本地尚未导入完整高三 A/B/C 选课而跳过；这不等同于测试失败。发布前应同时检查测试输出、`/api/validate` 和网页中的待人工复核项。
+
+## 旧版代码说明
+
+`packages/core`、`packages/cli` 和 `packages/web/server.js` 保留用于历史对照或旧实验，不是当前浏览器系统的生产入口。修改当前系统时，优先从 `packages/backend/src` 和 `packages/web/app.js` 开始；不要把旧 CLI 的实体模型或旧服务端口重新接回网页流程。

@@ -1,57 +1,48 @@
-# 排课系统 Web 前端
+# `@timetable/web`
 
-基于 Express + Vite 的 Web 前端，提供可视化的排课管理界面。
+当前排课系统的网页前端，使用 Vite 提供开发服务器；数据和排课 API 由同一工作区的 `@timetable/backend` 提供。
 
-## 功能
+## 启动
 
-- 📊 项目状态查看
-- 👨‍🏫 数据管理（教师、教室、课程、学生、班级等）
-- 📅 课表查看（按学生、教师、班级、教室）
-- ✅ 数据校验
-- 📤 课表导出
-
-## 快速开始
+在仓库根目录执行：
 
 ```bash
-# 安装依赖
 pnpm install
-
-# 启动开发服务器（需要同时启动 API 服务器和前端）
-pnpm start
-
-# 或者分别启动
-pnpm server  # 启动 API 服务器 (端口 3001)
-pnpm dev     # 启动前端开发服务器 (端口 3000)
+pnpm --filter @timetable/web start
 ```
 
-## 访问
+该命令会同时启动：
 
-- 前端: http://localhost:3000
-- API: http://localhost:3001/api
+- 前端：<http://localhost:3000/>
+- 当前后端：<http://localhost:3001/>
 
-## API 接口
+如果只需要前端开发服务器：
 
-### 状态
-- `GET /api/status` - 获取项目状态
+```bash
+pnpm --filter @timetable/web dev
+```
 
-### 实体管理
-- `GET /api/:entity` - 获取实体列表
-- `POST /api/:entity` - 添加实体
-- `PUT /api/:entity/:id` - 更新实体
-- `DELETE /api/:entity/:id` - 删除实体
+此时需要另开终端启动后端：
 
-实体类型: teachers, rooms, courses, students, admin_classes, teaching_classes, teaching_assignments, ap_selections, constraints
+```bash
+pnpm --filter @timetable/backend start
+```
 
-### 校验
-- `GET /api/validate-input` - 校验输入数据
+`packages/web/server.js` 是弃用的旧服务端，不属于当前网页系统；当前系统不使用 `3101` 端口。
 
-### 课表
-- `GET /api/timetable/:by/:id` - 获取课表
+## 页面范围
 
-### 任务
-- `POST /api/build-tasks` - 生成教学任务
+- 排课表、必要条件确认、AI 补全和过往课表。
+- 总课表、班级、教师、学生、AP 分流组和教室视图。
+- 学生、教师、班级、课程、教室、教师分工和约束管理。
+- 学生名单、AP 选课、高三 A/B/C 选课和通用 Excel 导入。
+- 右侧 AI 页面助手和需确认的调课/教师调换操作。
 
-## 环境变量
+完整的系统架构、数据格式、算法约束、AI 配置和 API 说明见仓库根目录的 [README.md](../../README.md)。
 
-- `STATE_FILE` - 状态文件路径（默认: 当前目录下的 timetable.json）
-- `PORT` - API 服务器端口（默认: 3001）
+## 前端检查
+
+```bash
+pnpm --filter @timetable/web test
+pnpm --filter @timetable/web build
+```
