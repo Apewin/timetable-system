@@ -111,6 +111,52 @@ test('separates hard rule failures from weighted soft rule penalties', () => {
   assert.equal(result.soft_score, 14);
 });
 
+test('scores a missing requested teaching-class double period', () => {
+  const result = validateSchedule({
+    slots,
+    rooms: [],
+    rules: [{
+      id: 'teaching-double-periods', type: 'preferred_consecutive_pairs', hard: false, weight: 9,
+      scope: 'section', target_ids: ['CORE'], section_target_ids: ['CORE'], params: {},
+    }],
+    sections: [{ id: 'CORE', course_id: 'CORE', teacher_id: 'T1', class_id: 'C1', class_type: 'teaching', weekly_hours: 4, student_ids: ['S1'], eligible_student_ids: [] }],
+  }, {
+    meetings: [
+      { section_id: 'CORE', slot_id: 'D1P1' },
+      { section_id: 'CORE', slot_id: 'D1P3' },
+      { section_id: 'CORE', slot_id: 'D1P5' },
+      { section_id: 'CORE', slot_id: 'D1P7' },
+    ],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.soft_violations[0].missing_pairs, 1);
+  assert.equal(result.soft_score, 9);
+});
+
+test('rejects a section that does not meet on enough distinct days', () => {
+  const result = validateSchedule({
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D2P1', day: 2, period: 1 },
+      { id: 'D2P2', day: 2, period: 2 },
+    ],
+    rooms: [],
+    rules: [{
+      id: 'spread-core', type: 'min_occurrence_days', hard: true,
+      scope: 'section', target_ids: ['CORE'], section_target_ids: ['CORE'], params: { min: 3 },
+    }],
+    sections: [{ id: 'CORE', course_id: 'CORE', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 3, student_ids: ['S1'], eligible_student_ids: [] }],
+  }, {
+    meetings: [
+      { section_id: 'CORE', slot_id: 'D1P1' },
+      { section_id: 'CORE', slot_id: 'D2P1' },
+      { section_id: 'CORE', slot_id: 'D2P2' },
+    ],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.hard_violations[0].rule_id, 'spread-core');
+});
+
 test('treats an administrative lock as a hard invariant', () => {
   const result = validateSchedule(problem(), {
     locks: [{ section_id: 'CORE', slot_id: 'D1P2' }],

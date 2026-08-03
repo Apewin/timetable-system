@@ -2,12 +2,122 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as XLSX from 'xlsx';
 import {
+  AI_ASSISTANT_PROMPT,
   AI_SCHEDULING_STRATEGY_PROMPT,
+  askAiAssistant,
+  assistantContextSnapshot,
   interpretWorkbook,
   planSchedulingStrategy,
   workbookFromInterpretation,
   workbookSnapshot,
 } from '../src/llm-workbook-interpreter.mjs';
+
+test('builds aggregate-only context for the page assistant', () => {
+  const snapshot = assistantContextSnapshot({
+    meta: { revision: 12 },
+    solve_status: 'valid',
+    students: [{ id: '202501', name: '张三', grade: 10 }, { id: '202502', name: '李四', grade: 11 }],
+    teachers: [{ id: 'T1', name: '老师' }],
+    classes: [{ id: 'AC1', class_type: 'admin' }],
+    courses: [{ id: 'C1', name: '课程一', type: 'required', grade: 10 }],
+    manual_plan: { status: 'confirmed', locks: [{ section_id: 'S1' }] },
+  }, {
+    view: 'student-timetable',
+    selected: { student_name: '张三', student_id: '202501', select_class: '教学班 1 班' },
+  });
+  assert.equal(snapshot.current_page, 'student-timetable');
+  assert.deepEqual(snapshot.current_selection, { select_class: '教学班 1 班' });
+  assert.equal(snapshot.system_summary.student_count, 2);
+  assert.deepEqual(snapshot.system_summary.students_by_grade, { '10': 1, '11': 1 });
+  assert.equal(JSON.stringify(snapshot).includes('张三'), false);
+  assert.equal(JSON.stringify(snapshot).includes('202501'), false);
+});
+
+test('includes a selected teacher’s concrete timetable and locally safe move candidates without student identifiers', () => {
+  const snapshot = assistantContextSnapshot({
+    teachers: [{ id: 'T1', name: '甲老师' }, { id: 'T2', name: '乙老师' }],
+    courses: [{ id: 'MATH', name: '数学' }, { id: 'ENG', name: '英语' }],
+    teaching_classes: [{ id: 'TC1', name: '教学 1 班' }, { id: 'TC2', name: '教学 2 班' }],
+    schedule: {
+      sections: [
+        { id: 'SEC1', teacher_id: 'T1', course_id: 'MATH', class_id: 'TC1', class_type: 'teaching', student_ids: ['S1'] },
+        { id: 'SEC2', teacher_id: 'T2', course_id: 'ENG', class_id: 'TC2', class_type: 'teaching', student_ids: ['S1'] },
+      ],
+      meetings: [
+        { section_id: 'SEC1', slot_id: 'D1P1' },
+        { section_id: 'SEC2', slot_id: 'D1P2' },
+      ],
+      locks: [],
+    },
+  }, { view: 'teacher-timetable', selected: { teacher_id: 'T1' } });
+  assert.equal(snapshot.selected_teacher_schedule.teacher_name, '甲老师');
+  assert.equal(snapshot.selected_teacher_schedule.weekly_meeting_count, 1);
+  assert.deepEqual(snapshot.selected_teacher_schedule.daily_meeting_counts[0], { day: 1, label: '周一', count: 1 });
+  const candidate = snapshot.selected_teacher_schedule.move_candidates[0];
+  assert.equal(candidate.from_slot, 'D1P1');
+  assert.equal(candidate.from_label, '周一第1节');
+  assert.equal(candidate.candidate_targets.some(target => target.slot_id === 'D1P2'), false);
+  assert.equal(candidate.candidate_targets[0].local_check, '教师与本 section 当前学生均无同一时段冲突');
+  assert.equal(JSON.stringify(snapshot).includes('S1'), false);
+});
+
+test('page assistant uses a bounded read-only prompt and page summary', async () => {
+  assert.match(AI_ASSISTANT_PROMPT, /不能直接写入/);
+  assert.match(AI_ASSISTANT_PROMPT, /不分配教室/);
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    assert.equal(request.max_tokens, 1600);
+    assert.deepEqual(request.response_format, { type: 'json_object' });
+    assert.equal(request.messages[0].role, 'system');
+    assert.match(request.messages[0].content, /不能直接写入/);
+    const payload = JSON.parse(request.messages.at(-1).content);
+    assert.equal(payload.page_snapshot.current_page, 'courses');
+    assert.equal(payload.page_snapshot.system_summary.student_count, 1);
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ response: '请在课程管理中核对。', action: null }) } }] }) };
+  };
+  const result = await askAiAssistant({
+    message: '这个页面有什么要检查？',
+    context: { view: 'courses' },
+    state: { students: [{ id: 'S1', name: '隐私姓名', grade: 10 }] },
+  }, {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.equal(result.response, '请在课程管理中核对。');
+  assert.equal(result.model, 'test-model');
+});
+
+test('accepts only a validated teacher-swap proposal from the model', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: JSON.stringify({
+        response: '已整理为待确认的教师调换。',
+        action: { type: 'swap_teaching_assignments', assignment_ids: ['TA_1', 'TA_2'] },
+      }) } }],
+    }),
+  });
+  const result = await askAiAssistant({
+    message: '把两位老师的课程调换一下',
+    state: {
+      meta: { revision: 3 },
+      teachers: [
+        { id: 'T_1', name: '甲老师', can_teach: ['C_1', 'C_2'] },
+        { id: 'T_2', name: '乙老师', can_teach: ['C_1', 'C_2'] },
+      ],
+      courses: [{ id: 'C_1', name: '课程甲' }, { id: 'C_2', name: '课程乙' }],
+      teaching_assignments: [
+        { id: 'TA_1', teacher_id: 'T_1', course_id: 'C_1', class_ids: ['TC1'], class_type: 'teaching', weekly_hours: 2 },
+        { id: 'TA_2', teacher_id: 'T_2', course_id: 'C_2', class_ids: ['TC2'], class_type: 'teaching', weekly_hours: 2 },
+      ],
+    },
+  }, {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.equal(result.action.type, 'swap_teaching_assignments');
+  assert.deepEqual(result.action.assignment_ids, ['TA_1', 'TA_2']);
+});
 
 test('bounds workbook data sent to the model', () => {
   const workbook = XLSX.utils.book_new();

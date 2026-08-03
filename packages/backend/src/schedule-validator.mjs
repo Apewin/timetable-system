@@ -103,6 +103,30 @@ function maxConsecutive(events) {
   return maximum;
 }
 
+// Each period can belong to at most one double-period block. Greedily taking
+// the first adjacent pair on a sorted path yields a maximum matching, so a
+// three-period run counts as one pair and a four-period run as two.
+function consecutivePairCount(events) {
+  const byDay = new Map();
+  for (const event of events) {
+    const { day, period } = slotParts(event.slot_id);
+    const periods = byDay.get(day) || [];
+    periods.push(period);
+    byDay.set(day, periods);
+  }
+  let pairs = 0;
+  for (const periods of byDay.values()) {
+    const ordered = [...new Set(periods)].sort((left, right) => left - right);
+    for (let index = 0; index < ordered.length - 1;) {
+      if (ordered[index + 1] === ordered[index] + 1) {
+        pairs += 1;
+        index += 2;
+      } else index += 1;
+    }
+  }
+  return pairs;
+}
+
 function ruleViolations(rule, sections, meetings, studentEvents) {
   const targetSectionIds = sectionIdsForRule(rule, sections);
   const targetMeetings = meetings.filter(meeting => targetSectionIds.includes(meeting.section_id));
@@ -173,6 +197,17 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
       }
       return issues;
     }
+    case 'min_occurrence_days': {
+      const groups = groupedEvents(rule, sections, meetings, studentEvents);
+      return [...groups].flatMap(([key, events]) => {
+        const days = new Set(events.map(event => slotParts(event.slot_id).day));
+        return days.size < params.min
+          ? [violation(rule.id, `${key} 仅安排在 ${days.size} 天，少于要求的 ${params.min} 天`, {
+            target_id: key, actual_days: [...days].sort((left, right) => left - right), minimum_days: params.min,
+          })]
+          : [];
+      });
+    }
     case 'no_internal_gaps': {
       const groups = groupedEvents(rule, sections, meetings, studentEvents);
       const ignoredCourseIds = new Set(params.ignore_course_ids || []);
@@ -201,6 +236,22 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
         }
       }
       return issues;
+    }
+    case 'preferred_consecutive_pairs': {
+      return targetSectionIds.flatMap(sectionId => {
+        // One double period is the standard preference.  More can be requested
+        // explicitly for the exceptional courses that genuinely need it.
+        const expectedPairs = params.target_pairs ?? 1;
+        if (!expectedPairs) return [];
+        const events = meetings.filter(meeting => meeting.section_id === sectionId);
+        const actualPairs = consecutivePairCount(events);
+        const missingPairs = Math.max(0, expectedPairs - actualPairs);
+        return missingPairs ? [violation(
+          rule.id,
+          `section ${sectionId} 连堂 ${actualPairs}/${expectedPairs} 组，缺少 ${missingPairs} 组`,
+          { section_id: sectionId, expected_pairs: expectedPairs, actual_pairs: actualPairs, missing_pairs: missingPairs, penalty: (rule.weight || 0) * missingPairs },
+        )] : [];
+      });
     }
     case 'max_consecutive_lessons': {
       const groups = groupedEvents(rule, sections, meetings, studentEvents);
@@ -315,11 +366,11 @@ export function validateSchedule(problem, solution) {
     if (rule.scope === 'room') continue;
     if (rule.unmatched) {
       const item = violation(rule.id, '规则未匹配到任何目标');
-      if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: rule.weight });
+      if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: item.penalty ?? rule.weight });
       continue;
     }
     for (const item of ruleViolations(rule, sections, meetings, studentEvents)) {
-      if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: rule.weight });
+      if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: item.penalty ?? rule.weight });
     }
   }
   return {

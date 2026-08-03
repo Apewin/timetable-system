@@ -6,7 +6,9 @@ export const RULE_TYPES = new Set([
   'forbid_slots',
   'preferred_slots',
   'max_occurrences_per_day',
+  'min_occurrence_days',
   'no_internal_gaps',
+  'preferred_consecutive_pairs',
   'max_consecutive_lessons',
   'max_consecutive_days_in_period',
   'synchronized_slots',
@@ -40,6 +42,14 @@ function validateTypeParameters(rule) {
     case 'max_occurrences_per_day':
     case 'max_consecutive_lessons':
       positiveInteger(params.max, rule, 'max');
+      break;
+    case 'min_occurrence_days':
+      positiveInteger(params.min, rule, 'min');
+      break;
+    case 'preferred_consecutive_pairs':
+      if (rule.scope !== 'section') throw new Error(`规则 ${rule.id} 的 preferred_consecutive_pairs 只能作用于 section`);
+      if (rule.hard) throw new Error(`规则 ${rule.id} 的 preferred_consecutive_pairs 必须是软约束`);
+      if (params.target_pairs !== undefined) positiveInteger(params.target_pairs, rule, 'target_pairs');
       break;
     case 'no_internal_gaps':
       if (rule.scope !== 'student') throw new Error(`规则 ${rule.id} 的 no_internal_gaps 只能作用于 student`);

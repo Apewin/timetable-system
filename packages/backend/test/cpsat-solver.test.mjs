@@ -636,6 +636,41 @@ test('optimizes a soft time preference after satisfying hard constraints', async
   assert.equal(validation.soft_score, 0);
 });
 
+test('prioritizes one requested consecutive pair for a teaching section', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [{
+      id: 'teaching-double-periods', type: 'preferred_consecutive_pairs', hard: false, weight: 100,
+      scope: 'section', target_ids: ['PAIRED'], section_target_ids: ['PAIRED'], params: { target_pairs: 1 },
+    }],
+    sections: [{ id: 'PAIRED', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 4, student_ids: ['S1'], eligible_student_ids: [] }],
+  };
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5, optimizeSoft: true, useConstructiveSeed: false });
+  const validation = validateSchedule(problem, solution);
+  assert.equal(solution.ok, true);
+  assert.equal(validation.soft_score, 0, JSON.stringify(validation.soft_violations));
+});
+
+test('spreads a section across the configured minimum number of days', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D2P1', day: 2, period: 1 },
+      { id: 'D3P1', day: 3, period: 1 },
+    ],
+    rooms: [],
+    rules: [{
+      id: 'spread-core', type: 'min_occurrence_days', hard: true,
+      scope: 'section', target_ids: ['SPREAD'], section_target_ids: ['SPREAD'], params: { min: 3 },
+    }],
+    sections: [{ id: 'SPREAD', course_id: 'CORE', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 3, student_ids: ['S1'], eligible_student_ids: [] }],
+  };
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5, useConstructiveSeed: false });
+  assert.equal(solution.ok, true, solution.reason || solution.status);
+  assert.equal(new Set(solution.meetings.map(meeting => meeting.slot_id.slice(0, 2))).size, 3);
+});
+
 test('allows concurrent sections without room or capacity constraints', async () => {
   const problem = {
     slots: [{ id: 'D1P1', day: 1, period: 1 }],

@@ -48,3 +48,23 @@ test('rejects a malformed ignored-course list for a daily-gap rule', () => {
     params: { ignore_course_ids: 'ACTIVITY' },
   }]), /ignore_course_ids/);
 });
+
+test('accepts a soft consecutive-pair preference only for sections', () => {
+  const rule = {
+    id: 'teaching-double-periods', type: 'preferred_consecutive_pairs', hard: false, weight: 120,
+    scope: 'section', params: { selector: { class_types: ['teaching'], min_weekly_hours: 2 }, target_pairs: 1 },
+  };
+  assert.equal(validateRules([rule])[0], rule);
+  assert.throws(() => validateRules([{ ...rule, scope: 'course' }]), /section/);
+  assert.throws(() => validateRules([{ ...rule, hard: true }]), /软约束/);
+  assert.throws(() => validateRules([{ ...rule, params: { target_pairs: 0 } }]), /target_pairs/);
+});
+
+test('accepts a minimum number of teaching days', () => {
+  const rule = {
+    id: 'spread-six-hour-course', type: 'min_occurrence_days', hard: true,
+    scope: 'section', params: { min: 5 },
+  };
+  assert.equal(validateRules([rule])[0], rule);
+  assert.throws(() => validateRules([{ ...rule, params: { min: 0 } }]), /params.min/);
+});

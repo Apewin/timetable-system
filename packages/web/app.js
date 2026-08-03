@@ -317,6 +317,8 @@ async function switchView(viewName) {
     }
   });
 
+  updateAiAssistantContext(viewName);
+
   // 加载视图数据
   return loadViewData(viewName);
 }
@@ -3665,8 +3667,27 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
 
       if (slot) {
         const category = timetableCourseCategory(slot);
+        if (slot.split_groups?.length) {
+          // A class-level split cell is a directory of simultaneous options,
+          // not one common lesson.  Each student follows the one Section shown
+          // in their own timetable.
+          html += `
+            <div class="slot-cell has-class category-${category} split-course-cell ${isWalkBlock ? 'walk-block' : ''}"
+                 data-slot-id="D${day}P${period.id}">
+              <div class="course-name">🧩 ${getCourseName(slot)}</div>
+              <div class="split-course-hint">按个人课表前往对应 Section</div>
+              <div class="split-course-list">
+                ${slot.split_groups.map(group => `
+                  <div class="split-course-item">
+                    <span>${group.course} · ${group.section_label || group.section_id}</span>
+                    <span class="split-course-count">${group.students} 人</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `;
         // 检查是否是教学班课表（包含行政班课程）
-        if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
+        } else if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
           // 教学班课表：显示行政班课程
           html += `
             <div class="slot-cell has-class category-${category} ${isWalkBlock ? 'walk-block' : ''}"
@@ -3704,6 +3725,8 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
                 ${getCourseName(slot)}
                 ${slot.course_type === 'ap' ? '<span class="course-badge ap">AP</span>' : ''}
               </div>
+              ${slot.section_label ? `<div class="timetable-section-label">📍 ${slot.section_label}</div>` : ''}
+              ${data.view_type === 'teacher' && slot.class_label ? `<div class="timetable-class-label">🏫 ${slot.class_label}</div>` : ''}
               <div class="teacher-name">👨‍🏫 ${getTeacherName(slot)}</div>
               <div class="room-name">🚪 ${getRoomName(slot)}</div>
             </div>
@@ -4786,8 +4809,261 @@ function getCurrentView() {
   return activeView ? activeView.id.replace('view-', '') : 'status';
 }
 
+const AI_ASSISTANT_VIEW_LABELS = {
+  welcome: '首页',
+  'manual-timetable': '排课表',
+  'past-timetables': '过往课表',
+  'overview-timetable': '总课表概览',
+  'class-timetable': '按班级查看',
+  'teacher-timetable': '按教师查看',
+  'student-timetable': '按学生查看',
+  'ap-group-timetable': 'AP 分流组查看',
+  'room-timetable': '按教室查看',
+  students: '学生管理',
+  teachers: '教师管理',
+  classes: '班级管理',
+  courses: '课程管理',
+  rooms: '教室管理',
+  assignments: '教师分工',
+  selections: 'AP 选课',
+  'elective-selections': '其他选课',
+  sectioning: '分班管理',
+  constraints: '约束管理',
+  import: '数据导入',
+  export: '导出课表',
+  settings: '系统设置',
+  status: '系统状态',
+};
+
+let aiAssistantConversation = [];
+let aiAssistantBusy = false;
+
+function aiAssistantViewLabel(viewName = getCurrentView()) {
+  return AI_ASSISTANT_VIEW_LABELS[viewName] || '当前页面';
+}
+
+function aiAssistantContext(viewName = getCurrentView()) {
+  const selected = {};
+  const view = document.getElementById(`view-${viewName}`);
+  if (view) {
+    view.querySelectorAll('select').forEach(select => {
+      if (!select.value) return;
+      // Student IDs/names should never be included in the external model
+      // context. The server gets aggregate student statistics instead.
+      if (select.id === 'select-student') {
+        selected.student_selected = '已选择一名学生（隐私标识未发送）';
+        return;
+      }
+      // The teacher timetable needs its stable identifier so the backend can
+      // provide a concrete, privacy-safe weekly schedule analysis rather than
+      // a generic answer based on aggregate data alone.
+      if (select.id === 'select-teacher') {
+        selected.teacher_id = select.value;
+        return;
+      }
+      const option = select.selectedOptions?.[0];
+      const label = (option?.textContent || select.value).trim();
+      if (label) selected[select.id || 'selected_filter'] = label.slice(0, 160);
+    });
+  }
+  if (viewName === 'manual-timetable') {
+    const classId = manualCurrentClassId();
+    if (classId) selected.manual_teaching_class = classId;
+  }
+  return { view: viewName, selected };
+}
+
+function updateAiAssistantContext(viewName = getCurrentView()) {
+  const label = document.getElementById('ai-assistant-context-label');
+  if (label) label.textContent = `当前页面：${aiAssistantViewLabel(viewName)}`;
+}
+
+function renderAiAssistantMessage(role, content) {
+  const messages = document.getElementById('ai-assistant-messages');
+  if (!messages) return;
+  const message = document.createElement('div');
+  message.className = `ai-assistant-message ${role}`;
+  message.textContent = content;
+  messages.appendChild(message);
+  while (messages.children.length > 16) messages.removeChild(messages.firstChild);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function appendAiAssistantActionLine(container, text) {
+  const line = document.createElement('p');
+  line.textContent = text;
+  container.appendChild(line);
+}
+
+async function executeAiAssistantAction(action, card, confirmButton) {
+  const isTeacherSwap = action.type === 'swap_teaching_assignments';
+  const isScheduleMove = action.type === 'move_schedule_meeting';
+  if (!isTeacherSwap && !isScheduleMove) return;
+  const confirmation = isTeacherSwap
+    ? '确认调换这两项课程的授课教师吗？当前课表会标记为待重排。'
+    : `确认将“${action.course_name}”从${action.from_label}调整到${action.to_label}吗？`;
+  if (!confirm(confirmation)) return;
+  confirmButton.disabled = true;
+  setAiAssistantStatus(isTeacherSwap ? '正在执行已确认的教师调换…' : '正在校验并调整课程时段…');
+  try {
+    const result = await api(isTeacherSwap
+      ? '/assistant/actions/swap-teaching-assignments'
+      : '/assistant/actions/move-schedule-meeting', {
+      method: 'POST',
+      body: JSON.stringify(isTeacherSwap
+        ? { assignment_ids: action.assignment_ids, expected_revision: action.expected_revision }
+        : {
+          section_id: action.section_id,
+          from_slot: action.from_slot,
+          to_slot: action.to_slot,
+          expected_revision: action.expected_revision,
+        }),
+    });
+    card.classList.add('ai-assistant-action-complete');
+    card.replaceChildren();
+    const title = document.createElement('h3');
+    title.textContent = isTeacherSwap ? '✓ 已执行教师调换' : '✓ 已调整课程时段';
+    card.appendChild(title);
+    appendAiAssistantActionLine(card, result.message || '教师分工已更新。');
+    renderAiAssistantMessage('assistant', isTeacherSwap
+      ? '教师分工已更新。现有课表已标记为待重排，请重新确认必要条件后再运行 AI 排课。'
+      : '课程时段已调整并通过硬约束校验，当前课表已刷新。');
+    setAiAssistantStatus('操作已完成，页面数据已刷新。');
+    await loadViewData(getCurrentView());
+    updateAiAssistantContext();
+  } catch (error) {
+    confirmButton.disabled = false;
+    setAiAssistantStatus('操作未执行，请重新核对后再试。');
+  }
+}
+
+function renderAiAssistantActionProposal(action) {
+  if (!action || !['swap_teaching_assignments', 'move_schedule_meeting'].includes(action.type)) return;
+  const messages = document.getElementById('ai-assistant-messages');
+  if (!messages) return;
+  const card = document.createElement('section');
+  card.className = 'ai-assistant-action';
+  const title = document.createElement('h3');
+  title.textContent = `待确认：${action.title || (action.type === 'swap_teaching_assignments' ? '调换授课教师' : '调整课程时段')}`;
+  card.appendChild(title);
+  if (action.type === 'swap_teaching_assignments') {
+    if (!Array.isArray(action.assignments) || action.assignments.length !== 2) return;
+    const [left, right] = action.assignments;
+    appendAiAssistantActionLine(card, `“${left.course_name}”目前由 ${left.teacher_name} 负责，确认后改由 ${right.teacher_name} 负责。`);
+    appendAiAssistantActionLine(card, `“${right.course_name}”目前由 ${right.teacher_name} 负责，确认后改由 ${left.teacher_name} 负责。`);
+  } else {
+    appendAiAssistantActionLine(card, `“${action.course_name}”（${action.class_label}）：${action.from_label} → ${action.to_label}`);
+  }
+  if (Array.isArray(action.impacts) && action.impacts.length) {
+    const impactTitle = document.createElement('p');
+    impactTitle.textContent = '影响：';
+    card.appendChild(impactTitle);
+    const list = document.createElement('ul');
+    action.impacts.forEach(impact => {
+      const item = document.createElement('li');
+      item.textContent = impact;
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'ai-assistant-action-actions';
+  const confirmButton = document.createElement('button');
+  confirmButton.type = 'button';
+  confirmButton.className = 'btn btn-warning';
+  confirmButton.textContent = action.type === 'swap_teaching_assignments' ? '确认调换' : '确认调整';
+  const dismissButton = document.createElement('button');
+  dismissButton.type = 'button';
+  dismissButton.className = 'btn btn-secondary';
+  dismissButton.textContent = '取消';
+  confirmButton.addEventListener('click', () => executeAiAssistantAction(action, card, confirmButton));
+  dismissButton.addEventListener('click', () => {
+    card.classList.add('hidden');
+    setAiAssistantStatus('已取消该操作建议。');
+  });
+  actions.append(confirmButton, dismissButton);
+  card.appendChild(actions);
+  messages.appendChild(card);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function setAiAssistantStatus(message = '') {
+  const status = document.getElementById('ai-assistant-status');
+  if (status) status.textContent = message;
+}
+
+function setAiAssistantCollapsed(collapsed) {
+  const container = document.querySelector('.container');
+  const toggle = document.getElementById('btn-ai-assistant-toggle');
+  const open = document.getElementById('btn-ai-assistant-open');
+  if (!container || !toggle || !open) return;
+  container.classList.toggle('ai-assistant-collapsed', collapsed);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  toggle.setAttribute('aria-label', collapsed ? '展开 AI 助手' : '收起 AI 助手');
+  toggle.textContent = collapsed ? '‹' : '›';
+  open.classList.toggle('hidden', !collapsed);
+}
+
+async function sendAiAssistantMessage(rawMessage) {
+  const message = String(rawMessage || '').trim();
+  if (!message || aiAssistantBusy) return;
+  const input = document.getElementById('ai-assistant-input');
+  const sendButton = document.getElementById('btn-ai-assistant-send');
+  const history = aiAssistantConversation.slice(-6);
+  aiAssistantConversation.push({ role: 'user', content: message });
+  renderAiAssistantMessage('user', message);
+  if (input) input.value = '';
+  aiAssistantBusy = true;
+  if (sendButton) sendButton.disabled = true;
+  setAiAssistantStatus('DeepSeek 正在分析当前页面…');
+  try {
+    const result = await api('/assistant/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, context: aiAssistantContext(), history }),
+    });
+    const response = String(result?.response || '').trim() || '没有收到可显示的回答，请稍后重试。';
+    aiAssistantConversation.push({ role: 'assistant', content: response });
+    renderAiAssistantMessage('assistant', response);
+    if (result?.action) renderAiAssistantActionProposal(result.action);
+    if (result?.action_error) renderAiAssistantMessage('error', result.action_error);
+    setAiAssistantStatus(`已使用 ${result?.model || '当前模型'} 分析`);
+  } catch (error) {
+    const response = `暂时无法分析：${error.message || '请求失败'}`;
+    aiAssistantConversation.push({ role: 'assistant', content: response });
+    renderAiAssistantMessage('error', response);
+    setAiAssistantStatus('请求失败，可检查系统设置中的 API 配置。');
+  } finally {
+    aiAssistantBusy = false;
+    if (sendButton) sendButton.disabled = false;
+  }
+}
+
+function initAiAssistant() {
+  const input = document.getElementById('ai-assistant-input');
+  const sendButton = document.getElementById('btn-ai-assistant-send');
+  const toggle = document.getElementById('btn-ai-assistant-toggle');
+  const open = document.getElementById('btn-ai-assistant-open');
+  if (!input || !sendButton || !toggle || !open) return;
+  updateAiAssistantContext();
+  renderAiAssistantMessage('assistant', `我是排课助手。当前在${aiAssistantViewLabel()}，可以解释数据、排查问题，也能把明确的教师调换需求整理成待确认操作。任何数据修改都必须点击确认后才会执行。`);
+  sendButton.addEventListener('click', () => sendAiAssistantMessage(input.value));
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendAiAssistantMessage(input.value);
+    }
+  });
+  document.querySelectorAll('.ai-assistant-prompt').forEach(button => {
+    button.addEventListener('click', () => sendAiAssistantMessage(button.dataset.aiPrompt));
+  });
+  toggle.addEventListener('click', () => setAiAssistantCollapsed(true));
+  open.addEventListener('click', () => setAiAssistantCollapsed(false));
+  if (window.matchMedia('(max-width: 768px)').matches) setAiAssistantCollapsed(true);
+}
+
 // 初始化应用
 function init() {
+  initAiAssistant();
   // 导航点击事件
   document.querySelectorAll('.nav-section a').forEach(link => {
     link.addEventListener('click', (e) => {

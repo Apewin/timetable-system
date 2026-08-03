@@ -443,6 +443,75 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
       }
       continue;
     }
+    if (rule.type === 'preferred_consecutive_pairs') {
+      for (const section of targetSections) {
+        // Do not turn every repeated lesson into a double period.  A rule
+        // requests one pair by default; exceptional courses can opt in to a
+        // different count through params.target_pairs.
+        const expectedPairs = rule.params.target_pairs ?? 1;
+        if (!expectedPairs) continue;
+        const occurrences = occurrencesBySection.get(section.id) || [];
+        const occupiedBySlot = new Map();
+        for (const rawDaySlots of slotByDay.values()) {
+          const daySlots = [...rawDaySlots].sort((left, right) => left.period - right.period);
+          for (const slot of daySlots) {
+            const slotValue = slotIndex(problem, slot.id);
+            const equals = occurrences
+              .filter(occurrence => occurrence.minimumSlot <= slotValue && slotValue <= occurrence.maximumSlot)
+              .map(occurrence => addEquals(
+                model,
+                occurrence.time,
+                slotValue,
+                `${rule.id}_${section.id}_AT_${slot.id}_${occurrence.index}`,
+              ));
+            if (!equals.length) continue;
+            const occupied = model.newBoolVar(`${rule.id}_${section.id}_OCCUPIED_${slot.id}`);
+            for (const equality of equals) model.addImplication(equality, occupied);
+            model.addBoolOr([...equals, occupied.not()]);
+            occupiedBySlot.set(slot.id, occupied);
+          }
+        }
+        const pairs = [];
+        const incidentPairs = new Map();
+        for (const rawDaySlots of slotByDay.values()) {
+          const daySlots = [...rawDaySlots].sort((left, right) => left.period - right.period);
+          for (let index = 0; index < daySlots.length - 1; index += 1) {
+            const left = daySlots[index];
+            const right = daySlots[index + 1];
+            if (right.period !== left.period + 1) continue;
+            const leftOccupied = occupiedBySlot.get(left.id);
+            const rightOccupied = occupiedBySlot.get(right.id);
+            if (!leftOccupied || !rightOccupied) continue;
+            const paired = model.newBoolVar(`${rule.id}_${section.id}_PAIR_${left.id}_${right.id}`);
+            model.addImplication(paired, leftOccupied);
+            model.addImplication(paired, rightOccupied);
+            pairs.push(paired);
+            for (const slotId of [left.id, right.id]) {
+              const list = incidentPairs.get(slotId) || [];
+              list.push(paired);
+              incidentPairs.set(slotId, list);
+            }
+          }
+        }
+        for (const pairList of incidentPairs.values()) if (pairList.length > 1) {
+          model.addLessOrEqual(sum(pairList), 1n);
+        }
+        if (!pairs.length) {
+          if (hardWeight === null) throw new Error(`规则 ${rule.id} 的 section ${section.id} 没有可用的相邻时段`);
+          const shortfall = model.newIntVar(BigInt(expectedPairs), BigInt(expectedPairs), `${rule.id}_${section.id}_SHORTFALL`);
+          penaltyTerms.push({ variable: shortfall, weight: hardWeight });
+          continue;
+        }
+        if (hardWeight === null) {
+          model.addGreaterOrEqual(sum(pairs), BigInt(expectedPairs));
+        } else {
+          const shortfall = model.newIntVar(0n, BigInt(expectedPairs), `${rule.id}_${section.id}_SHORTFALL`);
+          model.addGreaterOrEqual(sum(pairs).add(shortfall), BigInt(expectedPairs));
+          penaltyTerms.push({ variable: shortfall, weight: hardWeight });
+        }
+      }
+      continue;
+    }
     if (rule.type === 'max_occurrences_per_day') {
       for (const [targetId, values] of valuesByTarget) for (const [day, daySlots] of slotByDay) {
         const flags = values.map((value, index) => {
@@ -452,6 +521,32 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
             : daySlots.map(slot => addEquals(model, value, slotIndex(problem, slot.id), `${rule.id}_${targetId}_${index}_${day}_${slot.period}`));
         }).flat();
         applyBound(model, flags, rule.params.max, penaltyTerms, hardWeight, `${rule.id}_EXCESS_${targetId}_${day}`);
+      }
+      continue;
+    }
+    if (rule.type === 'min_occurrence_days') {
+      for (const [targetId, values] of valuesByTarget) {
+        const usedDays = [];
+        for (const [day, daySlots] of slotByDay) {
+          const flags = values.map((value, index) => {
+            const dayVariable = dayVariables.get(value);
+            return dayVariable
+              ? [addEquals(model, dayVariable, day - 1, `${rule.id}_${targetId}_${index}_DAY_${day}`)]
+              : daySlots.map(slot => addEquals(model, value, slotIndex(problem, slot.id), `${rule.id}_${targetId}_${index}_${day}_${slot.period}`));
+          }).flat();
+          if (!flags.length) continue;
+          const used = model.newBoolVar(`${rule.id}_${targetId}_USES_DAY_${day}`);
+          for (const flag of flags) model.addImplication(flag, used);
+          model.addBoolOr([...flags, used.not()]);
+          usedDays.push(used);
+        }
+        if (hardWeight === null) {
+          model.addGreaterOrEqual(sum(usedDays), BigInt(rule.params.min));
+        } else {
+          const shortfall = model.newIntVar(0n, BigInt(rule.params.min), `${rule.id}_${targetId}_DAY_SHORTFALL`);
+          model.addGreaterOrEqual(sum(usedDays).add(shortfall), BigInt(rule.params.min));
+          penaltyTerms.push({ variable: shortfall, weight: hardWeight });
+        }
       }
       continue;
     }

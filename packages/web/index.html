@@ -829,6 +829,31 @@
         </div>
 
       </main>
+
+      <aside id="ai-assistant-sidebar" class="ai-assistant-sidebar" aria-label="AI 页面助手">
+        <div class="ai-assistant-header">
+          <div>
+            <h2>🤖 AI 助手</h2>
+            <p id="ai-assistant-context-label">当前页面：首页</p>
+          </div>
+          <button id="btn-ai-assistant-toggle" class="btn-icon" type="button" aria-expanded="true" aria-label="收起 AI 助手">›</button>
+        </div>
+        <p class="ai-assistant-note">可解释、排查并提出操作；涉及数据变更时会显示影响和确认按钮，确认后才执行。</p>
+        <div id="ai-assistant-messages" class="ai-assistant-messages" aria-live="polite" aria-label="AI 对话记录"></div>
+        <div class="ai-assistant-composer">
+          <div class="ai-assistant-prompts" aria-label="快捷提问">
+            <button type="button" class="ai-assistant-prompt" data-ai-prompt="请解释这个页面的数据和作用。">解释本页</button>
+            <button type="button" class="ai-assistant-prompt" data-ai-prompt="请检查当前页面最需要我注意的风险或下一步。">检查问题</button>
+          </div>
+          <label class="sr-only" for="ai-assistant-input">向 AI 助手提问</label>
+          <textarea id="ai-assistant-input" rows="3" maxlength="2000" placeholder="例如：这个页面的数据有什么问题？"></textarea>
+          <div class="ai-assistant-send-row">
+            <span id="ai-assistant-status" class="ai-assistant-status" role="status"></span>
+            <button id="btn-ai-assistant-send" class="btn btn-primary" type="button">发送</button>
+          </div>
+        </div>
+      </aside>
+      <button id="btn-ai-assistant-open" class="ai-assistant-open hidden" type="button" aria-label="打开 AI 助手">🤖 AI</button>
     </div>
 
     <div id="modal" class="modal hidden">

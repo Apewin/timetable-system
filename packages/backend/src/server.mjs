@@ -24,6 +24,8 @@ import {
 } from './elective-selection-import.mjs';
 import {
   AI_SCHEDULING_STRATEGY_PROMPT,
+  askAiAssistant,
+  assistantContextSnapshot,
   getAiConfig,
   interpretWorkbook,
   planSchedulingStrategy,
@@ -39,6 +41,7 @@ import {
 import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from './schedule-archive.mjs';
 import { synchronizeClassMemberships } from './state-integrity.mjs';
 import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
+import { applyTeacherAssignmentSwap } from './assistant-actions.mjs';
 
 const app = express();
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
@@ -76,6 +79,31 @@ function timetableGrid(state, by, id) {
   const teachers = new Map((state.teachers || []).map(item => [item.id, item]));
   const rooms = new Map((state.rooms || []).map(item => [item.id, item]));
   const classes = new Map([...(state.admin_classes || []), ...(state.teaching_classes || [])].map(item => [item.id, item]));
+  const sectionsById = new Map(scheduleSections.map(section => [section.id, section]));
+  const electiveSectionNumber = assignment => {
+    const section = sectionsById.get(assignment.section_id);
+    const classType = section?.class_type || assignment.class_type;
+    if (classType !== 'ap' && classType !== 'elective') return null;
+    const parallel = scheduleSections
+      .filter(item => item.class_type === classType && item.course_id === (section?.course_id || assignment.course_id))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    return Math.max(1, parallel.findIndex(item => item.id === assignment.section_id) + 1);
+  };
+  const sectionAudienceLabel = assignment => {
+    const section = sectionsById.get(assignment.section_id);
+    const classId = section?.class_id || assignment.class_id;
+    const group = classes.get(classId);
+    if (group) {
+      const type = (section?.class_type || assignment.class_type) === 'admin' ? '行政班' : '教学班';
+      return `${type} · ${group.name || group.id}`;
+    }
+    const classType = section?.class_type || assignment.class_type;
+    if (classType === 'ap' || classType === 'elective') {
+      const sectionNumber = electiveSectionNumber(assignment);
+      return `${classType === 'ap' ? 'AP 选修班' : '非必修选修班'} · 第 ${sectionNumber} 组`;
+    }
+    return classId ? `班级 · ${classId}` : '未指定班级';
+  };
   const rows = Array.from({ length: 10 }, (_, index) => [`P${index + 1}`, null, null, null, null, null]);
   const display = assignment => {
     const course = courses.get(assignment.course_id);
@@ -87,6 +115,8 @@ function timetableGrid(state, by, id) {
       course_type: course?.type,
       teacher: teacher?.name || assignment.teacher_id || '—',
       room: room?.name || assignment.room_id || '—',
+      class_label: sectionAudienceLabel(assignment),
+      section_label: electiveSectionNumber(assignment) ? `Section ${electiveSectionNumber(assignment)}` : null,
     };
   };
   if (by === 'class' && classMemberIds.length) {
@@ -115,15 +145,21 @@ function timetableGrid(state, by, id) {
         const course = allAdministrative
           ? (labels.length === 1 ? labels[0] : `行政班：${groups.map(groupLabel).join(' / ')}`)
           : allAp
-            ? `AP 选课分流（${groups.length} 组）：${labels.join(' / ')}`
+            ? `AP 选课分流（${groups.length} 门并行）：${labels.join(' / ')}`
             : allElective
-              ? `选修课分流（${groups.length} 组）：${labels.join(' / ')}`
+              ? `选修课分流（${groups.length} 门并行）：${labels.join(' / ')}`
               : `多类课程去向（${groups.length} 组）：${labels.join(' / ')}`;
         rows[period - 1][day] = {
           task_id: '', slot_id: slotId, class_id: id, class_type: 'split',
           course,
           teacher: '请查看学生或 section 课表', room: '—',
-          split_groups: groups.map(group => ({ section_id: group.section_id, course: group.course, students: bySection.get(group.section_id).length })),
+          split_groups: groups.map(group => ({
+            section_id: group.section_id,
+            course: group.course,
+            section_label: group.section_label,
+            teacher: group.teacher,
+            students: bySection.get(group.section_id).length,
+          })),
         };
       }
     }
@@ -141,7 +177,7 @@ function timetableGrid(state, by, id) {
   const labels = { student: '学生', teacher: '教师', section: 'section', class: '班级', room: '教室', all: '全部课表' };
   return {
     title: id === 'all' || by === 'all' ? '全部课表' : `${labels[by]} ${id} 的课表`,
-    rows, assignments: selected,
+    view_type: by, rows, assignments: selected,
     stale: state.solve_status !== 'valid',
   };
 }
@@ -188,6 +224,93 @@ function expandedAssignments(sections, meetings) {
       class_id: section.class_id || section.id, class_type: section.class_type,
     }));
   });
+}
+
+function slotLabel(slotId) {
+  const match = /^D(\d+)P(\d+)$/.exec(String(slotId || ''));
+  if (!match) return String(slotId || '未知时段');
+  const weekdays = ['', '周一', '周二', '周三', '周四', '周五'];
+  return `${weekdays[Number(match[1])] || `周${match[1]}`}第${match[2]}节`;
+}
+
+function classLabelForSection(state, section) {
+  const group = [...(state.admin_classes || []), ...(state.teaching_classes || [])]
+    .find(item => item.id === section.class_id);
+  if (group) return `${section.class_type === 'admin' ? '行政班' : '教学班'} · ${group.name || group.id}`;
+  if (section.class_type === 'ap') return 'AP 选修班';
+  if (section.class_type === 'elective') return '非必修选修班';
+  return section.class_id || '未指定班级';
+}
+
+function scheduleMoveProposal(state, { section_id: sectionId, from_slot: fromSlot, to_slot: toSlot } = {}) {
+  const schedule = state.schedule;
+  if (!schedule || state.solve_status !== 'valid') throw new Error('当前课表不是有效版本，请先完成排课再调整');
+  const section = (schedule.sections || []).find(item => item.id === sectionId);
+  if (!section) throw new Error('待调整的课程 section 已不存在，请重新请求建议');
+  if (!(schedule.meetings || []).some(item => item.section_id === sectionId && item.slot_id === fromSlot)) {
+    throw new Error('待调整的原时段已变化，请重新请求建议');
+  }
+  if ((schedule.locks || []).some(lock => lock.section_id === sectionId && lock.slot_id === fromSlot)) {
+    throw new Error('该课程已被锁定为必要条件，不能自动调整');
+  }
+  const course = (state.courses || []).find(item => item.id === section.course_id);
+  return {
+    type: 'move_schedule_meeting',
+    section_id: sectionId,
+    from_slot: fromSlot,
+    to_slot: toSlot,
+    expected_revision: repository.revision(state),
+    title: '调整一节课程时段',
+    course_name: course?.name || section.course_id,
+    class_label: classLabelForSection(state, section),
+    from_label: slotLabel(fromSlot),
+    to_label: slotLabel(toSlot),
+    impacts: ['会移动该 section 的这一节课；其他同 section 课时不变。', '保存前已通过当前全部硬约束校验。'],
+  };
+}
+
+function scheduleAfterMeetingMove(state, proposal) {
+  const meetings = state.schedule.meetings.map(meeting =>
+    meeting.section_id === proposal.section_id && meeting.slot_id === proposal.from_slot
+      ? { ...meeting, slot_id: proposal.to_slot }
+      : meeting);
+  return {
+    ...state.schedule,
+    meetings,
+    assignments: expandedAssignments(state.schedule.sections, meetings),
+  };
+}
+
+function isAutomaticScheduleAdjustmentRequest(message) {
+  const value = String(message || '');
+  return /自动\s*(?:调整|调课)|(?:调整|调课)\s*(?:一下|看看|执行|应用)|帮我\s*(?:调整|调课)|按.*(?:方案|建议).*(?:调整|执行)/.test(value);
+}
+
+// The model may explain the alternatives conversationally, but an actual
+// move is chosen deterministically from locally collision-free candidates and
+// is then checked against the full validator before a confirmation card is
+// returned. This prevents a natural-language answer from becoming an unsafe
+// write operation.
+function automaticTeacherScheduleMoveProposal(state, rawContext, message) {
+  if (!isAutomaticScheduleAdjustmentRequest(message)) return null;
+  const snapshot = assistantContextSnapshot(state, rawContext);
+  const candidates = snapshot.selected_teacher_schedule?.move_candidates || [];
+  for (const source of candidates) for (const target of source.candidate_targets || []) {
+    try {
+      const proposal = scheduleMoveProposal(state, {
+        section_id: source.section_id,
+        from_slot: source.from_slot,
+        to_slot: target.slot_id,
+      });
+      const candidate = scheduleAfterMeetingMove(state, proposal);
+      const validation = validateSchedule(problemForSchedule(state, candidate), candidate);
+      if (validation.ok) return proposal;
+    } catch {
+      // This candidate is stale or conflicts with a hard rule. Try the next
+      // locally safe target; the user never sees an unusable confirmation.
+    }
+  }
+  return null;
 }
 
 function importText(value) { return String(value ?? '').trim(); }
@@ -1413,6 +1536,63 @@ app.post('/api/settings', (req, res) => reply(res, () => {
 
 app.post('/api/ai/test', (req, res) => reply(res, () =>
   testAiConnection(req.body?.message)));
+
+// The chat request itself is read-only. A natural-language request to apply a
+// timetable balancing suggestion can additionally return one separately
+// validated, confirmable move; no state changes until its action endpoint is
+// clicked by the user.
+app.post('/api/assistant/chat', (req, res) => reply(res, async () => {
+  const state = repository.read();
+  const result = await askAiAssistant({
+    message: req.body?.message,
+    context: req.body?.context,
+    history: req.body?.history,
+    state,
+  });
+  if (!result.action) result.action = automaticTeacherScheduleMoveProposal(state, req.body?.context, req.body?.message);
+  return result;
+}));
+
+app.post('/api/assistant/actions/swap-teaching-assignments', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('待确认操作缺少有效的数据版本，请重新向 AI 发起请求');
+  }
+  const state = repository.read();
+  const { proposal, teachingAssignments } = applyTeacherAssignmentSwap(state, req.body?.assignment_ids);
+  const saved = repository.write(
+    changedState(state, 'teaching_assignments', teachingAssignments),
+    { expectedRevision },
+  );
+  return {
+    message: '已调换两项课程的授课教师；请重新确认必要条件并重新排课。',
+    action: proposal,
+    solve_status: saved.solve_status,
+    revision: saved.meta?.revision,
+  };
+}));
+
+app.post('/api/assistant/actions/move-schedule-meeting', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('待确认操作缺少有效的数据版本，请重新向 AI 发起请求');
+  }
+  const state = repository.read();
+  const proposal = scheduleMoveProposal(state, req.body);
+  const candidate = scheduleAfterMeetingMove(state, proposal);
+  const validation = validateSchedule(problemForSchedule(state, candidate), candidate);
+  if (!validation.ok) {
+    throw new Error(`调整未执行：${validation.hard_violations[0]?.message || '违反硬约束'}`);
+  }
+  repository.write(
+    { ...state, assignments: candidate.assignments, schedule: { ...candidate, validation }, solve_status: 'valid' },
+    { expectedRevision },
+  );
+  return {
+    message: `已将 ${proposal.course_name}（${proposal.class_label}）从${proposal.from_label}调整到${proposal.to_label}`,
+    validation,
+  };
+}));
 
 function updateStudentApSelection(state, studentId, courseIds) {
   if (!Array.isArray(courseIds) || !courseIds.every(courseId => typeof courseId === 'string')) {
