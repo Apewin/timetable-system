@@ -107,6 +107,28 @@ test('builds the timetable while students with incomplete required choices remai
   }]);
 });
 
+test('does not block sectioning when an unselected synchronized choice course has no section yet', () => {
+  const problem = buildSchedulingProblem({
+    teachers: [
+      { id: 'T_J', can_teach: ['JAPANESE'] },
+      { id: 'T_F', can_teach: ['FRENCH'] },
+    ],
+    rooms: [],
+    courses: [
+      { id: 'JAPANESE', type: 'required_elective', grade: 12, weekly_hours: 2 },
+      { id: 'FRENCH', type: 'required_elective', grade: 12, weekly_hours: 2 },
+    ],
+    students: [{ id: 'S_J', grade: 12, ap_courses: [], elective_choices: { group_c: 'JAPANESE' } }],
+    admin_classes: [], teaching_classes: [], teaching_assignments: [], constraints: [],
+    selection_blocks: [{
+      id: 'g12_language_choices', name: '高三语言选修组', grades: [12], choice_key: 'group_c',
+      allowed_course_ids: ['JAPANESE', 'FRENCH'], required: true, synchronized_time_block: true, section_count: 1,
+    }],
+  });
+  assert.deepEqual(problem.sections.map(section => section.course_id), ['JAPANESE']);
+  assert.equal(problem.rules.some(rule => rule.id === 'selection_block_g12_language_choices_synchronized_slots'), false);
+});
+
 test('builds administrative sections without rooms or room-capacity limits', () => {
   const students = Array.from({ length: 41 }, (_, index) => ({
     id: `S${index + 1}`,

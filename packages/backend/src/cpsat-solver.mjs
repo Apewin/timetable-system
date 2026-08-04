@@ -79,10 +79,15 @@ function workloadInfeasibility(problem) {
 function buildCohorts(sections, candidateSet, rules = []) {
   const coreSectionIds = new Map();
   const coursesByStudent = new Map();
+  const eligibleSectionsByStudentCourse = new Map();
   for (const section of sections) {
     if (candidateSet.has(section)) {
       for (const studentId of section.eligible_student_ids || []) {
         const courses = coursesByStudent.get(studentId) || new Set(); courses.add(section.course_id); coursesByStudent.set(studentId, courses);
+        const key = `${studentId}\u0000${section.course_id}`;
+        const eligibleSections = eligibleSectionsByStudentCourse.get(key) || [];
+        eligibleSections.push(section.id);
+        eligibleSectionsByStudentCourse.set(key, eligibleSections);
       }
     } else for (const studentId of section.student_ids || []) {
       const core = coreSectionIds.get(studentId) || []; core.push(section.id); coreSectionIds.set(studentId, core);
@@ -100,6 +105,13 @@ function buildCohorts(sections, candidateSet, rules = []) {
   for (const [studentId, courses] of coursesByStudent) {
     const core = [...(coreSectionIds.get(studentId) || [])].sort();
     const selected = [...courses].sort();
+    // A Block decides which section a student may attend. Students with the
+    // same course names but different eligible Block sections are not
+    // exchangeable: grouping them would require one section to accept both.
+    const eligibilitySignature = selected.map(courseId => [
+      courseId,
+      [...(eligibleSectionsByStudentCourse.get(`${studentId}\u0000${courseId}`) || [])].sort(),
+    ]);
     const fixedSections = Object.fromEntries(selected.flatMap(courseId => {
       const locked = sections.filter(section => candidateSet.has(section)
         && section.course_id === courseId
@@ -112,7 +124,7 @@ function buildCohorts(sections, candidateSet, rules = []) {
     // A rule addressed to one named student changes their semantics, so they
     // cannot remain exchangeable with classmates who have the same choices.
     const ruleSignature = [...(studentRuleSignature.get(studentId) || [])].sort().join(',');
-    const key = `${core.join(',')}|${selected.join(',')}|${Object.entries(fixedSections).sort().map(([courseId, sectionId]) => `${courseId}:${sectionId}`).join(',')}|${ruleSignature}`;
+    const key = `${core.join(',')}|${selected.join(',')}|${JSON.stringify(eligibilitySignature)}|${Object.entries(fixedSections).sort().map(([courseId, sectionId]) => `${courseId}:${sectionId}`).join(',')}|${ruleSignature}`;
     const cohort = grouped.get(key) || {
       id: `COHORT_${grouped.size + 1}`, student_ids: [], core_section_ids: core,
       course_ids: selected, fixed_sections: fixedSections,

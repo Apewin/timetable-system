@@ -17,6 +17,7 @@ import {
   validateCourseGradeSelections,
   validateSelectionBlocks,
 } from './section-builder.mjs';
+import { apBlockConfigForState, normalizeApBlockConfig } from './ap-block-sectioning.mjs';
 import { applyApSelectionChanges, parseApSelectionBuffer } from './ap-selection-import.mjs';
 import {
   applyElectiveSelectionChanges,
@@ -42,6 +43,12 @@ import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from '
 import { synchronizeClassMemberships } from './state-integrity.mjs';
 import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
 import { applyTeacherAssignmentSwap } from './assistant-actions.mjs';
+import {
+  GRADUATION_CONFIRMATION,
+  graduateStudents,
+  graduationArchiveSummary,
+  graduationPreview,
+} from './graduation.mjs';
 
 const app = express();
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
@@ -194,6 +201,8 @@ function buildTaskPlan(state) {
     weekly_hours: section.weekly_hours,
     student_ids: section.student_ids,
     eligible_student_ids: section.eligible_student_ids,
+    ap_block_id: section.ap_block_id || null,
+    ap_block_name: section.ap_block_name || null,
   }));
   return { problem, teachingTasks };
 }
@@ -206,10 +215,28 @@ function presentationSections(state) {
     ? state.schedule.sections
     : buildSchedulingProblem(state).sections;
   const courses = new Map((state.courses || []).map(course => [course.id, course]));
+  const teachers = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
+  const students = new Map((state.students || []).map(student => [student.id, student]));
   return sections.filter(section => section.class_type === 'ap' || section.class_type === 'elective').map(section => ({
     ...section,
     course_name: courses.get(section.course_id)?.name || section.course_id,
     course_type: section.class_type === 'ap' ? 'ap' : 'required_elective',
+    // Sectioning is often opened directly, before the separate Teachers and
+    // Students pages have populated their browser-side caches.  Include the
+    // display identities here so a valid teacher is never rendered as
+    // "待分配", and roster chips never degrade to opaque student IDs.
+    teacher_name: teachers.get(section.teacher_id)?.name || null,
+    student_roster: (section.student_ids || []).map(studentId => {
+      const student = students.get(studentId);
+      return student ? {
+        id: student.id,
+        name: student.name || null,
+        english_name: student.english_name || null,
+        grade: student.grade ?? null,
+        admin_class_id: student.admin_class_id || null,
+        teaching_class_id: student.teaching_class_id || null,
+      } : { id: studentId, name: null };
+    }),
   }));
 }
 
@@ -784,6 +811,51 @@ app.get('/api/elective-sections', (_req, res) => reply(res, () => {
   return presentationSections(state);
 }));
 
+app.get('/api/ap-block-config', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  const courses = (state.courses || []).filter(course => course.type === 'ap').map(course => ({
+    id: course.id,
+    name: course.name || course.id,
+    grade: course.grade,
+    weekly_hours: course.weekly_hours,
+    section_count: course.section_count,
+  }));
+  const offerings = courses.flatMap(course => {
+    const source = (state.courses || []).find(item => item.id === course.id);
+    if (!(source.section_requirements || []).length) {
+      return [{ id: course.id, course_id: course.id, name: course.name, weekly_hours: course.weekly_hours }];
+    }
+    return source.section_requirements.map(requirement => {
+      const grades = [...new Set((requirement.grades || []).map(Number))].sort((left, right) => left - right);
+      const label = grades.map(grade => `Senior ${grade - 9}`).join(' / ');
+      return {
+        id: `${course.id}:G${grades.join('_G')}`,
+        course_id: course.id,
+        name: `${course.name} · ${label}`,
+        weekly_hours: course.weekly_hours,
+      };
+    });
+  });
+  return { config: apBlockConfigForState(state), courses, offerings };
+}));
+
+app.put('/api/ap-block-config', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const config = normalizeApBlockConfig(req.body, state.courses || []);
+  // Section IDs in Block mode encode the Block itself.  AP roster overrides
+  // created in normal parallel-section mode would therefore point at a
+  // different cohort and must not be carried across this explicit mode change.
+  const sectionOverrides = Object.fromEntries(Object.entries(state.section_overrides || {})
+    .filter(([sectionId]) => !sectionId.startsWith('SEC_AP_')));
+  const saved = repository.write(changedState(state, 'ap_block_config', config, { section_overrides: sectionOverrides }));
+  return {
+    config: apBlockConfigForState(saved),
+    message: config.enabled
+      ? '已启用 AP Block 模式；AP 分班和课表已标记为需要重新生成'
+      : '已切回普通 AP 平行分班模式；AP 分班和课表已标记为需要重新生成',
+  };
+}));
+
 app.get('/api/elective-sections/suggestions', (_req, res) => reply(res, () => ({ suggestions: [] })));
 
 app.put('/api/elective-sections/:id', (req, res) => reply(res, async () => {
@@ -927,6 +999,17 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   const candidateCount = Number.isFinite(requestedCandidateCount)
     ? Math.min(5, Math.max(1, Math.floor(requestedCandidateCount)))
     : 1;
+  // A previous timetable is a useful repair hint for ordinary incremental
+  // changes.  In Block mode, though, it can preserve an already scattered AP
+  // layer and prevent the compact-band objective from exploring a new global
+  // arrangement.  Manual gold-frame locks remain hard in either case.
+  const preservePriorTimetableAsHint = problem.diagnostics?.ap_block_mode?.enabled !== true;
+  const priorMeetings = preservePriorTimetableAsHint && state.solve_status === 'valid'
+    ? state.schedule?.meetings || []
+    : [];
+  const priorSections = preservePriorTimetableAsHint && state.solve_status === 'valid'
+    ? state.schedule?.sections || []
+    : [];
   const solveStartedAt = performance.now();
   const feasibleFirst = body.feasible_first !== false;
   const solution = feasibleFirst
@@ -936,8 +1019,8 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       randomSeed: Number.isInteger(body.random_seed) ? body.random_seed : 20260803,
       freezeMembership: body.lock_section_rosters === true,
       lockedMeetings,
-      hintMeetings: state.solve_status === 'valid' ? state.schedule?.meetings || [] : [],
-      hintSections: state.solve_status === 'valid' ? state.schedule?.sections || [] : [],
+      hintMeetings: priorMeetings,
+      hintSections: priorSections,
     })
     : await solveSchedule(guardedProblem, {
       maxTimeSeconds,
@@ -1348,6 +1431,66 @@ app.get('/api/schedule-archives/:archiveId/timetable/:by/:id', (req, res) => rep
   return { ...data, archived: true, archive: archiveSummary(archive) };
 }));
 
+// Student graduation is a once-per-year, irreversible active-roster change.
+// The preview is intentionally read-only; the confirmed write below also
+// checks the state revision so a stale browser dialog cannot delete a newer
+// import or timetable edit.
+app.get('/api/graduation/preview', (_req, res) => reply(res, () =>
+  graduationPreview(repository.read())));
+
+app.post('/api/graduation/confirm', (req, res) => reply(res, () => {
+  if (importText(req.body?.confirmation) !== GRADUATION_CONFIRMATION) {
+    throw new Error(`为防止误操作，请输入“${GRADUATION_CONFIRMATION}”后再确认学生毕业`);
+  }
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('毕业确认缺少有效的数据版本，请重新打开确认窗口');
+  }
+  const state = repository.read();
+  const result = graduateStudents(state, { confirmedBy: importText(req.body?.confirmed_by) || '管理员' });
+  const next = {
+    ...result.next,
+    // A timetable and its manual locks describe the previous school year.
+    // Keeping either active after cohort rollover would make the new data look
+    // valid while it still points at last year's students and sections.
+    assignments: [],
+    teaching_tasks: [],
+    section_plan: null,
+    section_overrides: {},
+    schedule: null,
+    manual_plan: emptyManualPlan(),
+    solve_status: 'not_run',
+  };
+  validateCourseGradeSelections(next);
+  validateCourseClassScopes(next);
+  const saved = repository.write(next, { expectedRevision });
+  return {
+    message: `已完成学生毕业：${result.archive.graduate_count} 名 Senior 3 学生已归档，当前学生已升入下一年级，所有在校学生的选修信息已清空。请导入新 Senior 1 名单和新学年选课后重新排课。`,
+    archive: graduationArchiveSummary(result.archive),
+    students: Object.fromEntries([10, 11, 12].map(grade => [
+      grade,
+      (saved.students || []).filter(student => Number(student.grade) === grade).length,
+    ])),
+    incoming_senior_1_slots: {
+      admin: (saved.admin_classes || []).filter(item => Number(item.grade) === 10).length,
+      teaching: (saved.teaching_classes || []).filter(item => Number(item.grade) === 10).length,
+    },
+    solve_status: saved.solve_status,
+  };
+}));
+
+app.get('/api/graduation-archives', (_req, res) => reply(res, () =>
+  (repository.read().graduation_archives || [])
+    .map(graduationArchiveSummary)
+    .sort((left, right) => String(right.graduated_at).localeCompare(String(left.graduated_at)))));
+
+app.get('/api/graduation-archives/:archiveId', (req, res) => reply(res, () => {
+  const archive = (repository.read().graduation_archives || [])
+    .find(item => item.id === req.params.archiveId);
+  if (!archive) throw new Error('未找到该批毕业学生选课信息');
+  return { ...structuredClone(archive), summary: graduationArchiveSummary(archive) };
+}));
+
 function parseUploadedWorkbook(workbook, filename, state) {
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error('工作簿没有工作表');
@@ -1461,7 +1604,7 @@ app.post('/api/ap-selections/import/preview', upload.single('file'), (req, res) 
     const ai = await interpretWorkbook(sourceWorkbook, {
       expectedType: 'ap_selections',
       filename,
-      reason: '用户点击“大模型整理”请求按系统标准整理 AP 多工作表选课文件',
+      reason: '用户点击“大模型整理”请求按系统标准整理 AP 多工作表、并排 Block 名单选课文件',
     });
     preview = parseApSelectionBuffer(
       XLSX.write(ai.workbook, { type: 'buffer', bookType: 'xlsx' }),
@@ -1648,6 +1791,8 @@ const editableEntities = new Set([
 function changedState(state, entity, items, extra = {}) {
   const normalizedItems = entity === 'courses'
     ? items.map(normalizeCourseScope)
+    : entity === 'ap_block_config'
+      ? normalizeApBlockConfig(items, state.courses || [])
     : items;
   let next = { ...state, ...extra, [entity]: normalizedItems };
   if (entity === 'students' || entity === 'admin_classes' || entity === 'teaching_classes') {
@@ -1658,6 +1803,7 @@ function changedState(state, entity, items, extra = {}) {
   if (entity === 'courses' || entity === 'students' || entity === 'selection_blocks') {
     validateCourseGradeSelections(next);
   }
+  if (entity === 'ap_block_config') buildSchedulingProblem(next, next.constraints || []);
   if (entity === 'courses' || entity === 'teaching_classes' || entity === 'teaching_assignments') {
     validateCourseClassScopes(next);
   }

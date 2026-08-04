@@ -48,3 +48,25 @@ test('can target students by their modeled weekly course load', () => {
 
   assert.deepEqual(compiled.target_ids, ['FULL']);
 });
+
+test('compiles a teacher unavailable-slot rule onto every section taught by that teacher', () => {
+  const state = {
+    teachers: [{ id: 'T1' }, { id: 'T2' }],
+  };
+  const sections = [
+    { id: 'T1_A', teacher_id: 'T1', class_type: 'teaching', student_ids: [] },
+    { id: 'T1_B', teacher_id: 'T1', class_type: 'ap', student_ids: [] },
+    { id: 'T2_A', teacher_id: 'T2', class_type: 'teaching', student_ids: [] },
+  ];
+  const [compiled] = compileRules(state, [{
+    id: 'teacher_unavailability_T1',
+    type: 'forbid_slots',
+    hard: true,
+    scope: 'teacher',
+    target_id: 'T1',
+    params: { slots: ['D2P3'] },
+  }], { sections });
+
+  assert.deepEqual(compiled.target_ids, ['T1']);
+  assert.deepEqual(compiled.section_target_ids.sort(), ['T1_A', 'T1_B']);
+});

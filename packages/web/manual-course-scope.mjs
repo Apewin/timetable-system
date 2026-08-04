@@ -6,6 +6,24 @@ function sameGrade(section, currentClass, classesById) {
 }
 
 /**
+ * Whether a course belongs in a particular manual-timetable course pool.
+ *
+ * The course editor is the source of truth for its grade range. A manual
+ * timetable must not offer a card merely because an older assignment or draft
+ * still happens to reference the course.
+ */
+export function courseAppliesToManualClass(course, currentClass) {
+  if (!course || !currentClass) return false;
+  const grade = Number(currentClass.grade);
+  const courseGrades = (Array.isArray(course.grade) ? course.grade : [course.grade])
+    .map(Number)
+    .filter(Number.isFinite);
+  if (!courseGrades.includes(grade)) return false;
+
+  return true;
+}
+
+/**
  * Returns the canonical sections that may be placed while viewing one class.
  * Administrative timetables are not selectable views, but their lessons must
  * remain available from every teaching-class view in the same grade.
@@ -78,35 +96,48 @@ export function manualPoolItemRemaining(item, sectionsById, usageCounts = new Ma
     .map(section => Math.max(0,
       Number(section.weekly_hours || 0) - Number(usageCounts.get(section.id) || 0)));
   if (!remainingBySection.length) return 0;
-  // A teaching-class card representing several administrative classes may be
-  // drawn for any one of those class sections, so its deck is their combined
-  // remaining inventory. Bundles consume all member sections together and are
-  // therefore limited by the first section that runs out.
-  return ((item.placement_scope === 'admin' && item.kind === 'course')
-      || item.deck_scope === 'grade_teaching')
-    ? remainingBySection.reduce((total, count) => total + count, 0)
-    : Math.min(...remainingBySection);
+  // An administrative-course card represents the course's weekly timetable
+  // slots, not the sum of every administrative class's physical lessons. For
+  // example, PE configured as two lessons a week remains a two-card course
+  // even when Senior 1 has two administrative classes. Individual class
+  // progress is shown separately and a card only disappears once every class
+  // has completed its own required lessons.
+  if (item.placement_scope === 'admin' && item.kind === 'course') {
+    return Math.max(...remainingBySection);
+  }
+  // Teaching-class required courses are a grade-wide deck: three teaching
+  // classes with two lessons each are six independent cards.
+  if (item.deck_scope === 'grade_teaching') {
+    return remainingBySection.reduce((total, count) => total + count, 0);
+  }
+  // Synchronized bundles consume every member section at once, therefore the
+  // first section that runs out determines the remaining capacity.
+  return Math.min(...remainingBySection);
 }
 
 /**
  * Weekly capacity represented by a card in the manual course deck.
  *
- * A generic administrative-course card is a shared deck for all eligible
- * administrative classes, so its capacity must be the sum of those sections.
- * Every other card keeps its per-section / synchronized-group capacity.
+ * An administrative-course card follows the course manager's weekly hours
+ * (one shared card per weekly timetable slot). Its individual administrative
+ * class sections remain independently validated elsewhere. Grade-wide
+ * teaching decks still sum the sections because those are independent cards.
  */
 export function manualPoolItemTotalHours(item, sectionsById) {
   if (!item) return 0;
-  const isCombinedDeck = (item.placement_scope === 'admin' && item.kind === 'course')
-    || item.deck_scope === 'grade_teaching';
-  if (!isCombinedDeck) {
-    return Number(item.weekly_hours || 0);
-  }
   const sectionHours = (item.section_ids || [])
     .map(sectionId => sectionsById.get(sectionId))
     .filter(Boolean)
     .map(section => Number(section.weekly_hours || 0));
-  return sectionHours.length
-    ? sectionHours.reduce((total, hours) => total + hours, 0)
-    : Number(item.weekly_hours || 0);
+  if (item.placement_scope === 'admin' && item.kind === 'course') {
+    return sectionHours.length
+      ? Math.max(...sectionHours)
+      : Number(item.weekly_hours || 0);
+  }
+  if (item.deck_scope === 'grade_teaching') {
+    return sectionHours.length
+      ? sectionHours.reduce((total, hours) => total + hours, 0)
+      : Number(item.weekly_hours || 0);
+  }
+  return Number(item.weekly_hours || 0);
 }

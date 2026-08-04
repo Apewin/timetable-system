@@ -189,6 +189,50 @@ test('calls the model once and validates its JSON response', async () => {
   assert.equal(result.interpretation.confidence, 0.95);
 });
 
+test('tells the AP workbook interpreter to merge side-by-side Block rosters into one course', async () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['AP Biology'],
+    ['', 'Senior 2&Senior 3 Class 2 - Block2', '', '', '', '', '', 'Senior 2&Senior 3 Class 3 - Block3'],
+    ['', 'No.', 'Name (Chinese)', 'Name (Pin Yin)', 'English Name', '', '', 'No.', 'Name (Chinese)'],
+    ['S2', 1, '张三', 'Zhang San', 'Alex', '', 'S2', 1, '李四'],
+  ]), 'AP Biology - 2 blocks');
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages[0].content;
+    assert.match(prompt, /横向并排放置两个或多个名单区块/);
+    assert.match(prompt, /预分班或并行 Block/);
+    assert.match(prompt, /合并到.*同一门 AP 课程/);
+    assert.match(prompt, /不得把 Block1、Block2、Class1、Class2 写进 title/);
+    assert.match(prompt, /只出现于 1 门或 2 门 AP 课程页是正常且完整的记录/);
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              document_type: 'ap_selections',
+              confidence: 0.92,
+              sheets: [{
+                name: 'AP Biology', title: 'AP Biology',
+                headers: ['Name (Chinese)', 'Name (Pinyin)', 'English Name'],
+                rows: [['张三', 'Zhang San', 'Alex'], ['李四', '', '']],
+              }],
+            }),
+          },
+        }],
+      }),
+    };
+  };
+  const result = await interpretWorkbook(workbook, {
+    expectedType: 'ap_selections',
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.equal(result.interpretation.sheets[0].rows.length, 2);
+  assert.equal(result.interpretation.sheets[0].title, 'AP Biology');
+});
+
 test('retries once when JSON mode returns an empty model response', async () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['名单']]), 'Raw');

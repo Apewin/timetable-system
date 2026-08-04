@@ -29,6 +29,34 @@ test('solves section time and student membership without assigning rooms', async
   assert.equal(validation.ok, true, JSON.stringify(validation.hard_violations));
 });
 
+test('keeps students in separate solver cohorts when their AP Block sections differ', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    sections: [
+      {
+        id: 'CORE', course_id: 'CORE', teacher_id: 'T_CORE', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1', 'S2'], eligible_student_ids: [],
+      },
+      {
+        id: 'BIO_BLOCK_1', course_id: 'AP_BIO', teacher_id: 'T_BIO_1', class_type: 'ap', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: ['S1'], ap_block_id: 'AP_BLOCK_1',
+      },
+      {
+        id: 'BIO_BLOCK_3', course_id: 'AP_BIO', teacher_id: 'T_BIO_3', class_type: 'ap', weekly_hours: 1,
+        student_ids: ['S2'], eligible_student_ids: ['S2'], ap_block_id: 'AP_BLOCK_3',
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5, useConstructiveSeed: false });
+
+  assert.equal(solution.ok, true, solution.reason);
+  assert.deepEqual(solution.sections.find(section => section.id === 'BIO_BLOCK_1')?.student_ids, ['S1']);
+  assert.deepEqual(solution.sections.find(section => section.id === 'BIO_BLOCK_3')?.student_ids, ['S2']);
+});
+
 test('keeps a locked section meeting at its locked slot', async () => {
   const problem = {
     slots,

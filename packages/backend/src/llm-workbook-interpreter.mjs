@@ -121,7 +121,14 @@ function schemaFor(expectedType, { courseCatalog = [] } = {}) {
     return '每个名单页输出 headers=["Student ID","Name (Chinese)","Name (Pinyin)","English Name","Teaching Class","Class"]；rows 按该顺序。不要推测缺失值。';
   }
   if (expectedType === 'ap_selections') {
-    return '每门 AP 课程一个 sheet；title 必须是课程标题；headers=["Name (Chinese)","Name (Pinyin)","English Name"]；rows 只包含该课程学生。';
+    return [
+      '每门 AP 课程一个输出 sheet；title 必须是课程标题；headers=["Name (Chinese)","Name (Pinyin)","English Name"]；rows 只包含该课程学生。',
+      '重点识别规则：同一张源工作表常常只对应一门 AP 课程，但会横向并排放置两个或多个名单区块。第一行通常是课程名，例如“AP Biology”；下一行可能在 B、H 等列分别写“Senior 2&Senior 3 Class 2 - Block2”“Senior 2&Senior 3 Class 3 - Block3”；每个区块各自有 No.、Name (Chinese)、Name (Pin Yin)、English Name 表头，并且可能在中途以 S2/S3 标记分隔两个年级。',
+      '这些“Class N / Block N”文字表示同一门 AP 课程的预分班或并行 Block，不是课程名称、不是另一张独立选课表，也不表示学生只能选择其中一门课。必须读取每个横向区块的全部姓名，并合并到该工作表第一行对应的同一门 AP 课程；输出时只保留一张该课程的标准名单 sheet。',
+      '不得把 Block1、Block2、Class1、Class2 写进 title，不得把 Block 当作课程，不得因同一学生出现在不同 Block 的不同课程页而删除其其他 AP 选课。跨工作表时，应按姓名累计学生实际出现的多门 AP 课程；同一课程内若姓名意外重复，只保留一行并在 notes 说明。',
+      'AP 门数是学生个人选择：学生只出现于 1 门或 2 门 AP 课程页是正常且完整的记录，不能据此补造第 3 门 AP、标记为漏选，或从排课名单中剔除。只导入表格中明确出现的课程。',
+      '区块前的 S2/S3 是年级标签，不是姓名；序号、空行、人数说明、班级/Block 标签均不得作为学生行。每一有效学生行需保留中文姓名；拼音、英文名如原表有则一并保留，没有则留空。不要根据 Block、班级或课程常识推测学生没有出现在表中的选课。',
+    ].join('\n');
   }
   if (expectedType === 'elective_selections') {
     return [

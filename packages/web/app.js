@@ -3,6 +3,7 @@
  */
 
 import {
+  courseAppliesToManualClass,
   manualPlacementScopeForSections,
   manualDeckSectionsForClassCourse,
   manualPoolItemRemaining,
@@ -383,6 +384,9 @@ async function loadViewData(viewName) {
     case 'import':
       initImportPage();
       break;
+    case 'graduation-archives':
+      await loadGraduationArchives();
+      break;
     case 'export':
       await loadExportPage();
       break;
@@ -391,6 +395,9 @@ async function loadViewData(viewName) {
       break;
     case 'manual-timetable':
       await loadManualTimetable();
+      break;
+    case 'teacher-availability':
+      await loadTeacherAvailability();
       break;
     case 'past-timetables':
       await loadPastTimetables();
@@ -432,7 +439,7 @@ function manualCourseLabel(course) {
 function manualCoursesForCurrentClass(courses) {
   const currentClass = window._manualClassesById?.get(manualCurrentClassId());
   if (!currentClass) return [];
-  return courses.filter(course => courseAppliesToGrade(course, currentClass.grade));
+  return courses.filter(course => courseAppliesToManualClass(course, currentClass));
 }
 
 function manualSectionsForCourse(classInfo, courseId) {
@@ -529,6 +536,7 @@ function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) 
         category,
         placement_scope: placementScope,
         deck_scope: usesGradeTeachingDeck ? 'grade_teaching' : 'class',
+        teacher_unassigned: sections.some(section => section.source === 'course_configuration' && !section.teacher_id),
         manual_unlimited: course.manual_unlimited === true,
       }];
       return sections.map((section, index) => ({
@@ -540,6 +548,7 @@ function manualCoursePoolItems(courses, selectionBlocks = [], classInfo = null) 
         weekly_hours: Number(course.weekly_hours) || 0,
         category,
         placement_scope: placementScope,
+        teacher_unassigned: !sections[0].teacher_id && sections[0].source === 'course_configuration',
         manual_unlimited: course.manual_unlimited === true,
       }));
     });
@@ -594,7 +603,7 @@ function manualItemsForClass(classId) {
   const classInfo = window._manualClassesById?.get(classId);
   if (!classInfo) return [];
   return manualCoursePoolItems(
-    (window._manualCourses || []).filter(course => courseAppliesToGrade(course, classInfo.grade)),
+    (window._manualCourses || []).filter(course => courseAppliesToManualClass(course, classInfo)),
     window._manualSelectionBlocks || [],
     classInfo,
   );
@@ -745,6 +754,33 @@ function manualRemainingUses(item, usageCounts = manualSectionUsageCounts()) {
   );
 }
 
+function manualAdministrativeAlternatives(item, classId, usageCounts = manualSectionUsageCounts()) {
+  const targetClass = window._manualClassesById?.get(classId);
+  const courseId = item?.course_ids?.length === 1 ? item.course_ids[0] : null;
+  if (!targetClass || targetClass.class_type !== 'admin' || !courseId) return [];
+  return (window._manualSections || [])
+    .filter(section => section.course_id === courseId
+      && section.class_type === 'admin'
+      && Number(section.grades?.[0]) === Number(targetClass.grade))
+    .map(section => ({
+      section,
+      classInfo: window._manualClassesById?.get(section.class_id),
+      remaining: Math.max(0, Number(section.weekly_hours || 0) - Number(usageCounts.get(section.id) || 0)),
+    }));
+}
+
+function manualCourseExhaustedMessage(item, classId, usageCounts = manualSectionUsageCounts()) {
+  const availableElsewhere = manualAdministrativeAlternatives(item, classId, usageCounts)
+    .filter(candidate => candidate.remaining > 0);
+  if (availableElsewhere.length) {
+    const targetName = window._manualClassesById?.get(classId)?.name || classId;
+    const elsewhere = availableElsewhere.map(candidate =>
+      `${candidate.classInfo?.name || candidate.section.class_id} 还剩 ${candidate.remaining} 节`).join('；');
+    return `${targetName}的“${item.name}”已经排完；${elsewhere}，请拖到对应行政班的分格`;
+  }
+  return '这门课的规定课时已经全部排完';
+}
+
 function renderManualCoursePool() {
   const pool = document.getElementById('manual-course-pool');
   const count = document.getElementById('manual-course-count');
@@ -760,6 +796,15 @@ function renderManualCoursePool() {
       current_class_remaining: item.deck_scope === 'grade_teaching'
         ? manualPoolItemRemaining({ ...item, section_ids: item.local_section_ids, deck_scope: 'class' }, sectionsById, usageCounts)
         : null,
+      administrative_progress: item.placement_scope === 'admin' && item.kind === 'course'
+        ? item.section_ids.map(sectionId => {
+          const section = sectionsById.get(sectionId);
+          return section ? {
+            className: window._manualClassesById?.get(section.class_id)?.name || section.class_id,
+            remaining: Math.max(0, Number(section.weekly_hours || 0) - Number(usageCounts.get(sectionId) || 0)),
+          } : null;
+        }).filter(Boolean)
+        : [],
     }))
     .map(item => ({
       ...item,
@@ -777,7 +822,7 @@ function renderManualCoursePool() {
     return `
     <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${locked || item.current_class_remaining === 0 ? 'is-disabled' : ''}" draggable="${locked || item.current_class_remaining === 0 ? 'false' : 'true'}" data-manual-item-id="${item.id}" data-manual-placement-scope="${item.placement_scope || 'class'}">
       <div class="manual-course-name">${item.name}</div>
-      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设 · 每组` : item.deck_scope === 'grade_teaching' ? '年级教学班合计' : item.placement_scope === 'admin' && item.kind === 'course' ? '行政班合计' : item.section_ids?.[0] || item.course_ids[0]}${item.remaining_uses === Infinity ? ' · 可重复安排' : ` · 每周 ${item.total_hours} 节 · 已排 ${item.scheduled_uses}/${item.total_hours} 节`}${item.current_class_remaining === 0 ? ' · 本班已排完' : item.current_class_remaining != null ? ` · 本班剩余 ${item.current_class_remaining} 节` : ''}<span class="manual-course-remaining">${item.remaining_uses === Infinity ? '不限次数' : `年级剩余 ${item.remaining_uses} 次`}</span></div>
+      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设 · 每组` : item.deck_scope === 'grade_teaching' ? '年级教学班合计' : item.placement_scope === 'admin' && item.kind === 'course' ? '行政班（每班）' : item.section_ids?.[0] || item.course_ids[0]}${item.teacher_unassigned ? ' · 待配教师' : ''}${item.remaining_uses === Infinity ? ' · 可重复安排' : item.placement_scope === 'admin' && item.kind === 'course' ? ` · 每班每周 ${item.total_hours} 节` : ` · 每周 ${item.total_hours} 节 · 已排 ${item.scheduled_uses}/${item.total_hours} 节`}${item.current_class_remaining === 0 ? ' · 本班已排完' : item.current_class_remaining != null ? ` · 本班剩余 ${item.current_class_remaining} 节` : ''}<span class="manual-course-remaining">${item.remaining_uses === Infinity ? '不限次数' : `年级剩余 ${item.remaining_uses} 次`}</span>${item.administrative_progress?.length ? `<span class="manual-course-admin-progress">${item.administrative_progress.map(progress => `${progress.className}：${progress.remaining ? `剩 ${progress.remaining} 节` : '已排完'}`).join(' · ')}</span>` : ''}</div>
     </div>
   `;
   }).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
@@ -893,7 +938,7 @@ function saveManualCourseToSlot(slotId, itemId, classId = manualCurrentClassId()
   if (!classId || !itemId || manualPlanIsConfirmed()) return;
   const item = manualStoredItem(itemId, classId);
   if (!item || manualRemainingUses(item) <= 0) {
-    showToast('这门课的规定课时已经全部排完', 'error');
+    showToast(item ? manualCourseExhaustedMessage(item, classId) : '课程项已不存在，请刷新页面', 'error');
     return;
   }
   const drafts = readManualDrafts();
@@ -1269,6 +1314,187 @@ async function loadManualTimetable() {
   renderManualTimetableGrid();
   renderManualPlanControls();
   if (!hydratedFromBackend && manualPlacementsFromDrafts().length) queueManualDraftSync();
+}
+
+const TEACHER_AVAILABILITY_RULE_SOURCE = 'teacher_availability_paint';
+const TEACHER_AVAILABILITY_RULE_PREFIX = 'teacher_unavailability_';
+const TEACHER_AVAILABILITY_DAYS = ['周一', '周二', '周三', '周四', '周五'];
+
+function teacherAvailabilityRuleId(teacherId) {
+  return `${TEACHER_AVAILABILITY_RULE_PREFIX}${teacherId}`;
+}
+
+function slotSort(left, right) {
+  const parse = value => {
+    const match = /^D(\d+)P(\d+)$/.exec(String(value));
+    return match ? [Number(match[1]), Number(match[2])] : [Infinity, Infinity];
+  };
+  const [leftDay, leftPeriod] = parse(left);
+  const [rightDay, rightPeriod] = parse(right);
+  return leftDay - rightDay || leftPeriod - rightPeriod || String(left).localeCompare(String(right));
+}
+
+function sameSlots(left = new Set(), right = new Set()) {
+  return left.size === right.size && [...left].every(slot => right.has(slot));
+}
+
+function selectedTeacherAvailabilityId() {
+  return document.getElementById('teacher-availability-select')?.value || '';
+}
+
+function teacherAvailabilitySlots(teacherId) {
+  const state = window._teacherAvailability;
+  if (!state || !teacherId) return new Set();
+  if (!state.drafts.has(teacherId)) {
+    state.drafts.set(teacherId, new Set(state.savedSlotsByTeacher.get(teacherId) || []));
+  }
+  return state.drafts.get(teacherId);
+}
+
+function teacherAvailabilityIsDirty(teacherId) {
+  const state = window._teacherAvailability;
+  return Boolean(teacherId && state && !sameSlots(
+    teacherAvailabilitySlots(teacherId),
+    state.savedSlotsByTeacher.get(teacherId) || new Set(),
+  ));
+}
+
+function renderTeacherAvailabilityGrid() {
+  const grid = document.getElementById('teacher-availability-grid');
+  if (!grid) return;
+  const teacherId = selectedTeacherAvailabilityId();
+  const slots = teacherAvailabilitySlots(teacherId);
+  let html = '<div class="header-cell">节次</div>';
+  for (const day of TEACHER_AVAILABILITY_DAYS) html += `<div class="header-cell">${day}</div>`;
+  for (let period = 1; period <= 10; period++) {
+    const session = period <= 5 ? '上午' : '下午';
+    html += `<div class="time-cell"><div>第${period}节</div><div style="font-size:10px;color:var(--gray-400)">${session}</div></div>`;
+    for (let day = 1; day <= 5; day++) {
+      const slotId = `D${day}P${period}`;
+      const unavailable = slots.has(slotId);
+      html += `<button type="button" class="slot-cell ${unavailable ? 'forbidden' : ''}" data-availability-slot="${slotId}" ${teacherId ? '' : 'disabled'} aria-pressed="${unavailable}" title="${teacherId ? `${unavailable ? '取消标记不可上课' : '标记为不可上课'}：${TEACHER_AVAILABILITY_DAYS[day - 1]}第${period}节` : '请先选择教师'}"></button>`;
+    }
+  }
+  grid.innerHTML = html;
+  grid.querySelectorAll('[data-availability-slot]').forEach(button => {
+    button.addEventListener('click', () => {
+      const selectedId = selectedTeacherAvailabilityId();
+      if (!selectedId) return showToast('请先选择教师', 'warning');
+      const selectedSlots = teacherAvailabilitySlots(selectedId);
+      const slotId = button.dataset.availabilitySlot;
+      if (selectedSlots.has(slotId)) selectedSlots.delete(slotId);
+      else selectedSlots.add(slotId);
+      renderTeacherAvailabilityGrid();
+      renderTeacherAvailabilityStatus();
+    });
+  });
+}
+
+function renderTeacherAvailabilityStatus() {
+  const teacherId = selectedTeacherAvailabilityId();
+  const count = document.getElementById('teacher-availability-count');
+  const status = document.getElementById('teacher-availability-status');
+  const save = document.getElementById('teacher-availability-save');
+  const clear = document.getElementById('teacher-availability-clear');
+  const state = window._teacherAvailability;
+  if (!count || !status || !save || !clear || !state) return;
+  if (!teacherId) {
+    count.textContent = '尚未选择教师';
+    status.className = 'teacher-availability-status';
+    status.textContent = '选择教师后，点击课表格子标记不可上课时段。保存后才会写入排课规则。';
+    save.disabled = true;
+    clear.disabled = true;
+    return;
+  }
+  const teacher = state.teachers.find(item => item.id === teacherId);
+  const slots = teacherAvailabilitySlots(teacherId);
+  const dirty = teacherAvailabilityIsDirty(teacherId);
+  count.textContent = `已标记 ${slots.size} 个时段${dirty ? ' · 尚未保存' : ''}`;
+  status.className = `teacher-availability-status${dirty ? ' is-dirty' : ''}`;
+  status.textContent = dirty
+    ? `${teacher?.name || teacherId} 的禁排时段已修改。保存后会使现有课表与手动必要条件进入待重新校验状态。`
+    : slots.size
+      ? `${teacher?.name || teacherId} 当前有 ${slots.size} 个已保存的硬性禁排时段；排课引擎不会在这些格子安排其课程。`
+      : `${teacher?.name || teacherId} 暂无已保存的禁排时段。`;
+  save.disabled = !dirty;
+  clear.disabled = slots.size === 0;
+}
+
+async function saveTeacherAvailability() {
+  const teacherId = selectedTeacherAvailabilityId();
+  const state = window._teacherAvailability;
+  if (!teacherId || !state) return showToast('请先选择教师', 'warning');
+  const teacher = state.teachers.find(item => item.id === teacherId);
+  const slots = [...teacherAvailabilitySlots(teacherId)].sort(slotSort);
+  const ruleId = teacherAvailabilityRuleId(teacherId);
+  const existing = state.rulesByTeacher.get(teacherId);
+  if (slots.length) {
+    const rule = {
+      id: ruleId,
+      name: `${teacher?.name || teacherId} 不可上课时段`,
+      type: 'forbid_slots',
+      scope: 'teacher',
+      target_id: teacherId,
+      hard: true,
+      params: { slots },
+      source: TEACHER_AVAILABILITY_RULE_SOURCE,
+    };
+    await api(existing ? `/constraints/${encodeURIComponent(ruleId)}` : '/constraints', {
+      method: existing ? 'PUT' : 'POST',
+      body: JSON.stringify(rule),
+    });
+    state.rulesByTeacher.set(teacherId, rule);
+    state.savedSlotsByTeacher.set(teacherId, new Set(slots));
+  } else if (existing) {
+    await api(`/constraints/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+    state.rulesByTeacher.delete(teacherId);
+    state.savedSlotsByTeacher.delete(teacherId);
+  }
+  state.drafts.set(teacherId, new Set(slots));
+  renderTeacherAvailabilityStatus();
+  showToast(slots.length
+    ? `已保存 ${teacher?.name || teacherId} 的 ${slots.length} 个禁排时段`
+    : `已移除 ${teacher?.name || teacherId} 的禁排规则`);
+}
+
+async function loadTeacherAvailability() {
+  const [teachers, constraints] = await Promise.all([api('/teachers'), api('/constraints')]);
+  const previousTeacherId = selectedTeacherAvailabilityId();
+  const managedRules = constraints.filter(rule =>
+    rule.source === TEACHER_AVAILABILITY_RULE_SOURCE
+      && rule.type === 'forbid_slots'
+      && rule.scope === 'teacher'
+      && rule.hard === true
+      && typeof rule.target_id === 'string');
+  const savedSlotsByTeacher = new Map(managedRules.map(rule => [rule.target_id, new Set(rule.params?.slots || [])]));
+  const rulesByTeacher = new Map(managedRules.map(rule => [rule.target_id, rule]));
+  const priorDrafts = window._teacherAvailability?.drafts || new Map();
+  const teacherIds = new Set(teachers.map(teacher => teacher.id));
+  const drafts = new Map([...priorDrafts]
+    .filter(([teacherId]) => teacherIds.has(teacherId))
+    .map(([teacherId, slots]) => [teacherId, new Set(slots)]));
+  window._teacherAvailability = { teachers, savedSlotsByTeacher, rulesByTeacher, drafts };
+
+  const selector = document.getElementById('teacher-availability-select');
+  selector.innerHTML = '<option value="">选择教师</option>'
+    + teachers.map(teacher => `<option value="${teacher.id}">${teacher.name} (${teacher.id})</option>`).join('');
+  if (teachers.some(teacher => teacher.id === previousTeacherId)) selector.value = previousTeacherId;
+  selector.onchange = () => {
+    renderTeacherAvailabilityGrid();
+    renderTeacherAvailabilityStatus();
+  };
+  document.getElementById('teacher-availability-clear').onclick = () => {
+    const teacherId = selectedTeacherAvailabilityId();
+    if (!teacherId) return showToast('请先选择教师', 'warning');
+    const teacher = window._teacherAvailability.teachers.find(item => item.id === teacherId);
+    if (!teacherAvailabilitySlots(teacherId).size || !confirm(`清空 ${teacher?.name || teacherId} 的全部禁排时段吗？点击“保存禁排时段”后才会生效。`)) return;
+    window._teacherAvailability.drafts.set(teacherId, new Set());
+    renderTeacherAvailabilityGrid();
+    renderTeacherAvailabilityStatus();
+  };
+  document.getElementById('teacher-availability-save').onclick = () => saveTeacherAvailability().catch(() => {});
+  renderTeacherAvailabilityGrid();
+  renderTeacherAvailabilityStatus();
 }
 
 function formatArchiveDateTime(value) {
@@ -2860,8 +3086,20 @@ function renderElectiveSelectionsList(data) {
 // 加载分班管理
 async function loadSectioning() {
   try {
-    const sections = await api('/elective-sections');
+    const [sections, apBlockData, teachers, students] = await Promise.all([
+      api('/elective-sections'),
+      api('/ap-block-config'),
+      api('/teachers'),
+      api('/students'),
+    ]);
     window._sectioningData = sections;
+    window._apBlockData = apBlockData;
+    window._apBlockConfig = apBlockData.config;
+    // 分班管理可被直接打开，不能依赖用户先访问“教师管理”或“学生管理”
+    // 才能解析教师和学生 ID。
+    window._teachersData = teachers;
+    window._studentsData = students;
+    renderSectioningMode(apBlockData);
     renderSectioningList(sections);
 
     // 绑定按钮事件
@@ -2873,6 +3111,158 @@ async function loadSectioning() {
   }
 }
 
+function blockSlotLabel(slotId) {
+  const match = /^D(\d+)P(\d+)$/.exec(String(slotId || ''));
+  if (!match) return slotId;
+  return `周${['', '一', '二', '三', '四', '五'][Number(match[1])] || match[1]}第${match[2]}节`;
+}
+
+function blockSlotsText(slots = []) {
+  return slots.length ? slots.map(blockSlotLabel).join('、') : '由排课引擎安排';
+}
+
+function renderSectioningMode(data) {
+  const target = document.getElementById('sectioning-mode');
+  if (!target) return;
+  const config = data.config;
+  const enabled = config.enabled === true;
+  target.innerHTML = `
+    <div class="sectioning-mode-copy">
+      <div class="sectioning-mode-heading">
+        <h3>AP 分班模式</h3>
+        <span class="sectioning-mode-badge ${enabled ? 'is-block' : ''}">${enabled ? 'Block 模式已启用' : '普通平行分班'}</span>
+      </div>
+      <p>${enabled
+    ? '每名学生的已选 AP 会分配到不同 Block；同一 Block 的 section 使用同一组时段。'
+    : '按每门课程的 Section 数量生成普通平行班。启用 Block 后会重新生成 AP section，并使已有课表失效。'}</p>
+      ${enabled ? `<div class="sectioning-block-summary">${config.blocks.map(block =>
+    `<span><strong>${block.name}</strong>：${blockSlotsText(block.slots)}</span>`).join('')}</div>` : ''}
+    </div>
+    <div class="sectioning-mode-actions">
+      <label for="sectioning-mode-select">模式</label>
+      <select id="sectioning-mode-select" class="select">
+        <option value="standard" ${enabled ? '' : 'selected'}>普通平行分班</option>
+        <option value="block" ${enabled ? 'selected' : ''}>AP Block 分班</option>
+      </select>
+      <button id="btn-configure-ap-blocks" class="btn btn-secondary" type="button">配置 Block</button>
+    </div>
+  `;
+  document.getElementById('sectioning-mode-select').onchange = async event => {
+    const nextEnabled = event.target.value === 'block';
+    if (nextEnabled === enabled) return;
+    const action = nextEnabled ? '启用 AP Block 分班' : '切回普通 AP 平行分班';
+    if (!confirm(`确定${action}吗？这会重新生成 AP section，并将现有课表与手动必要条件标记为需要重新排课。`)) {
+      event.target.value = enabled ? 'block' : 'standard';
+      return;
+    }
+    try {
+      const result = await api('/ap-block-config', {
+        method: 'PUT',
+        body: JSON.stringify({ ...config, enabled: nextEnabled }),
+      });
+      showToast(result.message);
+      await loadSectioning();
+    } catch (error) {
+      event.target.value = enabled ? 'block' : 'standard';
+    }
+  };
+  document.getElementById('btn-configure-ap-blocks').onclick = () => configureApBlocks(data);
+}
+
+function configureApBlocks(data) {
+  const { config, offerings = [] } = data;
+  const allBlockIds = config.blocks.map(block => block.id);
+  showModal('配置 AP Block', `
+    <form id="form-ap-block-config">
+      <p class="form-help">候选 Block 决定某门 AP 课可以在哪些 Block 开班；引擎会结合学生已选课程，最多按该课程的 Section 数生成班级，并保证同一学生不在同一 Block 上两门 AP。</p>
+      <div class="ap-block-config-grid">
+        ${config.blocks.map(block => `
+          <div class="ap-block-config-card">
+            <label>Block 名称
+              <input class="input" data-block-name="${block.id}" value="${block.name}">
+            </label>
+            <div class="ap-block-id">${block.id}</div>
+            <label>固定时段
+              <input class="input" data-block-slots="${block.id}" value="${block.slots.join(', ')}" placeholder="D1P3, D2P2, ...">
+            </label>
+            <small>留空则由排课引擎选择；填写后必须与该 Block 中 AP 课程的周课时一致。</small>
+          </div>
+        `).join('')}
+      </div>
+      <div class="form-group">
+        <label>课程候选 Block</label>
+        <div class="ap-block-course-matrix">
+          <table>
+            <thead><tr><th>AP 课程</th><th>周课时</th>${config.blocks.map(block => `<th>${block.name}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${offerings.map(offering => {
+    const selected = config.offering_block_ids?.[offering.id]
+      || config.course_block_ids[offering.course_id]
+      || allBlockIds;
+    return `<tr>
+                  <td>${offering.name}</td><td>${offering.weekly_hours}</td>
+                  ${config.blocks.map(block => `<td><label class="block-course-check"><input type="checkbox" data-offering-id="${offering.id}" data-candidate-block-id="${block.id}" ${selected.includes(block.id) ? 'checked' : ''}> 可用</label></td>`).join('')}
+                </tr>`;
+  }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+        <button type="submit" class="btn btn-primary">保存 Block 配置</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('form-ap-block-config').addEventListener('submit', async event => {
+    event.preventDefault();
+    const blocks = config.blocks.map(block => ({
+      id: block.id,
+      name: document.querySelector(`[data-block-name="${block.id}"]`).value.trim(),
+      slots: document.querySelector(`[data-block-slots="${block.id}"]`).value
+        .split(/[\s,，]+/).map(value => value.trim()).filter(Boolean),
+    }));
+    const courseBlockIds = {};
+    const offeringBlockIds = {};
+    for (const offering of offerings) {
+      const selected = [...document.querySelectorAll(`[data-offering-id="${offering.id}"]:checked`)]
+        .map(input => input.dataset.candidateBlockId);
+      if (!selected.length) {
+        showToast(`${offering.name} 至少需要一个候选 Block`, 'error');
+        return;
+      }
+      if (offering.id === offering.course_id) courseBlockIds[offering.course_id] = selected;
+      else offeringBlockIds[offering.id] = selected;
+    }
+    try {
+      const result = await api('/ap-block-config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: config.enabled,
+          blocks,
+          course_block_ids: courseBlockIds,
+          offering_block_ids: offeringBlockIds,
+        }),
+      });
+      hideModal();
+      showToast(result.message);
+      await loadSectioning();
+    } catch {
+      // api() has already shown the actionable backend validation message.
+    }
+  });
+}
+
+function renderSectioningStats(statistics) {
+  const statsDiv = document.getElementById('sectioning-stats');
+  statsDiv.innerHTML = `
+    <div class="stat-item"><div class="stat-label">AP选修班</div><div class="stat-value">${statistics.ap_sections}</div></div>
+    <div class="stat-item"><div class="stat-label">必修选修班</div><div class="stat-value">${statistics.elective_sections}</div></div>
+    <div class="stat-item"><div class="stat-label">总班级数</div><div class="stat-value">${statistics.total_sections}</div></div>
+    <div class="stat-item"><div class="stat-label">教学任务</div><div class="stat-value">${statistics.total_tasks}</div></div>
+  `;
+}
+
 async function solveSections() {
   if (!confirm('确定要运行分班引擎吗？这将重新分配所有选修课班级。')) {
     return;
@@ -2882,25 +3272,7 @@ async function solveSections() {
     const result = await api('/solve-sections', { method: 'POST' });
 
     // 显示统计信息
-    const statsDiv = document.getElementById('sectioning-stats');
-    statsDiv.innerHTML = `
-      <div class="stat-item">
-        <div class="stat-label">AP选修班</div>
-        <div class="stat-value">${result.statistics.ap_sections}</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">必修选修班</div>
-        <div class="stat-value">${result.statistics.elective_sections}</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">总班级数</div>
-        <div class="stat-value">${result.statistics.total_sections}</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">教学任务</div>
-        <div class="stat-value">${result.statistics.total_tasks}</div>
-      </div>
-    `;
+    renderSectioningStats(result.statistics);
 
     showToast('分班完成！');
     loadSectioning();
@@ -2942,16 +3314,36 @@ function renderSectioningList(sections) {
 
   let html = '';
 
-  // AP选修班
+  // AP选修班. In Block mode, grouping by Block makes the time-band meaning
+  // visible instead of looking like unrelated parallel classes.
   if (apSections.length > 0) {
-    html += `
-      <div class="section-group">
-        <h3>AP选修班 (${apSections.length}个班)</h3>
-        <div class="sections-grid">
-          ${apSections.map(section => renderSectionCard(section)).join('')}
+    if (window._apBlockConfig?.enabled) {
+      const blocks = window._apBlockConfig.blocks || [];
+      const byBlock = new Map();
+      for (const section of apSections) {
+        const list = byBlock.get(section.ap_block_id || 'UNASSIGNED') || [];
+        list.push(section);
+        byBlock.set(section.ap_block_id || 'UNASSIGNED', list);
+      }
+      html += `<div class="section-group"><h3>AP Block 分班 (${apSections.length}个班)</h3>`;
+      for (const block of blocks) {
+        const sectionsInBlock = byBlock.get(block.id) || [];
+        html += `<div class="ap-block-section-group">
+          <div class="ap-block-section-heading"><strong>${block.name}</strong><span>${blockSlotsText(block.slots)}</span><em>${sectionsInBlock.length} 个 section</em></div>
+          <div class="sections-grid">${sectionsInBlock.map(section => renderSectionCard(section)).join('') || '<div class="empty-state">该 Block 暂无已选 AP 课程</div>'}</div>
+        </div>`;
+      }
+      html += '</div>';
+    } else {
+      html += `
+        <div class="section-group">
+          <h3>AP选修班 (${apSections.length}个班)</h3>
+          <div class="sections-grid">
+            ${apSections.map(section => renderSectionCard(section)).join('')}
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }
   }
 
   // 必修选修班
@@ -2973,6 +3365,7 @@ function renderSectionCard(section) {
   const courses = window._coursesData || [];
   const course = courses.find(c => c.id === section.course_id);
   const teacher = window._teachersData?.find(t => t.id === section.teacher_id);
+  const rosterById = new Map((section.student_roster || []).map(student => [student.id, student]));
 
   return `
     <div class="section-card" id="section-${section.id}">
@@ -2983,14 +3376,15 @@ function renderSectionCard(section) {
       <div class="section-body">
         <div class="section-info">
           <div>班级: ${section.id}</div>
-          <div>教师: ${teacher?.name || '待分配'}</div>
+          <div>教师: ${section.teacher_name || teacher?.name || '待分配'}</div>
           <div>课时: ${section.weekly_hours}节/周</div>
+          ${section.ap_block_name ? `<div>Block: ${section.ap_block_name}</div>` : ''}
         </div>
         <div class="section-students">
           <div class="students-header">学生列表:</div>
           <div class="students-list">
             ${section.student_ids.slice(0, 10).map(id => {
-              const student = window._studentsData?.find(s => s.id === id);
+              const student = rosterById.get(id) || window._studentsData?.find(s => s.id === id);
               return `<span class="student-tag">${student?.name || id}</span>`;
             }).join('')}
             ${section.student_ids.length > 10 ? `<span class="student-tag more">+${section.student_ids.length - 10}人</span>` : ''}
@@ -3011,6 +3405,7 @@ window.editSection = function(sectionId) {
 
   const courses = window._coursesData || [];
   const teachers = window._teachersData || [];
+  const rosterById = new Map((section.student_roster || []).map(student => [student.id, student]));
 
   showModal('编辑分班 - ' + section.course_name, `
     <form id="form-edit-section">
@@ -3035,7 +3430,7 @@ window.editSection = function(sectionId) {
         <label>学生 (${section.student_ids.length}人)</label>
         <div style="max-height: 200px; overflow-y: auto; border: 1px solid var(--gray-300); border-radius: var(--radius); padding: 8px;">
           ${section.student_ids.map(id => {
-            const student = window._studentsData?.find(s => s.id === id);
+            const student = rosterById.get(id) || window._studentsData?.find(s => s.id === id);
             return `<div style="padding: 4px 0; display: flex; justify-content: space-between; align-items: center;">
               <span>${student?.name || id}</span>
               <button type="button" class="btn btn-secondary btn-sm" onclick="moveStudentToSection('${section.id}', '${id}')">转至平行班</button>
@@ -3074,6 +3469,7 @@ window.editSection = function(sectionId) {
 window.viewSectionStudents = function(sectionId) {
   const section = window._sectioningData?.find(s => s.id === sectionId);
   if (!section) return;
+  const rosterById = new Map((section.student_roster || []).map(student => [student.id, student]));
 
   showModal('学生列表 - ' + section.course_name, `
     <div style="max-height: 400px; overflow-y: auto;">
@@ -3090,7 +3486,7 @@ window.viewSectionStudents = function(sectionId) {
         </thead>
         <tbody>
           ${section.student_ids.map(id => {
-            const student = window._studentsData?.find(s => s.id === id);
+            const student = rosterById.get(id) || window._studentsData?.find(s => s.id === id);
             return `
               <tr>
                 <td>${id}</td>
@@ -4812,6 +5208,7 @@ function getCurrentView() {
 const AI_ASSISTANT_VIEW_LABELS = {
   welcome: '首页',
   'manual-timetable': '排课表',
+  'teacher-availability': '涂课表',
   'past-timetables': '过往课表',
   'overview-timetable': '总课表概览',
   'class-timetable': '按班级查看',
@@ -4830,6 +5227,7 @@ const AI_ASSISTANT_VIEW_LABELS = {
   sectioning: '分班管理',
   constraints: '约束管理',
   import: '数据导入',
+  'graduation-archives': '毕业学生选课信息',
   export: '导出课表',
   settings: '系统设置',
   status: '系统状态',
@@ -8107,6 +8505,180 @@ async function loadSettingsPage() {
     console.error('加载设置页面失败:', error);
   }
 }
+
+function graduationEscapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function graduationCourseName(courseId, coursesById) {
+  return coursesById.get(courseId)?.name || courseId || '—';
+}
+
+function graduationCourseList(courseIds, coursesById) {
+  const names = (courseIds || []).filter(Boolean).map(courseId => graduationCourseName(courseId, coursesById));
+  return names.length ? names.join('、') : '—';
+}
+
+function graduationElectiveChoices(choices, coursesById) {
+  const entries = Object.entries(choices || {}).filter(([, courseId]) => courseId);
+  if (!entries.length) return '—';
+  return entries.map(([group, courseId]) => {
+    const label = group.replace(/^group_/i, '').toUpperCase() || group;
+    return `${label} 组：${graduationCourseName(courseId, coursesById)}`;
+  }).join('；');
+}
+
+function graduationMatches(student, coursesById, keyword) {
+  if (!keyword) return true;
+  const searchable = [
+    student.student_id,
+    student.chinese_name,
+    student.english_name,
+    student.pinyin_name,
+    student.admin_class_id,
+    student.teaching_class_id,
+    graduationCourseList(student.ap_courses, coursesById),
+    graduationCourseList(student.elective_courses, coursesById),
+    graduationElectiveChoices(student.elective_choices, coursesById),
+  ].join(' ').toLowerCase();
+  return searchable.includes(keyword.toLowerCase());
+}
+
+function renderGraduationArchive() {
+  const content = document.getElementById('graduation-archives-content');
+  const detail = window._graduationArchiveDetail;
+  const keyword = document.getElementById('search-graduation-students')?.value.trim() || '';
+  if (!detail) {
+    content.textContent = '请选择一份毕业归档。';
+    return;
+  }
+  const summary = detail.summary || {};
+  const coursesById = new Map((detail.course_catalog || []).map(course => [course.id, course]));
+  const students = (detail.students || [])
+    .filter(student => graduationMatches(student, coursesById, keyword))
+    .sort((left, right) => String(left.student_id).localeCompare(String(right.student_id), 'zh-CN', { numeric: true }));
+  const rows = students.map(student => `
+    <tr>
+      <td>${graduationEscapeHtml(student.student_id)}</td>
+      <td>${graduationEscapeHtml(student.chinese_name)}</td>
+      <td>${graduationEscapeHtml(student.english_name || '—')}</td>
+      <td>${graduationEscapeHtml(student.admin_class_id || '—')}<br><span class="graduation-muted">${graduationEscapeHtml(student.teaching_class_id || '—')}</span></td>
+      <td>${graduationEscapeHtml(graduationCourseList(student.ap_courses, coursesById))}</td>
+      <td>${graduationEscapeHtml(graduationCourseList(student.elective_courses, coursesById))}</td>
+      <td>${graduationEscapeHtml(graduationElectiveChoices(student.elective_choices, coursesById))}</td>
+    </tr>`).join('');
+  content.innerHTML = `
+    <div class="graduation-summary-grid">
+      <div class="graduation-summary-card"><span>毕业学生</span><strong>${Number(summary.graduate_count) || 0} 人</strong></div>
+      <div class="graduation-summary-card"><span>AP 选课记录</span><strong>${Number(summary.ap_course_entries) || 0} 条</strong></div>
+      <div class="graduation-summary-card"><span>其他选修记录</span><strong>${Number(summary.elective_course_entries) || 0} 条</strong></div>
+      <div class="graduation-summary-card"><span>高三选修选择</span><strong>${Number(summary.elective_choice_entries) || 0} 条</strong></div>
+      <div class="graduation-summary-card"><span>归档时间</span><strong>${graduationEscapeHtml(String(summary.graduated_at || '').replace('T', ' ').slice(0, 19) || '—')}</strong></div>
+    </div>
+    <p class="graduation-archive-note">确认人：${graduationEscapeHtml(summary.confirmed_by || '管理员')}。当前显示 ${students.length}/${(detail.students || []).length} 名毕业学生；当时在校学生的 ${Number(summary.cleared_active_selection_entries) || 0} 条选修信息已按新学年规则清空。</p>
+    <div class="table-container graduation-table-container">
+      <table class="graduation-table">
+        <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>毕业时班级<br><span>行政班 / 教学班</span></th><th>AP 选课</th><th>其他选修</th><th>高三选修</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="7" class="empty-cell">没有匹配的毕业学生</td></tr>'}</tbody>
+      </table>
+    </div>
+    `;
+}
+
+async function loadGraduationArchiveDetail(archiveId) {
+  if (!archiveId) {
+    window._graduationArchiveDetail = null;
+    renderGraduationArchive();
+    return;
+  }
+  document.getElementById('graduation-archives-content').textContent = '正在加载毕业学生选课快照…';
+  window._graduationArchiveDetail = await api(`/graduation-archives/${encodeURIComponent(archiveId)}`);
+  renderGraduationArchive();
+}
+
+async function loadGraduationArchives() {
+  const [archives] = await Promise.all([api('/graduation-archives')]);
+  const selector = document.getElementById('select-graduation-archive');
+  const search = document.getElementById('search-graduation-students');
+  const previous = selector.value;
+  selector.innerHTML = archives.length
+    ? archives.map(archive => `<option value="${graduationEscapeHtml(archive.id)}">${graduationEscapeHtml(archive.name)} · ${archive.graduate_count || 0} 人</option>`).join('')
+    : '<option value="">暂无毕业归档</option>';
+  selector.disabled = !archives.length;
+  search.disabled = !archives.length;
+  search.value = '';
+  selector.onchange = () => loadGraduationArchiveDetail(selector.value);
+  search.oninput = renderGraduationArchive;
+  if (!archives.length) {
+    window._graduationArchiveDetail = null;
+    document.getElementById('graduation-archives-content').innerHTML = '<div class="empty-state">暂无毕业学生选课信息。完成“系统设置 → 学生毕业”后，原 Senior 3 学生的选课快照会出现在这里。</div>';
+    return;
+  }
+  const selected = archives.some(archive => archive.id === previous) ? previous : archives[0].id;
+  selector.value = selected;
+  await loadGraduationArchiveDetail(selected);
+}
+
+window.openStudentGraduationConfirmation = async function() {
+  const button = document.getElementById('btn-student-graduation');
+  button.disabled = true;
+  try {
+    const preview = await api('/graduation/preview');
+    const selectionTotals = preview.preserved_graduate_selection_totals || {};
+    const activeSelectionTotals = preview.active_selection_totals_to_clear || {};
+    const resets = (preview.resets || []).map(item => `<li>${graduationEscapeHtml(item)}</li>`).join('');
+    showModal('确认学生毕业', `
+      <div class="graduation-confirmation">
+        <p class="graduation-danger-copy"><strong>请管理员确认：</strong>这是每学年一次的操作，确认后会立即变更当前学生库。</p>
+        <div class="graduation-confirmation-counts">
+          <span>归档 Senior 3：<strong>${Number(preview.graduating_students) || 0} 人</strong></span>
+          <span>Senior 1 → Senior 2：<strong>${Number(preview.promoted_students?.senior_1_to_senior_2) || 0} 人</strong></span>
+          <span>Senior 2 → Senior 3：<strong>${Number(preview.promoted_students?.senior_2_to_senior_3) || 0} 人</strong></span>
+        </div>
+        <p>毕业学生选课会保存 ${Number(selectionTotals.ap_course_entries) || 0} 条 AP 记录、${Number(selectionTotals.elective_course_entries) || 0} 条其他选修记录和 ${Number(selectionTotals.elective_choice_entries) || 0} 条高三选修选择。</p>
+        <p class="graduation-danger-copy"><strong>新学年重新选课：</strong>继续在校学生的全部选修信息将清空（${Number(activeSelectionTotals.ap_course_entries) || 0} 条 AP、${Number(activeSelectionTotals.elective_course_entries) || 0} 条其他选修、${Number(activeSelectionTotals.elective_choice_entries) || 0} 条 A/B/C 选课组）。</p>
+        <ul class="graduation-reset-list">${resets}</ul>
+        <label class="form-group">管理员姓名（选填）<input id="graduation-confirmed-by" class="input" maxlength="80" placeholder="例如：教务处管理员"></label>
+        <label class="form-group">请输入 <strong>${graduationEscapeHtml(preview.confirmation_phrase)}</strong> 以确认<input id="graduation-confirmation-input" class="input" autocomplete="off" placeholder="${graduationEscapeHtml(preview.confirmation_phrase)}"></label>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-graduation">取消</button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-graduation" disabled>确认学生毕业</button>
+        </div>
+      </div>`);
+    const confirmationInput = document.getElementById('graduation-confirmation-input');
+    const confirmButton = document.getElementById('btn-confirm-graduation');
+    document.getElementById('btn-cancel-graduation').onclick = hideModal;
+    confirmationInput.oninput = () => {
+      confirmButton.disabled = confirmationInput.value.trim() !== preview.confirmation_phrase;
+    };
+    confirmButton.onclick = async () => {
+      confirmButton.disabled = true;
+      try {
+        const result = await api('/graduation/confirm', {
+          method: 'POST',
+          body: JSON.stringify({
+            confirmation: confirmationInput.value.trim(),
+            confirmed_by: document.getElementById('graduation-confirmed-by').value.trim() || '管理员',
+            expected_revision: preview.expected_revision,
+          }),
+        });
+        hideModal();
+        showToast(`${result.message} 已保留 ${result.incoming_senior_1_slots?.admin || 0} 个 Senior 1 行政班槽位和 ${result.incoming_senior_1_slots?.teaching || 0} 个教学班槽位。`, 'success');
+        await switchView('graduation-archives');
+      } catch {
+        confirmButton.disabled = false;
+      }
+    };
+    confirmationInput.focus();
+  } finally {
+    button.disabled = false;
+  }
+};
 
 // 加载设置
 async function loadSettings() {

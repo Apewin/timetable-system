@@ -44,6 +44,14 @@ export function constructInitialSchedule(problem, { lockedMeetings = [] } = {}) 
   for (const rule of problem.rules || []) if (rule.hard && rule.type === 'fixed_slots') {
     for (const sectionId of sectionIdsForRule(rule, sections)) fixedBySection.set(sectionId, rule.params.slots);
   }
+  const forbiddenBySection = new Map();
+  for (const rule of problem.rules || []) if (rule.hard && rule.type === 'forbid_slots') {
+    for (const sectionId of sectionIdsForRule(rule, sections)) {
+      const slots = forbiddenBySection.get(sectionId) || new Set();
+      for (const slotId of rule.params.slots || []) slots.add(slotId);
+      forbiddenBySection.set(sectionId, slots);
+    }
+  }
   const lockedBySection = new Map();
   for (const lock of lockedMeetings) {
     if (!sectionNodes.has(lock.section_id) && !sections.some(section => section.id === lock.section_id)) return null;
@@ -93,7 +101,12 @@ export function constructInitialSchedule(problem, { lockedMeetings = [] } = {}) 
     const used = new Set([...node.neighbours].filter(other => other.color).map(other => other.color));
     const ownDays = dayUse.get(node.section.id) || new Set();
     const daily = dailyCourseIds.has(node.section.course_id);
-    return problem.slots.filter(slot => !used.has(slot.id) && (!daily || !ownDays.has(slot.day)) && (!node.fixedSlot || node.fixedSlot === slot.id));
+    const forbidden = forbiddenBySection.get(node.section.id) || new Set();
+    return problem.slots.filter(slot =>
+      !used.has(slot.id)
+      && !forbidden.has(slot.id)
+      && (!daily || !ownDays.has(slot.day))
+      && (!node.fixedSlot || node.fixedSlot === slot.id));
   };
   let remaining = new Set(nodes);
   while (remaining.size) {

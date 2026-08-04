@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  courseAppliesToManualClass,
   manualPlacementScopeForSections,
   manualDeckSectionsForClassCourse,
   manualPoolItemTotalHours,
@@ -33,6 +34,17 @@ test('a teaching-class timetable keeps same-grade administrative courses in its 
 
   assert.deepEqual(visible.map(section => section.id), ['ADMIN_AC1', 'ADMIN_AC2']);
   assert.equal(shouldCollapseAdminSections(visible, currentClass), true);
+});
+
+test('the manual course pool follows the course editor grade scope', () => {
+  const seniorOneCourse = { id: 'S1_ONLY', grade: 10 };
+  const crossGradeCourse = { id: 'CROSS_GRADE', grade: [11, 12] };
+
+  assert.equal(courseAppliesToManualClass(seniorOneCourse, classes.get('TC_G10_1')), true);
+  assert.equal(courseAppliesToManualClass(seniorOneCourse, classes.get('AC3')), false);
+  assert.equal(courseAppliesToManualClass(crossGradeCourse, {
+    id: 'TC_G11_2', grade: 11, class_type: 'teaching',
+  }), true);
 });
 
 test('a teaching required-course deck totals every applicable teaching class in the grade', () => {
@@ -102,7 +114,7 @@ test('a finite course card is exhausted after all of its weekly occurrences are 
   assert.equal(manualPoolItemRemaining(item, sectionsById, new Map([['SEC_MATH', 2]])), 0);
 });
 
-test('an administrative course card displays the combined weekly capacity it draws from', () => {
+test('an administrative course card follows its per-class weekly capacity', () => {
   const item = {
     id: 'GUIDANCE',
     kind: 'course',
@@ -115,7 +127,15 @@ test('an administrative course card displays the combined weekly capacity it dra
     ['SEC_GUIDANCE_AC2', { id: 'SEC_GUIDANCE_AC2', weekly_hours: 2 }],
   ]);
 
-  assert.equal(manualPoolItemTotalHours(item, sectionsById), 4);
+  assert.equal(manualPoolItemTotalHours(item, sectionsById), 2);
+  assert.equal(manualPoolItemRemaining(item, sectionsById), 2);
+  assert.equal(
+    manualPoolItemRemaining(item, sectionsById, new Map([
+      ['SEC_GUIDANCE_AC1', 1],
+      ['SEC_GUIDANCE_AC2', 2],
+    ])),
+    1,
+  );
 });
 
 test('an unlimited self-study card never leaves the deck', () => {

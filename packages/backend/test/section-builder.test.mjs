@@ -93,6 +93,42 @@ test('generates layered required-course tasks only for selected high-two teachin
   assert.deepEqual(sections[0].student_ids, ['S1']);
 });
 
+test('does not create a section from a stale assignment outside the course grade', () => {
+  const sections = buildSections(state({
+    students: [],
+    courses: [{ id: 'GUIDANCE', type: 'required', grade: 10, weekly_hours: 2 }],
+    teachers: [{ id: 'T', can_teach: ['GUIDANCE'] }],
+    teaching_classes: [{ id: 'TC_G11_1', grade: 11, student_ids: [] }],
+    teaching_assignments: [{
+      id: 'TA_GUIDANCE', course_id: 'GUIDANCE', teacher_id: 'T', class_type: 'teaching',
+      class_ids: ['TC_G11_1'], weekly_hours: 2,
+    }],
+  }));
+
+  assert.deepEqual(sections, []);
+});
+
+test('creates visible placeholder sections for a configured required course without a teacher assignment', () => {
+  const sections = buildSections(state({
+    students: [],
+    courses: [{
+      id: 'BIO', type: 'required', grade: 10, weekly_hours: 2,
+      delivery_class_type_by_grade: { 10: 'admin' },
+    }],
+    admin_classes: [
+      { id: 'AC1', grade: 10, student_ids: [] },
+      { id: 'AC2', grade: 10, student_ids: [] },
+    ],
+    teaching_assignments: [],
+  }));
+
+  assert.deepEqual(sections.map(section => [section.id, section.class_id, section.teacher_id]), [
+    ['SEC_admin_UNASSIGNED_BIO_AC1', 'AC1', null],
+    ['SEC_admin_UNASSIGNED_BIO_AC2', 'AC2', null],
+  ]);
+  assert.match(sections[0].warnings.join(' '), /尚未配置教师分工/);
+});
+
 test('removes the high-two class scope when high two is removed from a course', () => {
   const normalized = normalizeCourseScope({
     id: 'ONLY_G12',

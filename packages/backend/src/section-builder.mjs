@@ -1,4 +1,5 @@
 import { validateClassIdentity } from './state-integrity.mjs';
+import { buildApBlockSections } from './ap-block-sectioning.mjs';
 
 /**
  * Converts the school's source data into schedulable sections.
@@ -260,7 +261,11 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
       const group = classes.get(classId);
       if (!group) throw new Error(`教师分工 ${assignment.id} 引用了不存在的班级 ${classId}`);
       if (!gradeAllowed(course, group.grade)) {
-        throw new Error(`课程 ${course.id} 不适用于 ${group.name || classId} 所在年级`);
+        // Course management is authoritative for grade scope. Historical
+        // teacher assignments may still list a broader class range; those
+        // stale entries must not create a section or block the manual
+        // timetable from loading.
+        continue;
       }
       const configuredClassType = courseDeliveryClassTypeForGrade(course, group.grade);
       if (configuredClassType && configuredClassType !== assignment.class_type) {
@@ -296,6 +301,48 @@ function requiredAssignments(state, courses, adminClasses, teachingClasses) {
           ? ['每班由各自教师负责，不占用共享教师资源']
           : unstaffedActivity ? ['未记录授课教师，作为无教师活动处理'] : [],
       });
+    }
+  }
+
+  // A course can be configured in “课程管理” before its teacher assignment is
+  // entered. It still needs a visible, schedulable card in the manual
+  // timetable. Create a stable placeholder section only for fixed-class
+  // courses whose delivery mode is explicitly configured; as soon as a real
+  // teacher assignment is added, its canonical section replaces this one.
+  const covered = new Set(sections.map(section =>
+    `${section.course_id}\u0000${section.class_type}\u0000${section.class_id}`));
+  for (const course of courses.values()) {
+    if (!['required', 'other'].includes(course.type)) continue;
+    const grades = courseGradeRange(course);
+    if (!grades) continue;
+    for (const grade of grades) {
+      const classType = courseDeliveryClassTypeForGrade(course, grade);
+      if (!classType) continue;
+      const classes = classType === 'admin' ? adminClasses : teachingClasses;
+      for (const group of classes.values()) {
+        if (Number(group.grade) !== Number(grade) || !classAllowed(course, group, classType)) continue;
+        const key = `${course.id}\u0000${classType}\u0000${group.id}`;
+        if (covered.has(key)) continue;
+        sections.push({
+          id: `SEC_${classType}_UNASSIGNED_${course.id}_${group.id}`,
+          course_id: course.id,
+          teacher_id: null,
+          class_id: group.id,
+          class_type: classType,
+          source: 'course_configuration',
+          source_assignment_id: null,
+          synchronized_group_id: null,
+          weekly_hours: Number(course.weekly_hours) || 1,
+          student_ids: [...group.student_ids],
+          eligible_student_ids: [],
+          room_id: null,
+          room_candidates: [],
+          room_binding: 'disabled',
+          capacity: null,
+          staffing_mode: 'shared_teacher',
+          warnings: ['尚未配置教师分工；请在教师分工中指定教师'],
+        });
+      }
     }
   }
   return sections;
@@ -387,8 +434,14 @@ function synchronizedBlockForCourse(state, courseId) {
 function selectedSections(state, courses) {
   const sections = [];
   const selected = selectedCourseStudents(state, courses);
+  const selectedApCourses = new Map([...selected].filter(([courseId]) => courses.get(courseId)?.type === 'ap'));
+  const blockSections = buildApBlockSections(state, courses, selectedApCourses, courseId => defaultTeacher(state, courseId));
+  if (blockSections) sections.push(...blockSections);
   for (const [courseId, studentMap] of [...selected].sort(([left], [right]) => left.localeCompare(right))) {
     const course = courses.get(courseId);
+    // In Block mode AP rosters are allocated as a whole: assigning one course
+    // at a time would lose the "one student, one course per Block" invariant.
+    if (blockSections && course.type === 'ap') continue;
     const allStudents = [...studentMap.values()].sort((left, right) => left.id.localeCompare(right.id));
     const synchronizedBlock = synchronizedBlockForCourse(state, courseId);
     if (synchronizedBlock && allStudents.some(student => !synchronizedBlock.grades.includes(student.grade))) {
