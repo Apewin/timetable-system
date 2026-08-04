@@ -276,6 +276,26 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
           : [];
       });
     }
+    case 'avoid_teacher_day_extremes': {
+      const groups = groupedEvents(rule, sections, meetings, studentEvents);
+      return [...groups].flatMap(([teacherId, events]) => {
+        const periodsByDay = new Map();
+        for (const event of events) {
+          const { day, period } = slotParts(event.slot_id);
+          const periods = periodsByDay.get(day) || new Set();
+          periods.add(period);
+          periodsByDay.set(day, periods);
+        }
+        return [...periodsByDay].flatMap(([day, periods]) =>
+          periods.has(params.first_period) && periods.has(params.last_period)
+            ? [violation(
+              rule.id,
+              `教师 ${teacherId} 第 ${day} 天同时安排第 ${params.first_period} 节和第 ${params.last_period} 节`,
+              { teacher_id: teacherId, day, first_period: params.first_period, last_period: params.last_period },
+            )]
+            : []);
+      });
+    }
     case 'priority':
       return [];
     default:

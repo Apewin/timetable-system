@@ -399,6 +399,9 @@ async function loadViewData(viewName) {
     case 'teacher-availability':
       await loadTeacherAvailability();
       break;
+    case 'schedule-editor':
+      await loadScheduleEditor();
+      break;
     case 'past-timetables':
       await loadPastTimetables();
       break;
@@ -1495,6 +1498,106 @@ async function loadTeacherAvailability() {
   document.getElementById('teacher-availability-save').onclick = () => saveTeacherAvailability().catch(() => {});
   renderTeacherAvailabilityGrid();
   renderTeacherAvailabilityStatus();
+}
+
+let scheduleEditorState = { classes: [], selectedClassId: '' };
+
+function scheduleEditorSelectedClassId() {
+  return document.getElementById('schedule-editor-class-select')?.value || '';
+}
+
+function updateScheduleEditorSpecialTemplate() {
+  const card = document.getElementById('schedule-editor-special-template');
+  const title = document.getElementById('schedule-editor-event-title')?.value.trim();
+  const duration = Number(document.getElementById('schedule-editor-event-duration')?.value || 1);
+  if (!card) return;
+  const label = card.querySelector('span');
+  if (label) label.textContent = title
+    ? `${title} · 连续 ${Number.isInteger(duration) && duration > 0 ? duration : 1} 节`
+    : '填写名称后拖入起始空格';
+}
+
+async function renderScheduleEditorTimetable() {
+  const classId = scheduleEditorSelectedClassId();
+  const grid = document.getElementById('schedule-editor-grid');
+  const status = document.getElementById('schedule-editor-status');
+  const teachingClass = scheduleEditorState.classes.find(item => item.id === classId);
+  if (!grid || !status || !classId || !teachingClass) return;
+  status.textContent = '正在载入可编辑课表…';
+  try {
+    const data = await api(`/timetable/class/${encodeURIComponent(classId)}`);
+    renderDetailedTimetable(
+      'schedule-editor-grid',
+      data,
+      `${teachingClass.name} · 改课表`,
+      '拖动单门课程到空格会进行完整硬约束校验；分流格和上下行政班格请保留原位。',
+      { editorMode: true },
+    );
+    grid.querySelectorAll('[data-schedule-overlay-id]').forEach(button => {
+      button.addEventListener('click', async () => {
+        if (!confirm('删除这个自习或特殊事件标注吗？')) return;
+        try {
+          const result = await api(`/schedule-editor/overlays/${encodeURIComponent(button.dataset.scheduleOverlayId)}`, {
+            method: 'DELETE',
+          });
+          showToast(result.message, 'success');
+          await renderScheduleEditorTimetable();
+        } catch {
+          // api() has already shown the actionable error.
+        }
+      });
+    });
+    status.textContent = `当前正在编辑：${teachingClass.name}。已显示 ${data.overlays?.length || 0} 个自习/特殊事件标注。`;
+  } catch {
+    status.textContent = '课表读取失败，请检查后端状态后重试。';
+  }
+}
+
+async function loadScheduleEditor() {
+  const selector = document.getElementById('schedule-editor-class-select');
+  const status = document.getElementById('schedule-editor-status');
+  if (!selector || !status) return;
+  try {
+    const editor = await api('/schedule-editor');
+    const classes = (editor.classes || []).sort((left, right) =>
+      String(left.name || left.id).localeCompare(String(right.name || right.id), 'zh-CN'));
+    scheduleEditorState = {
+      classes,
+      selectedClassId: classes.some(item => item.id === scheduleEditorState.selectedClassId)
+        ? scheduleEditorState.selectedClassId
+        : classes[0]?.id || '',
+    };
+    selector.innerHTML = classes.map(item =>
+      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)}</option>`).join('')
+      || '<option value="">暂无教学班</option>';
+    selector.value = scheduleEditorState.selectedClassId;
+    selector.onchange = () => {
+      scheduleEditorState.selectedClassId = selector.value;
+      renderScheduleEditorTimetable();
+    };
+    document.getElementById('schedule-editor-event-title').oninput = updateScheduleEditorSpecialTemplate;
+    document.getElementById('schedule-editor-event-duration').oninput = updateScheduleEditorSpecialTemplate;
+    updateScheduleEditorSpecialTemplate();
+    if (!editor.available) {
+      status.textContent = '当前没有可编辑的有效课表。请先完成 AI 排课并通过校验。';
+      document.getElementById('schedule-editor-grid').innerHTML = '<div class="empty-state"><p>尚无有效课表</p></div>';
+      return;
+    }
+    await renderScheduleEditorTimetable();
+  } catch {
+    status.textContent = '无法读取改课表数据。';
+  }
+}
+
+async function addScheduleEditorOverlay(template, startSlotId) {
+  const classId = scheduleEditorSelectedClassId();
+  if (!classId) return showToast('请先选择教学班', 'warning');
+  const result = await api('/schedule-editor/overlays', {
+    method: 'POST',
+    body: JSON.stringify({ class_id: classId, start_slot_id: startSlotId, ...template }),
+  });
+  showToast(result.message, 'success');
+  await renderScheduleEditorTimetable();
 }
 
 function formatArchiveDateTime(value) {
@@ -3603,6 +3706,7 @@ const ruleTypeHints = {
   no_internal_gaps: '学生每天已排课程必须从第 1 节连续向后占位，空位只能留在当天末尾；仅支持 student 硬规则。',
   max_consecutive_lessons: '限制同一目标一天中连续课时的最大长度；本校“连续不超过三节”应设为 student 范围。',
   max_consecutive_days_in_period: '限制目标连续几天出现在同一节次。',
+  avoid_teacher_day_extremes: '若教师同一天既有第一节又有最后一节则计入软惩罚；仅支持 teacher 软规则。',
   priority: '仅影响求解变量的优先顺序，不改变硬约束。',
 };
 
@@ -3627,6 +3731,10 @@ function constraintParamsFromForm(formData, type) {
   if (type === 'max_consecutive_days_in_period') {
     params.max = Number(formData.get('max'));
     params.period = Number(formData.get('period'));
+  }
+  if (type === 'avoid_teacher_day_extremes') {
+    params.first_period = Number(formData.get('first_period'));
+    params.last_period = Number(formData.get('last_period'));
   }
   if (type === 'priority') params.rank = Number(formData.get('rank'));
   return params;
@@ -3656,6 +3764,11 @@ window.openConstraintDialog = function(existing = null) {
         <input type="number" min="1" name="max" value="${params.max || 1}"></div>
       <div class="form-group"><label>指定节次（仅“连续天同一节次”使用）</label>
         <input type="number" min="1" max="10" name="period" value="${params.period || 1}"></div>
+      <div class="form-group"><label>首节/末节（仅“教师避免同日首尾课”使用）</label>
+        <div style="display:flex;gap:8px;">
+          <input type="number" min="1" max="10" name="first_period" value="${params.first_period || 1}" aria-label="首节">
+          <input type="number" min="1" max="10" name="last_period" value="${params.last_period || 10}" aria-label="末节">
+        </div></div>
       <div class="form-group"><label>优先级 rank（仅 priority 使用，数字越小越先安排）</label>
         <input type="number" name="rank" value="${params.rank ?? 0}"></div>
       <div class="form-group"><label><input type="checkbox" name="hard" ${rule.hard ? 'checked' : ''}> 硬约束（不勾选即软约束）</label></div>
@@ -4014,8 +4127,37 @@ function renderTimetable(containerId, data) {
 }
 
 // 渲染详细课表视图
-function renderDetailedTimetable(containerId, data, title, subtitle) {
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  })[character]);
+}
+
+function positionScheduleOverlays(container) {
+  const grid = container?.querySelector('.timetable-grid');
+  if (!grid) return;
+  const gridRect = grid.getBoundingClientRect();
+  grid.querySelectorAll('.schedule-overlay').forEach(overlay => {
+    const startSlot = overlay.dataset.overlayStartSlot;
+    const endSlot = overlay.dataset.overlayEndSlot || startSlot;
+    const startCell = grid.querySelector(`.slot-cell[data-slot-id="${startSlot}"]`);
+    const endCell = grid.querySelector(`.slot-cell[data-slot-id="${endSlot}"]`);
+    if (!startCell || !endCell) return;
+    const startRect = startCell.getBoundingClientRect();
+    const endRect = endCell.getBoundingClientRect();
+    overlay.style.left = `${Math.round(startRect.left - gridRect.left + 3)}px`;
+    overlay.style.top = `${Math.round(startRect.top - gridRect.top + 3)}px`;
+    overlay.style.width = `${Math.max(0, Math.round(startRect.width - 6))}px`;
+    overlay.style.height = `${Math.max(0, Math.round(endRect.bottom - startRect.top - 6))}px`;
+    overlay.classList.add('is-positioned');
+  });
+}
+
+function renderDetailedTimetable(containerId, data, title, subtitle, options = {}) {
   const container = document.getElementById(containerId);
+  const teacherDragEnabled = Boolean(options.teacherDrag && options.teacherId && !data?.stale);
+  container.dataset.teacherDragEnabled = teacherDragEnabled ? 'true' : 'false';
+  container.dataset.teacherId = teacherDragEnabled ? options.teacherId : '';
   if (!data || !data.rows || data.rows.length === 0) {
     container.innerHTML = '<div class="empty-state"><p>无排课结果</p></div>';
     return;
@@ -4034,6 +4176,8 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
     { id: 9, name: '第9节', session: '下午' },
     { id: 10, name: '第10节', session: '下午' },
   ];
+  const overlays = Array.isArray(data.overlays) ? data.overlays : [];
+  const overlaySlots = new Set(overlays.flatMap(overlay => overlay.slot_ids || []));
 
   let html = `
     <div class="timetable-detail">
@@ -4041,6 +4185,13 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
         <h3>${title}</h3>
         <p>${subtitle}</p>
         ${data.stale ? '<div class="validation-result warning">⚠️ 当前输入已修改：以下为上一版历史课表。请重新排课后再据此调整。</div>' : ''}
+        ${teacherDragEnabled ? `
+          <div class="teacher-drag-guide">
+            拖动课程调整时段：<span class="move-guide">绿色可直接放入</span>
+            <span class="swap-guide">蓝色可与现有课程安全互换</span>
+            <span class="invalid-guide">红色表示存在冲突</span>
+          </div>
+        ` : ''}
       </div>
       <div class="timetable-grid">
         <div class="header-cell">节次</div>
@@ -4058,36 +4209,62 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
 
     for (let day = 1; day <= 5; day++) {
       const slot = row ? row[day] : null;
+      const slotId = `D${day}P${period.id}`;
+      const hasOverlay = overlaySlots.has(slotId);
+      const overlayClass = hasOverlay ? ' has-schedule-overlay' : '';
       const isWalkBlock = row && row[0] && row[0].includes('P') &&
         (row[0].includes('6') || row[0].includes('7') || row[0].includes('8'));
 
       if (slot) {
         const category = timetableCourseCategory(slot);
         if (slot.split_groups?.length) {
+          const administrativeSplit = slot.split_groups.length > 1 &&
+            slot.split_groups.every(group => group.class_type === 'admin');
           // A class-level split cell is a directory of simultaneous options,
           // not one common lesson.  Each student follows the one Section shown
           // in their own timetable.
-          html += `
-            <div class="slot-cell has-class category-${category} split-course-cell ${isWalkBlock ? 'walk-block' : ''}"
-                 data-slot-id="D${day}P${period.id}">
-              <div class="course-name">🧩 ${getCourseName(slot)}</div>
-              <div class="split-course-hint">按个人课表前往对应 Section</div>
-              <div class="split-course-list">
-                ${slot.split_groups.map(group => `
-                  <div class="split-course-item">
-                    <span>${group.course} · ${group.section_label || group.section_id}</span>
-                    <span class="split-course-count">${group.students} 人</span>
-                  </div>
-                `).join('')}
+          if (administrativeSplit) {
+            // A teaching class can draw students from several administrative
+            // classes.  Unlike AP/elective diversion, these are fixed class
+            // lessons, so show each administrative class in its own vertical
+            // lane instead of presenting them as a Section-choice list.
+            html += `
+              <div class="slot-cell has-class category-admin-required admin-split-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                   data-slot-id="${slotId}">
+                <div class="admin-split-lanes">
+                  ${slot.split_groups.map(group => `
+                    <div class="admin-split-lane">
+                      <div class="admin-split-class">${group.class_label || group.class_id || '行政班'}</div>
+                      <div class="admin-split-course">${group.course}</div>
+                      <div class="admin-split-meta">👨‍🏫 ${group.teacher} · ${group.students} 人</div>
+                    </div>
+                  `).join('')}
+                </div>
               </div>
-            </div>
-          `;
+            `;
+          } else {
+            html += `
+              <div class="slot-cell has-class category-${category} split-course-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                   data-slot-id="${slotId}">
+                <div class="course-name">🧩 ${getCourseName(slot)}</div>
+                <div class="split-course-hint">按个人课表前往对应 Section</div>
+                <div class="split-course-list">
+                  ${slot.split_groups.map(group => `
+                    <div class="split-course-item">
+                      <span>${group.course} · ${group.section_label || group.section_id}</span>
+                      <span class="split-course-count">${group.students} 人</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }
         // 检查是否是教学班课表（包含行政班课程）
         } else if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
           // 教学班课表：显示行政班课程
           html += `
-            <div class="slot-cell has-class category-${category} ${isWalkBlock ? 'walk-block' : ''}"
-                 data-slot-id="D${day}P${period.id}">
+            <div class="slot-cell has-class category-${category}${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                 data-slot-id="${slotId}">
               <div class="admin-courses">
                 ${Object.entries(slot.admin_courses).map(([classId, course]) => `
                   <div class="admin-course-item">
@@ -4113,10 +4290,10 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
         } else {
           // 其他课表：直接显示
           html += `
-            <div class="slot-cell has-class category-${category} ${isWalkBlock ? 'walk-block' : ''}"
-                 draggable="true"
+            <div class="slot-cell has-class category-${category}${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                 draggable="${options.teacherDrag ? teacherDragEnabled : true}"
                  data-task-id="${slot.task_id || ''}"
-                 data-slot-id="D${day}P${period.id}">
+                 data-slot-id="${slotId}">
               <div class="course-name">
                 ${getCourseName(slot)}
                 ${slot.course_type === 'ap' ? '<span class="course-badge ap">AP</span>' : ''}
@@ -4129,13 +4306,31 @@ function renderDetailedTimetable(containerId, data, title, subtitle) {
           `;
         }
       } else {
-        html += `<div class="slot-cell" data-slot-id="D${day}P${period.id}"></div>`;
+        html += `<div class="slot-cell${overlayClass}" data-slot-id="${slotId}"></div>`;
       }
     }
   });
 
+  html += overlays.map(overlay => {
+    const start = /^D([1-5])P([1-9]|10)$/.exec(overlay.slot_ids?.[0] || '');
+    if (!start) return '';
+    const duration = Math.max(1, overlay.slot_ids?.length || 1);
+    const color = /^#[0-9a-f]{6}$/i.test(overlay.color || '') ? overlay.color : '#7e57c2';
+    return `
+      <div class="schedule-overlay kind-${escapeHtml(overlay.kind)}"
+           data-overlay-start-slot="${escapeHtml(overlay.slot_ids[0])}"
+           data-overlay-end-slot="${escapeHtml(overlay.slot_ids[duration - 1])}"
+           style="--schedule-overlay-color:${color};">
+        <div class="schedule-overlay-title">${escapeHtml(overlay.title)}</div>
+        <div class="schedule-overlay-meta">${overlay.kind === 'self_study' ? '自习' : `特殊事件 · ${duration} 节`}</div>
+        ${options.editorMode ? `<button type="button" class="schedule-overlay-remove" data-schedule-overlay-id="${escapeHtml(overlay.id)}" aria-label="删除${escapeHtml(overlay.title)}">×</button>` : ''}
+      </div>
+    `;
+  }).join('');
+
   html += '</div></div>';
   container.innerHTML = html;
+  positionScheduleOverlays(container);
 }
 
 // 加载总课表概览
@@ -4609,14 +4804,18 @@ window.editEntity = async function(entity, id) {
 };
 
 // 删除实体
-async function deleteEntity(entity, id) {
+window.deleteEntity = async function(entity, id) {
   if (!confirm(`确定要删除 ${id} 吗？`)) {
     return;
   }
-  await api(`/${entity}/${id}`, { method: 'DELETE' });
-  showToast('删除成功');
-  loadViewData(getCurrentView());
-}
+  try {
+    await api(`/${entity}/${id}`, { method: 'DELETE' });
+    showToast('删除成功');
+    await loadViewData(getCurrentView());
+  } catch (error) {
+    showToast(error.message || '删除失败', 'error');
+  }
+};
 
 // 查看详细课表（供总课表概览卡片调用）
 window.viewDetailedTimetable = async function(type, id, name) {
@@ -5027,25 +5226,131 @@ window.useExample = function(element) {
 // 拖拽调课功能
 let draggedTask = null;
 let draggedFromSlot = null;
+let draggedScheduleTemplate = null;
+let draggedTeacherId = null;
+let draggedTeacherContainer = null;
+let teacherDropCandidates = new Map();
+let teacherCandidateRequestId = 0;
+
+function clearTimetableDragState() {
+  document.querySelectorAll('.slot-cell.dragging, .schedule-editor-tool.dragging').forEach(element => {
+    element.classList.remove('dragging');
+  });
+  document.querySelectorAll('.slot-cell.drag-over, .slot-cell.teacher-move-candidate, .slot-cell.teacher-swap-candidate, .slot-cell.teacher-invalid-candidate').forEach(element => {
+    element.classList.remove('drag-over', 'teacher-move-candidate', 'teacher-swap-candidate', 'teacher-invalid-candidate');
+    delete element.dataset.teacherDropAction;
+  });
+  document.querySelectorAll('.teacher-drag-active, .teacher-drag-loading').forEach(element => {
+    element.classList.remove('teacher-drag-active', 'teacher-drag-loading');
+  });
+  teacherCandidateRequestId += 1;
+  draggedTask = null;
+  draggedFromSlot = null;
+  draggedScheduleTemplate = null;
+  draggedTeacherId = null;
+  draggedTeacherContainer = null;
+  teacherDropCandidates = new Map();
+}
+
+async function loadTeacherDropCandidates() {
+  const requestId = ++teacherCandidateRequestId;
+  const teacherId = draggedTeacherId;
+  const taskId = draggedTask;
+  const fromSlot = draggedFromSlot;
+  const container = draggedTeacherContainer;
+  if (!teacherId || !taskId || !fromSlot || !container) return;
+  container.classList.add('teacher-drag-active', 'teacher-drag-loading');
+  try {
+    const result = await api('/teacher-timetable/drag-candidates', {
+      method: 'POST',
+      body: JSON.stringify({ teacher_id: teacherId, task_id: taskId, from_slot: fromSlot }),
+    });
+    if (requestId !== teacherCandidateRequestId || container !== draggedTeacherContainer) return;
+    teacherDropCandidates = new Map((result.candidates || []).map(candidate => [candidate.slot_id, candidate]));
+    container.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
+      if (cell.dataset.slotId !== fromSlot) cell.classList.add('teacher-invalid-candidate');
+    });
+    for (const [slotId, candidate] of teacherDropCandidates) {
+      const cell = container.querySelector(`.slot-cell[data-slot-id="${slotId}"]`);
+      if (!cell) continue;
+      cell.classList.remove('teacher-invalid-candidate');
+      cell.classList.add(candidate.action === 'swap' ? 'teacher-swap-candidate' : 'teacher-move-candidate');
+      cell.dataset.teacherDropAction = candidate.action;
+    }
+  } catch {
+    // api() already presents the backend reason. The course remains in place.
+  } finally {
+    if (requestId === teacherCandidateRequestId) container.classList.remove('teacher-drag-loading');
+  }
+}
+
+function scheduleEditorTemplateFromCard(card) {
+  const kind = card.dataset.scheduleTemplate;
+  if (kind === 'self_study') return { kind, title: '自习', duration: 1 };
+  if (kind !== 'special_event') return null;
+  const title = document.getElementById('schedule-editor-event-title')?.value.trim() || '';
+  const duration = Number(document.getElementById('schedule-editor-event-duration')?.value || 0);
+  const color = document.getElementById('schedule-editor-event-color')?.value || '#7e57c2';
+  if (!title) throw new Error('请先填写特殊事件名称');
+  if (!Number.isInteger(duration) || duration < 1 || duration > 10) {
+    throw new Error('特殊事件的连续节数必须在 1 到 10 之间');
+  }
+  return { kind, title, duration, color };
+}
+
+function canDropOnTimetableSlot(slotCell) {
+  if (!slotCell) return false;
+  if (draggedScheduleTemplate) return Boolean(slotCell.closest('#view-schedule-editor'));
+  if (draggedTeacherId) return teacherDropCandidates.has(slotCell.dataset.slotId);
+  if (slotCell.classList.contains('has-class') || slotCell.classList.contains('has-schedule-overlay')) return false;
+  return Boolean(draggedTask && draggedFromSlot);
+}
 
 function initDragAndDrop() {
-  // 在课表渲染后调用此函数
+  // One document-level set of handlers serves all re-rendered timetable grids.
+  // Keeping dragend here (rather than inside a successful refresh callback)
+  // guarantees that cancelled or rejected drops restore the course color.
   document.addEventListener('dragstart', (e) => {
+    const templateCard = e.target.closest('.schedule-editor-tool[data-schedule-template]');
+    if (templateCard) {
+      try {
+        draggedScheduleTemplate = scheduleEditorTemplateFromCard(templateCard);
+      } catch (error) {
+        e.preventDefault();
+        showToast(error.message, 'warning');
+        return;
+      }
+      draggedTask = null;
+      draggedFromSlot = null;
+      draggedTeacherId = null;
+      draggedTeacherContainer = null;
+      teacherDropCandidates = new Map();
+      templateCard.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('application/x-schedule-editor-template', JSON.stringify(draggedScheduleTemplate));
+      return;
+    }
     const slotCell = e.target.closest('.slot-cell.has-class');
-    if (!slotCell) return;
+    if (!slotCell || !slotCell.dataset.taskId) return;
 
     draggedTask = slotCell.dataset.taskId;
     draggedFromSlot = slotCell.dataset.slotId;
+    draggedScheduleTemplate = null;
+    const teacherContainer = slotCell.closest('[data-teacher-drag-enabled="true"]');
+    draggedTeacherId = teacherContainer?.dataset.teacherId || null;
+    draggedTeacherContainer = draggedTeacherId ? teacherContainer : null;
+    teacherDropCandidates = new Map();
     slotCell.classList.add('dragging');
 
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', draggedTask);
+    if (draggedTeacherId) void loadTeacherDropCandidates();
   });
 
   document.addEventListener('dragover', (e) => {
-    e.preventDefault();
     const slotCell = e.target.closest('.slot-cell');
-    if (slotCell && !slotCell.classList.contains('has-class')) {
+    if (canDropOnTimetableSlot(slotCell)) {
+      e.preventDefault();
       slotCell.classList.add('drag-over');
     }
   });
@@ -5063,20 +5368,40 @@ function initDragAndDrop() {
     if (!slotCell) return;
 
     slotCell.classList.remove('drag-over');
-
-    if (!draggedTask || !draggedFromSlot) return;
-
     const toSlot = slotCell.dataset.slotId;
-    if (!toSlot || toSlot === draggedFromSlot) return;
+    if (!toSlot || !canDropOnTimetableSlot(slotCell)) return;
+
+    // Capture the drag operation before dragend clears the visual state while
+    // the commit request is still in flight.
+    const taskId = draggedTask;
+    const fromSlot = draggedFromSlot;
+    const teacherId = draggedTeacherId;
+    const teacherCandidate = teacherDropCandidates.get(toSlot) || null;
 
     try {
-      const result = await api('/swap', {
+      if (draggedScheduleTemplate) {
+        await addScheduleEditorOverlay(draggedScheduleTemplate, toSlot);
+        return;
+      }
+      if (!taskId || !fromSlot || toSlot === fromSlot) return;
+      const result = teacherId && teacherCandidate
+        ? await api('/teacher-timetable/adjust', {
+          method: 'POST',
+          body: JSON.stringify({
+            teacher_id: teacherId,
+            task_id: taskId,
+            from_slot: fromSlot,
+            to_slot: toSlot,
+            action: teacherCandidate.action,
+          }),
+        })
+        : await api('/swap', {
         method: 'POST',
         body: JSON.stringify({
-          task_id: draggedTask,
-          from_slot: draggedFromSlot,
+          task_id: taskId,
+          from_slot: fromSlot,
           to_slot: toSlot
-        })
+        }),
       });
 
       showToast(result.message, 'success');
@@ -5085,8 +5410,12 @@ function initDragAndDrop() {
       await refreshCurrentTimetable();
     } catch (error) {
       // 错误已由 api 函数处理
+    } finally {
+      clearTimetableDragState();
     }
   });
+
+  document.addEventListener('dragend', clearTimetableDragState);
 }
 
 // 刷新当前课表视图
@@ -5117,7 +5446,8 @@ async function refreshCurrentTimetable() {
           'teacher-timetable-content',
           data,
           `${teacher?.name || teacherSelect.value} 的课表`,
-          `教师ID: ${teacherSelect.value} | 可教课程: ${teacher?.can_teach?.join(', ') || '-'}`
+          `教师ID: ${teacherSelect.value} | 可教课程: ${teacher?.can_teach?.join(', ') || '-'}`,
+          { teacherDrag: true, teacherId: teacherSelect.value },
         );
       }
       break;
@@ -5158,15 +5488,10 @@ async function refreshCurrentTimetable() {
     case 'overview-timetable':
       await loadOverviewTimetable();
       break;
+    case 'schedule-editor':
+      await renderScheduleEditorTimetable();
+      break;
   }
-
-  document.addEventListener('dragend', (e) => {
-    document.querySelectorAll('.slot-cell.dragging').forEach(el => {
-      el.classList.remove('dragging');
-    });
-    draggedTask = null;
-    draggedFromSlot = null;
-  });
 }
 
 // 锁定/解锁课程
@@ -5209,6 +5534,7 @@ const AI_ASSISTANT_VIEW_LABELS = {
   welcome: '首页',
   'manual-timetable': '排课表',
   'teacher-availability': '涂课表',
+  'schedule-editor': '改课表',
   'past-timetables': '过往课表',
   'overview-timetable': '总课表概览',
   'class-timetable': '按班级查看',
@@ -5525,7 +5851,8 @@ function init() {
         'teacher-timetable-content',
         data,
         `${teacher?.name || e.target.value} 的课表`,
-        `教师ID: ${e.target.value} | 可教课程: ${teacher?.can_teach?.join(', ') || '-'}`
+        `教师ID: ${e.target.value} | 可教课程: ${teacher?.can_teach?.join(', ') || '-'}`,
+        { teacherDrag: true, teacherId: e.target.value },
       );
     }
   });

@@ -189,6 +189,76 @@ test('calls the model once and validates its JSON response', async () => {
   assert.equal(result.interpretation.confidence, 0.95);
 });
 
+test('tells the elective interpreter how to split a headerless side-by-side senior roster', async () => {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ['力学基础学生名单', '', '', '', 'AP 商业学生名单', '', '', '', '', '线性代数学生名单'],
+    [1, '何子盈', '', '', 1, '李之乔', '', '', '', 1, '厉潇蔓'],
+  ]);
+  sheet['!merges'] = [
+    XLSX.utils.decode_range('A1:C1'),
+    XLSX.utils.decode_range('E1:G1'),
+    XLSX.utils.decode_range('J1:L1'),
+  ];
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['只是一张姓名汇总']]), 'Sheet2');
+
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages[0].content;
+    assert.match(prompt, /文档语义判定/);
+    assert.match(prompt, /课程花名册/);
+    assert.match(prompt, /学生选课汇总表/);
+    assert.match(prompt, /预分班结果或辅助名单/);
+    assert.match(prompt, /证据不足时不得把名单猜成选课/);
+    assert.match(prompt, /绝不能使用横向位置、区块数量或出现顺序推断 A\/B\/C 组别/);
+    assert.match(prompt, /力学基础、商业、线性代数.*都写入 B组/);
+    assert.match(prompt, /输出前逐项核对/);
+    assert.match(prompt, /英美文学史及选读（20人）-416教室/);
+    assert.match(prompt, /AP LC.*AP Language and Composition/);
+    assert.match(prompt, /AP Lit\.&Com\..*AP Literature and Composition/);
+    assert.match(prompt, /三个区块均写入 A组/);
+    assert.match(prompt, /无表头的三栏横向名单/);
+    assert.match(prompt, /A1:C1.*力学基础/);
+    assert.match(prompt, /E1:G1.*AP 商业/);
+    assert.match(prompt, /J1:L1.*线性代数/);
+    assert.match(prompt, /A\/E\/J 是序号，B\/F\/K/);
+    assert.match(prompt, /何子盈.*力学基础/);
+    assert.match(prompt, /李之乔.*商业/);
+    assert.match(prompt, /厉潇蔓.*线性代数/);
+    assert.deepEqual(request.messages[1].content.includes('A1:C1'), true);
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              document_type: 'elective_selections',
+              confidence: 0.98,
+              sheets: [{
+                name: '高三选课',
+                headers: ['Student ID', '中文姓名', '姓名拼音', '英文名', 'A组', 'B组', 'C组'],
+                rows: [
+                  ['', '何子盈', '', '', '', '力学基础', ''],
+                  ['', '李之乔', '', '', '', '商业', ''],
+                  ['', '厉潇蔓', '', '', '', '线性代数', ''],
+                ],
+              }],
+            }),
+          },
+        }],
+      }),
+    };
+  };
+
+  const result = await interpretWorkbook(workbook, {
+    expectedType: 'elective_selections',
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.equal(result.interpretation.sheets[0].rows.length, 3);
+});
+
 test('tells the AP workbook interpreter to merge side-by-side Block rosters into one course', async () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([

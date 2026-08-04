@@ -11,6 +11,7 @@ export const RULE_TYPES = new Set([
   'preferred_consecutive_pairs',
   'max_consecutive_lessons',
   'max_consecutive_days_in_period',
+  'avoid_teacher_day_extremes',
   'synchronized_slots',
   'separate_class_types',
   'priority',
@@ -64,6 +65,15 @@ function validateTypeParameters(rule) {
     case 'max_consecutive_days_in_period':
       positiveInteger(params.max, rule, 'max');
       positiveInteger(params.period, rule, 'period');
+      break;
+    case 'avoid_teacher_day_extremes':
+      if (rule.scope !== 'teacher') throw new Error(`规则 ${rule.id} 的 avoid_teacher_day_extremes 只能作用于 teacher`);
+      if (rule.hard) throw new Error(`规则 ${rule.id} 的 avoid_teacher_day_extremes 必须是软约束`);
+      positiveInteger(params.first_period, rule, 'first_period');
+      positiveInteger(params.last_period, rule, 'last_period');
+      if (params.first_period >= params.last_period) {
+        throw new Error(`规则 ${rule.id} 的 first_period 必须小于 last_period`);
+      }
       break;
     case 'synchronized_slots':
       if (rule.scope !== 'section') throw new Error(`规则 ${rule.id} 的 synchronized_slots 只能作用于 section`);

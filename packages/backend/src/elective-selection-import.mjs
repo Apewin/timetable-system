@@ -53,13 +53,14 @@ function electiveCourses(state) {
 
 function courseFor(value, courses, expectedGroup) {
   const normalized = key(value)
+    .replace(/\d+人.*$/, '')
     .replace(/^ap/, '')
     .replace(/andcomposition$/, '')
     .replace(/英美文学史及选读$/, '英美文学');
   if (!normalized) return undefined;
   const aliases = {
-    language: 'AP_LANG', lang: 'AP_LANG', aplanguage: 'AP_LANG',
-    literature: 'AP_LIT', lit: 'AP_LIT', apliterature: 'AP_LIT',
+    language: 'AP_LANG', lang: 'AP_LANG', lc: 'AP_LANG', aplc: 'AP_LANG', aplanguage: 'AP_LANG',
+    literature: 'AP_LIT', lit: 'AP_LIT', litcom: 'AP_LIT', aplitcom: 'AP_LIT', apliterature: 'AP_LIT',
     honorlit: 'HONOR_LIT', honor文学: 'HONOR_LIT', 英美文学: 'HONOR_LIT',
     线代: 'LINEAR_ALG', linearalgebra: 'LINEAR_ALG',
     力学: 'MECH_BASIS', mechanics: 'MECH_BASIS',

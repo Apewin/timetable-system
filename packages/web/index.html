@@ -24,6 +24,7 @@
             <li><a href="#" data-view="welcome" class="active">🏠 首页</a></li>
             <li><a href="#" data-view="manual-timetable">🗓️ 排课表</a></li>
             <li><a href="#" data-view="teacher-availability">🖌️ 涂课表</a></li>
+            <li><a href="#" data-view="schedule-editor">🛠️ 改课表</a></li>
             <li><a href="#" data-view="past-timetables">🕘 过往课表</a></li>
           </ul>
         </div>
@@ -172,6 +173,50 @@
           <section class="teacher-availability-panel" aria-label="教师不可上课时段课表">
             <div id="teacher-availability-grid" class="teacher-schedule-grid teacher-availability-grid"></div>
           </section>
+        </div>
+
+        <!-- 改课表：在已生成的课表上做受校验的后处理调整 -->
+        <div id="view-schedule-editor" class="view">
+          <div class="schedule-editor-header">
+            <div>
+              <h2>🛠️ 改课表</h2>
+              <p>拖动单门正式课程到空格可调课，系统会立即校验所有硬约束。右侧的“自习”和“特殊事件”只能拖入该教学班全体学生都空闲的时段。</p>
+            </div>
+          </div>
+          <div class="schedule-editor-controls">
+            <label for="schedule-editor-class-select">教学班</label>
+            <select id="schedule-editor-class-select" class="select"></select>
+            <span id="schedule-editor-status" class="schedule-editor-status">正在读取当前课表…</span>
+          </div>
+          <div class="schedule-editor-layout">
+            <section class="schedule-editor-grid-panel" aria-label="可编辑教学班课表">
+              <div id="schedule-editor-grid"></div>
+            </section>
+            <aside class="schedule-editor-toolbox" aria-label="课表编辑工具">
+              <h3>编辑工具</h3>
+              <p class="schedule-editor-tool-hint">拖动卡片到空白格。特殊事件长度表示同一天连续占用的节数。</p>
+              <div class="schedule-editor-tool self-study" draggable="true" data-schedule-template="self_study">
+                <strong>自习</strong>
+                <span>拖入一个空白格</span>
+              </div>
+              <div class="schedule-editor-special-form">
+                <label>特殊事件名称
+                  <input id="schedule-editor-event-title" class="input" maxlength="40" placeholder="例如：年级讲座">
+                </label>
+                <label>连续节数
+                  <input id="schedule-editor-event-duration" class="input" type="number" min="1" max="10" value="2">
+                </label>
+                <label>颜色
+                  <input id="schedule-editor-event-color" type="color" value="#7e57c2">
+                </label>
+              </div>
+              <div id="schedule-editor-special-template" class="schedule-editor-tool special-event" draggable="true" data-schedule-template="special_event">
+                <strong>特殊事件</strong>
+                <span>填写名称后拖入起始空格</span>
+              </div>
+              <p class="schedule-editor-tool-hint">自习和特殊事件是课表标注，不会改变课程课时或被 AI 当作正式课程；可点击标注右上角的 × 删除。</p>
+            </aside>
+          </div>
         </div>
 
         <!-- 过往课表 -->

@@ -68,3 +68,14 @@ test('accepts a minimum number of teaching days', () => {
   assert.equal(validateRules([rule])[0], rule);
   assert.throws(() => validateRules([{ ...rule, params: { min: 0 } }]), /params.min/);
 });
+
+test('accepts the soft teacher first-and-last-period avoidance rule', () => {
+  const rule = {
+    id: 'teacher-day-extremes', type: 'avoid_teacher_day_extremes', hard: false, weight: 1000,
+    scope: 'teacher', params: { first_period: 1, last_period: 10 },
+  };
+  assert.equal(validateRules([rule])[0], rule);
+  assert.throws(() => validateRules([{ ...rule, hard: true }]), /必须是软约束/);
+  assert.throws(() => validateRules([{ ...rule, scope: 'section' }]), /teacher/);
+  assert.throws(() => validateRules([{ ...rule, params: { first_period: 10, last_period: 1 } }]), /必须小于/);
+});

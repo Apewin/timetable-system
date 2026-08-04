@@ -63,3 +63,25 @@ test('parses one-course roster sheets from the sheet title', () => {
   assert.equal(preview.can_confirm, true);
   assert.equal(preview.changes[0].choices.group_b, 'LINEAR_ALG');
 });
+
+test('accepts common Grade 12 A-group roster abbreviations after model normalization', () => {
+  const aliasState = {
+    ...state,
+    courses: [
+      ...state.courses,
+      { id: 'AP_LIT', name: 'AP Literature and Composition', type: 'required_elective', grade: 12, elective_group: 'A' },
+      { id: 'HONOR_LIT', name: 'Honor 英美文学史及选读', type: 'required_elective', grade: 12, elective_group: 'A' },
+    ],
+    students: [...state.students, { id: '202303', name: '王五', grade: 12, elective_choices: {} }],
+  };
+  const preview = parseElectiveSelectionWorkbook(workbook([
+    ['Student ID', '中文姓名', '姓名拼音', '英文名', 'A组', 'B组', 'C组'],
+    ['202301', '张三', '', '', 'AP LC', '', ''],
+    ['202302', '李四', '', '', 'AP Lit.&Com.', '', ''],
+    ['202303', '王五', '', '', '英美文学史及选读（20人）-416教室', '', ''],
+  ]), aliasState, 'A-group-rosters.xlsx');
+  assert.equal(preview.can_confirm, true);
+  assert.equal(preview.changes.find(change => change.student_id === '202301').choices.group_a, 'AP_LANG');
+  assert.equal(preview.changes.find(change => change.student_id === '202302').choices.group_a, 'AP_LIT');
+  assert.equal(preview.changes.find(change => change.student_id === '202303').choices.group_a, 'HONOR_LIT');
+});

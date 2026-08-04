@@ -186,6 +186,31 @@ test('ignores room-derived section capacity during timetable validation', () => 
   assert.equal(result.hard_violations.some(item => item.rule_id.startsWith('kernel.room_')), false);
 });
 
+test('penalizes a teacher who teaches both the first and last period of one day', () => {
+  const result = validateSchedule({
+    slots,
+    rooms: [],
+    rules: [{
+      id: 'teacher-day-extremes', type: 'avoid_teacher_day_extremes', hard: false, weight: 1000,
+      scope: 'teacher', target_ids: ['T1'], section_target_ids: ['FIRST', 'LAST'],
+      params: { first_period: 1, last_period: 10 },
+    }],
+    sections: [
+      { id: 'FIRST', course_id: 'A', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [] },
+      { id: 'LAST', course_id: 'B', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 1, student_ids: ['S2'], eligible_student_ids: [] },
+    ],
+  }, {
+    meetings: [
+      { section_id: 'FIRST', slot_id: 'D1P1' },
+      { section_id: 'LAST', slot_id: 'D1P10' },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.soft_score, 1000);
+  assert.equal(result.soft_violations[0].teacher_id, 'T1');
+});
+
 test('tracks selected-course membership across a malformed section with an empty eligible roster', () => {
   const result = validateSchedule(problem(), {
     sections: [

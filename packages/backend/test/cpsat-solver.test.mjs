@@ -664,6 +664,29 @@ test('optimizes a soft time preference after satisfying hard constraints', async
   assert.equal(validation.soft_score, 0);
 });
 
+test('strongly avoids giving a teacher both the first and last period of one day', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [
+      { id: 'fix-first', type: 'fixed_slots', hard: true, scope: 'section', target_ids: ['FIRST'], section_target_ids: ['FIRST'], params: { slots: ['D1P1'], mode: 'exact' } },
+      { id: 'prefer-last', type: 'preferred_slots', hard: false, weight: 10, scope: 'section', target_ids: ['FLEX'], section_target_ids: ['FLEX'], params: { slots: ['D1P10'] } },
+      { id: 'teacher-day-extremes', type: 'avoid_teacher_day_extremes', hard: false, weight: 1000, scope: 'teacher', target_ids: ['T1'], section_target_ids: ['FIRST', 'FLEX'], params: { first_period: 1, last_period: 10 } },
+    ],
+    sections: [
+      { id: 'FIRST', course_id: 'A', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [] },
+      { id: 'FLEX', course_id: 'B', teacher_id: 'T1', class_type: 'teaching', weekly_hours: 1, student_ids: ['S2'], eligible_student_ids: [] },
+    ],
+  };
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5, optimizeSoft: true, useConstructiveSeed: false });
+  const validation = validateSchedule(problem, solution);
+
+  assert.equal(solution.ok, true, solution.reason);
+  assert.notEqual(solution.meetings.find(item => item.section_id === 'FLEX')?.slot_id, 'D1P10');
+  assert.equal(validation.soft_violations.some(item => item.rule_id === 'teacher-day-extremes'), false);
+  assert.equal(validation.soft_score, 10);
+});
+
 test('prioritizes one requested consecutive pair for a teaching section', async () => {
   const problem = {
     slots,

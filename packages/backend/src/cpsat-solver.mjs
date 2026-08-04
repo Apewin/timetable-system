@@ -524,6 +524,37 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
       }
       continue;
     }
+    if (rule.type === 'avoid_teacher_day_extremes') {
+      for (const [teacherId, values] of valuesByTarget) for (const [day, daySlots] of slotByDay) {
+        const firstSlot = daySlots.find(slot => slot.period === rule.params.first_period);
+        const lastSlot = daySlots.find(slot => slot.period === rule.params.last_period);
+        if (!firstSlot || !lastSlot || !values.length) continue;
+        const firstFlags = values.map((value, index) => addEquals(
+          model,
+          value,
+          slotIndex(problem, firstSlot.id),
+          `${rule.id}_${teacherId}_${index}_${firstSlot.id}`,
+        ));
+        const lastFlags = values.map((value, index) => addEquals(
+          model,
+          value,
+          slotIndex(problem, lastSlot.id),
+          `${rule.id}_${teacherId}_${index}_${lastSlot.id}`,
+        ));
+        const hasFirst = model.newBoolVar(`${rule.id}_${teacherId}_DAY_${day}_HAS_FIRST`);
+        const hasLast = model.newBoolVar(`${rule.id}_${teacherId}_DAY_${day}_HAS_LAST`);
+        for (const flag of firstFlags) model.addImplication(flag, hasFirst);
+        for (const flag of lastFlags) model.addImplication(flag, hasLast);
+        model.addBoolOr([...firstFlags, hasFirst.not()]);
+        model.addBoolOr([...lastFlags, hasLast.not()]);
+        const both = model.newBoolVar(`${rule.id}_${teacherId}_DAY_${day}_HAS_BOTH`);
+        model.addImplication(both, hasFirst);
+        model.addImplication(both, hasLast);
+        model.addBoolOr([hasFirst.not(), hasLast.not(), both]);
+        penaltyTerms.push({ variable: both, weight: hardWeight });
+      }
+      continue;
+    }
     if (rule.type === 'max_occurrences_per_day') {
       for (const [targetId, values] of valuesByTarget) for (const [day, daySlots] of slotByDay) {
         const flags = values.map((value, index) => {

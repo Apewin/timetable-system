@@ -43,6 +43,11 @@ import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from '
 import { synchronizeClassMemberships } from './state-integrity.mjs';
 import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
 import { applyTeacherAssignmentSwap } from './assistant-actions.mjs';
+import { createScheduleOverlay } from './schedule-overlays.mjs';
+import {
+  applyTeacherTimetableAdjustment,
+  evaluateTeacherTimetableAdjustments,
+} from './teacher-timetable-adjustment.mjs';
 import {
   GRADUATION_CONFIRMATION,
   graduateStudents,
@@ -165,6 +170,9 @@ function timetableGrid(state, by, id) {
             course: group.course,
             section_label: group.section_label,
             teacher: group.teacher,
+            class_id: group.class_id || null,
+            class_type: group.class_type || null,
+            class_label: group.class_label || null,
             students: bySection.get(group.section_id).length,
           })),
         };
@@ -182,11 +190,37 @@ function timetableGrid(state, by, id) {
     rows[period - 1][day] = display(assignment);
   }
   const labels = { student: '学生', teacher: '教师', section: 'section', class: '班级', room: '教室', all: '全部课表' };
+  const overlays = by === 'class'
+    ? (state.schedule?.overlays || []).filter(overlay => overlay.class_id === id)
+    : [];
   return {
     title: id === 'all' || by === 'all' ? '全部课表' : `${labels[by]} ${id} 的课表`,
-    view_type: by, rows, assignments: selected,
+    view_type: by, rows, assignments: selected, overlays,
     stale: state.solve_status !== 'valid',
   };
+}
+
+function scheduleEditorClass(state, classId) {
+  const teachingClass = (state.teaching_classes || []).find(item => item.id === classId);
+  if (!teachingClass) throw new Error('改课表目前仅支持选择教学班');
+  return teachingClass;
+}
+
+function occupiedSlotsForTeachingClass(state, classId) {
+  const studentIds = new Set((state.students || [])
+    .filter(student => student.teaching_class_id === classId)
+    .map(student => student.id));
+  return new Set((state.schedule?.assignments || [])
+    .filter(assignment => studentIds.has(assignment.student_id))
+    .map(assignment => assignment.slot_id));
+}
+
+function nextScheduleOverlayId(overlays) {
+  const ids = new Set((overlays || []).map(item => item.id));
+  let suffix = 1;
+  let id = `OVERLAY_${Date.now()}`;
+  while (ids.has(id)) id = `OVERLAY_${Date.now()}_${suffix++}`;
+  return id;
 }
 
 function buildTaskPlan(state) {
@@ -658,7 +692,14 @@ function problemForSchedule(state, schedule) {
     };
   });
   const activeRules = (schedule.rules || state.constraints || []).filter(rule => rule.scope !== 'room');
-  return { ...base, sections, rules: compileRules(state, activeRules, { sections }) };
+  const configuredRules = compileRules(state, activeRules, { sections });
+  const configuredRuleIds = new Set(configuredRules.map(rule => rule.id));
+  // buildSchedulingProblem also contributes generated synchronization rules
+  // for AP Blocks, selection blocks, and linked teaching assignments. Keep
+  // those rules when validating an edited saved schedule; dropping them here
+  // would incorrectly make a one-section Block move appear legal.
+  const generatedRules = (base.rules || []).filter(rule => !configuredRuleIds.has(rule.id));
+  return { ...base, sections, rules: [...configuredRules, ...generatedRules] };
 }
 
 function candidateScheduleForSections(state, nextSections) {
@@ -1353,6 +1394,42 @@ app.post('/api/unlock', (req, res) => reply(res, () => {
   return { message: '已解锁', section_id: assignment.section_id, slot_id: assignment.slot_id };
 }));
 
+app.post('/api/teacher-timetable/drag-candidates', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const problem = problemForSchedule(state, state.schedule || {});
+  const result = evaluateTeacherTimetableAdjustments(state, problem, req.body || {});
+  return {
+    source: result.source,
+    candidates: result.public_candidates,
+    legend: { move: '可直接移动', swap: '可安全互换' },
+  };
+}));
+
+app.post('/api/teacher-timetable/adjust', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const problem = problemForSchedule(state, state.schedule || {});
+  const result = applyTeacherTimetableAdjustment(state, problem, req.body || {});
+  const schedule = result.schedule;
+  repository.write({
+    ...state,
+    assignments: schedule.assignments,
+    schedule,
+    solve_status: 'valid',
+  });
+  const verb = result.action === 'swap' ? '已安全互换两节课程' : '已移动课程';
+  const selfStudyNote = result.displaced_self_study_count
+    ? `，并替换 ${result.displaced_self_study_count} 个自习标注`
+    : '';
+  const linkedNote = result.linked_section_count > (result.action === 'swap' ? 2 : 1)
+    ? `（联动 ${result.linked_section_count} 个同步 section）`
+    : '';
+  return {
+    message: `${verb}${linkedNote}${selfStudyNote}`,
+    action: result.action,
+    validation: schedule.validation,
+  };
+}));
+
 app.post('/api/swap', (req, res) => reply(res, () => {
   const state = repository.read();
   if (!state.schedule) throw new Error('尚未生成课表');
@@ -1369,6 +1446,50 @@ app.post('/api/swap', (req, res) => reply(res, () => {
   if (!validation.ok) throw new Error(`移动会违反硬约束: ${validation.hard_violations[0].message}`);
   repository.write({ ...state, assignments: schedule.assignments, schedule: { ...schedule, validation }, solve_status: 'valid' });
   return { message: '已移动整个 section 的该节课', validation };
+}));
+
+app.get('/api/schedule-editor', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  return {
+    available: Boolean(state.schedule && state.solve_status === 'valid'),
+    classes: (state.teaching_classes || []).map(item => ({ id: item.id, name: item.name, grade: item.grade })),
+    overlays: state.schedule?.overlays || [],
+  };
+}));
+
+app.post('/api/schedule-editor/overlays', (req, res) => reply(res, () => {
+  const state = repository.read();
+  if (!state.schedule || state.solve_status !== 'valid') {
+    throw new Error('当前课表不是有效版本，请先完成排课再添加自习或特殊事件');
+  }
+  const classId = importText(req.body?.class_id);
+  scheduleEditorClass(state, classId);
+  const overlays = state.schedule.overlays || [];
+  const overlay = createScheduleOverlay(overlays, {
+    ...req.body,
+    id: nextScheduleOverlayId(overlays),
+    class_id: classId,
+  });
+  const occupiedSlots = occupiedSlotsForTeachingClass(state, classId);
+  if (overlay.slot_ids.some(slotId => occupiedSlots.has(slotId))) {
+    throw new Error('自习或特殊事件只能放入该教学班全体学生都没有正式课程的空格');
+  }
+  const schedule = { ...state.schedule, overlays: [...overlays, overlay] };
+  repository.write({ ...state, schedule });
+  return { message: `已添加${overlay.title}`, overlay };
+}));
+
+app.delete('/api/schedule-editor/overlays/:overlayId', (req, res) => reply(res, () => {
+  const state = repository.read();
+  if (!state.schedule || state.solve_status !== 'valid') {
+    throw new Error('当前课表不是有效版本，请先完成排课后再修改');
+  }
+  const overlays = state.schedule.overlays || [];
+  const target = overlays.find(item => item.id === req.params.overlayId);
+  if (!target) throw new Error('未找到要删除的自习或特殊事件');
+  const schedule = { ...state.schedule, overlays: overlays.filter(item => item.id !== target.id) };
+  repository.write({ ...state, schedule });
+  return { message: `已删除${target.title}`, overlay_id: target.id };
 }));
 
 app.get('/api/timetable/:by/:id', (req, res) => reply(res, () => {
