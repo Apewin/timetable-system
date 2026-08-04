@@ -1531,7 +1531,7 @@ async function renderScheduleEditorTimetable() {
       data,
       `${teachingClass.name} · 改课表`,
       '拖动单门课程到空格会进行完整硬约束校验；分流格和上下行政班格请保留原位。',
-      { editorMode: true },
+      { editorMode: true, compact: true },
     );
     grid.querySelectorAll('[data-schedule-overlay-id]').forEach(button => {
       button.addEventListener('click', async () => {
@@ -4155,6 +4155,7 @@ function positionScheduleOverlays(container) {
 
 function renderDetailedTimetable(containerId, data, title, subtitle, options = {}) {
   const container = document.getElementById(containerId);
+  const compact = options.compact === true;
   const teacherDragEnabled = Boolean(options.teacherDrag && options.teacherId && !data?.stale);
   container.dataset.teacherDragEnabled = teacherDragEnabled ? 'true' : 'false';
   container.dataset.teacherId = teacherDragEnabled ? options.teacherId : '';
@@ -4180,19 +4181,21 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
   const overlaySlots = new Set(overlays.flatMap(overlay => overlay.slot_ids || []));
 
   let html = `
-    <div class="timetable-detail">
-      <div class="timetable-header">
-        <h3>${title}</h3>
-        <p>${subtitle}</p>
-        ${data.stale ? '<div class="validation-result warning">⚠️ 当前输入已修改：以下为上一版历史课表。请重新排课后再据此调整。</div>' : ''}
-        ${teacherDragEnabled ? `
-          <div class="teacher-drag-guide">
-            拖动课程调整时段：<span class="move-guide">绿色可直接放入</span>
-            <span class="swap-guide">蓝色可与现有课程安全互换</span>
-            <span class="invalid-guide">红色表示存在冲突</span>
-          </div>
-        ` : ''}
-      </div>
+    <div class="timetable-detail${compact ? ' timetable-detail-compact' : ''}">
+      ${compact ? '' : `
+        <div class="timetable-header">
+          <h3>${title}</h3>
+          <p>${subtitle}</p>
+          ${data.stale ? '<div class="validation-result warning">⚠️ 当前输入已修改：以下为上一版历史课表。请重新排课后再据此调整。</div>' : ''}
+          ${teacherDragEnabled ? `
+            <div class="teacher-drag-guide">
+              拖动课程调整时段：<span class="move-guide">绿色可直接放入</span>
+              <span class="swap-guide">蓝色可与现有课程安全互换</span>
+              <span class="invalid-guide">红色表示存在冲突</span>
+            </div>
+          ` : ''}
+        </div>
+      `}
       <div class="timetable-grid">
         <div class="header-cell">节次</div>
         ${days.map(d => `<div class="header-cell">${d}</div>`).join('')}
@@ -4228,7 +4231,16 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
             // classes.  Unlike AP/elective diversion, these are fixed class
             // lessons, so show each administrative class in its own vertical
             // lane instead of presenting them as a Section-choice list.
-            html += `
+            const adminSummary = slot.split_groups
+              .map(group => `${group.class_label || group.class_id || '行政班'}：${group.course}`)
+              .join('；');
+            html += compact ? `
+              <div class="slot-cell has-class category-admin-required admin-split-cell compact-split-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                   data-slot-id="${slotId}" title="${escapeHtml(adminSummary)}">
+                <div class="course-name">行政班课程（${slot.split_groups.length} 班）</div>
+                <div class="compact-cell-meta">${escapeHtml(adminSummary)}</div>
+              </div>
+            ` : `
               <div class="slot-cell has-class category-admin-required admin-split-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
                    data-slot-id="${slotId}">
                 <div class="admin-split-lanes">
@@ -4243,7 +4255,19 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
               </div>
             `;
           } else {
-            html += `
+            const splitSummary = slot.split_groups
+              .map(group => `${group.course} · ${group.section_label || group.section_id} · ${group.students} 人`)
+              .join('；');
+            const splitCourseNames = [...new Set(slot.split_groups
+              .map(group => group.course)
+              .filter(Boolean))]
+              .join(' / ');
+            html += compact ? `
+              <div class="slot-cell has-class category-${category} split-course-cell compact-split-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                   data-slot-id="${slotId}" title="${escapeHtml(splitSummary)}">
+                <div class="compact-cell-meta compact-split-course-names">🧩 ${escapeHtml(splitCourseNames)}</div>
+              </div>
+            ` : `
               <div class="slot-cell has-class category-${category} split-course-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
                    data-slot-id="${slotId}">
                 <div class="course-name">🧩 ${getCourseName(slot)}</div>
@@ -4262,7 +4286,16 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
         // 检查是否是教学班课表（包含行政班课程）
         } else if (slot.admin_courses && Object.keys(slot.admin_courses).length > 0) {
           // 教学班课表：显示行政班课程
-          html += `
+          const adminCourseSummary = Object.entries(slot.admin_courses)
+            .map(([classId, course]) => `${classId}：${course.course}`)
+            .join('；');
+          html += compact ? `
+            <div class="slot-cell has-class category-${category} compact-split-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                 data-slot-id="${slotId}" title="${escapeHtml(adminCourseSummary)}">
+              <div class="course-name">行政班课程</div>
+              <div class="compact-cell-meta">${escapeHtml(adminCourseSummary)}</div>
+            </div>
+          ` : `
             <div class="slot-cell has-class category-${category}${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
                  data-slot-id="${slotId}">
               <div class="admin-courses">
@@ -4300,8 +4333,8 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
               </div>
               ${slot.section_label ? `<div class="timetable-section-label">📍 ${slot.section_label}</div>` : ''}
               ${data.view_type === 'teacher' && slot.class_label ? `<div class="timetable-class-label">🏫 ${slot.class_label}</div>` : ''}
-              <div class="teacher-name">👨‍🏫 ${getTeacherName(slot)}</div>
-              <div class="room-name">🚪 ${getRoomName(slot)}</div>
+              ${compact ? '' : `<div class="teacher-name">👨‍🏫 ${getTeacherName(slot)}</div>`}
+              ${compact ? '' : `<div class="room-name">🚪 ${getRoomName(slot)}</div>`}
             </div>
           `;
         }
