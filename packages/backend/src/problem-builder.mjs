@@ -92,8 +92,9 @@ function apBlockRules(sections) {
  * These generated preferences make the Block layer a first-class scheduling
  * concern without turning a preferred lane into a hard constraint:
  *
- * - one representative section per synchronized Block prefers the early
- *   five-period band on every day; and
+ * - one representative section per synchronized Block targets exactly one
+ *   first-period meeting per week and otherwise prefers periods 2 through 6;
+ *   and
  * - all Block students prefer a continuous daily lesson prefix.
  *
  * The synchronized-slot hard rule carries the representative's choice to all
@@ -112,12 +113,16 @@ function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
   }
   if (!groups.size) return [];
 
-  // Three Blocks normally occupy three adjacent lanes.  Five flexible early
-  // periods leave two recovery lanes for teacher/lock conflicts, while still
-  // keeping AP before the administrative-course layer whenever possible.
+  // P1 remains in the preferred band because the separate count rule asks for
+  // one P1 meeting. Combined, the two rules mean one P1 per Block and P2-P6
+  // for the remaining occurrences. Both stay below locks and hard rules.
   const compactSlots = Array.from({ length: 5 }, (_, dayIndex) =>
-    Array.from({ length: 5 }, (_, periodIndex) => `D${dayIndex + 1}P${periodIndex + 1}`),
+    Array.from({ length: 6 }, (_, periodIndex) => `D${dayIndex + 1}P${periodIndex + 1}`),
   ).flat();
+  const firstPeriodSlots = Array.from(
+    { length: 5 },
+    (_, dayIndex) => `D${dayIndex + 1}P1`,
+  );
   const rules = [];
   for (const [blockId, targets] of groups) {
     const slots = targets[0].ap_block_slots || [];
@@ -128,19 +133,35 @@ function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
     const blockName = representative.ap_block_name || blockId;
     rules.push({
       id: `ap_block_${blockId}_compact_band`,
-      name: `AP ${blockName} 优先紧凑时段`,
-      type: 'preferred_slots', hard: false, weight: 400, scope: 'section',
+      name: `AP ${blockName} 尽量安排在第 1 至第 6 节`,
+      type: 'preferred_slots', hard: false, weight: 2_000, scope: 'section',
       target_ids: [representative.id], section_target_ids: [representative.id],
       params: { slots: compactSlots }, unmatched: false,
+      generated_by: 'ap_block_compactness',
+    });
+    rules.push({
+      id: `ap_block_${blockId}_one_first_period`,
+      name: `AP ${blockName} 每周尽量只排一次第一节`,
+      type: 'target_occurrences_in_slots', hard: false, weight: 5_000, scope: 'section',
+      target_ids: [representative.id], section_target_ids: [representative.id],
+      params: {
+        slots: firstPeriodSlots,
+        target: 1,
+        objective_tier: 'ap_block_first_period_pattern',
+      },
+      unmatched: false,
       generated_by: 'ap_block_compactness',
     });
   }
   if (studentIds.size) rules.push({
     id: 'ap_block_students_compact_daily_schedule',
     name: 'AP Block 学生当天课程尽量连续',
-    type: 'no_internal_gaps', hard: false, weight: 300, scope: 'student',
+    type: 'no_internal_gaps', hard: false, weight: 1000, scope: 'student',
     target_ids: [...studentIds].sort(), section_target_ids: [],
-    params: { ignore_course_ids: [...ignoredCourseIds].sort() }, unmatched: false,
+    params: {
+      ignore_course_ids: [...ignoredCourseIds].sort(),
+      preferred_morning_periods: 5,
+    }, unmatched: false,
     generated_by: 'ap_block_compactness',
   });
   return rules;

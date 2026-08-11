@@ -307,10 +307,6 @@ export function parseElectiveSelectionWorkbook(workbook, state, filename = '') {
   };
 }
 
-export function parseElectiveSelectionBuffer(buffer, state, filename = '') {
-  return parseElectiveSelectionWorkbook(XLSX.read(buffer, { type: 'buffer' }), state, filename);
-}
-
 export function applyElectiveSelectionChanges(state, changes) {
   if (!Array.isArray(changes) || !changes.length) throw new Error('没有可更新的其他选课数据');
   const students = new Map((state.students || []).map(student => [student.id, student]));

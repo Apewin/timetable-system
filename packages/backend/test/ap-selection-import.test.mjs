@@ -43,12 +43,85 @@ test('parses AP rosters across worksheets and ignores helper sheets', () => {
   assert.deepEqual(preview.changes.find(change => change.student_id === 'S1').course_ids, ['AP_BIO']);
 });
 
+test('parses every side-by-side roster and preserves its exact AP Block', () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['AP Biology'],
+    [null, 'Senior 2 Class 1-Block1', null, null, null, null, 'Senior 3 Class 2-Block2'],
+    [null, 'No.', 'Name (Chinese)', 'Name (Pin Yin)', 'English Name', null, null, 'No.', 'Name (Chinese)', 'Name (Pin Yin)', 'English Name'],
+    ['S2', 1, '张三', 'Zhang San', 'Alex', null, 'S3', 1, '李四', 'Li Si', 'Taylor'],
+  ]), 'AP Biology - Blocks');
+
+  const preview = parseApSelectionWorkbook(workbook, state, 'blocks.xlsx');
+
+  assert.equal(preview.matched_rows, 2);
+  assert.deepEqual(
+    preview.changes.map(change => ({
+      student_id: change.student_id,
+      block_assignments: change.block_assignments,
+    })),
+    [
+      { student_id: 'S1', block_assignments: [{ course_id: 'AP_BIO', block_id: 'AP_BLOCK_1' }] },
+      { student_id: 'S2', block_assignments: [{ course_id: 'AP_BIO', block_id: 'AP_BLOCK_2' }] },
+    ],
+  );
+});
+
 test('replace mode updates only students present in the imported workbook', () => {
   const preview = parseApSelectionWorkbook(workbookWithSheets(), state, 'choices.xlsx');
   const applied = applyApSelectionChanges(state, preview.changes, 'replace');
   assert.deepEqual(applied.students.find(student => student.id === 'S1').ap_courses, ['AP_BIO']);
   assert.deepEqual(applied.students.find(student => student.id === 'S2').ap_courses, ['AP_CS']);
   assert.equal(applied.updated, 2);
+});
+
+test('confirming an AP Block roster persists exact student-course-block assignments', () => {
+  const changes = [
+    {
+      student_id: 'S1',
+      course_ids: ['AP_BIO'],
+      block_assignments: [{ course_id: 'AP_BIO', block_id: 'AP_BLOCK_2' }],
+    },
+  ];
+
+  const applied = applyApSelectionChanges(state, changes, 'replace');
+
+  assert.deepEqual(applied.ap_block_assignments, [
+    { student_id: 'S1', course_id: 'AP_BIO', block_id: 'AP_BLOCK_2' },
+  ]);
+});
+
+test('rejects two synchronized AP courses assigned to the same student and Block', () => {
+  assert.throws(() => applyApSelectionChanges(state, [{
+    student_id: 'S1',
+    course_ids: ['AP_BIO', 'AP_CS'],
+    block_assignments: [
+      { course_id: 'AP_BIO', block_id: 'AP_BLOCK_1' },
+      { course_id: 'AP_CS', block_id: 'AP_BLOCK_1' },
+    ],
+  }], 'replace'), /同一 Block AP_BLOCK_1/);
+});
+
+test('preview blocks confirmation when one student has two courses in one AP Block', () => {
+  const workbook = XLSX.utils.book_new();
+  for (const [sheetName, title] of [['Biology', 'AP Biology'], ['CS', 'AP Computer Science']]) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      [title],
+      ['Senior 2 Class 1-Block1'],
+      ['No.', 'Name (Chinese)', 'Name (Pin Yin)', 'English Name'],
+      [1, '张三', 'Zhang San', 'Alex'],
+    ]), sheetName);
+  }
+
+  const preview = parseApSelectionWorkbook(workbook, state, 'conflict.xlsx');
+
+  assert.equal(preview.can_confirm, false);
+  assert.deepEqual(preview.block_conflicts, [{
+    student_id: 'S1',
+    student_name: '张三',
+    block_id: 'AP_BLOCK_1',
+    course_ids: ['AP_BIO', 'AP_CS'],
+  }]);
 });
 
 test('rejects an AP course imported for a student outside its grade scope', () => {

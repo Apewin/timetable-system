@@ -6,9 +6,7 @@ export default [
     ignores: [
       '**/node_modules/**',
       '**/dist/**',
-      'packages/core/**',
-      'packages/cli/**',
-      'packages/web/server.js',
+      'outputs/**',
     ],
   },
   eslint.configs.recommended,
@@ -21,6 +19,14 @@ export default [
     },
     rules: {
       'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: ['packages/cli/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: globals.node,
     },
   },
   {

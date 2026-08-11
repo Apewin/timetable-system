@@ -1,2 +1,4 @@
 packages:
-  - 'packages/*'
+  - 'packages/backend'
+  - 'packages/cli'
+  - 'packages/web'

@@ -3,104 +3,193 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>排课系统</title>
+  <meta name="theme-color" content="#ffffff">
+  <title>概览 · 排课系统</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="app">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
     <header class="header">
-      <h1>排课系统</h1>
+      <div class="header-leading">
+        <button id="btn-sidebar-toggle" class="shell-icon-button" type="button" aria-label="收起侧栏" aria-expanded="true">
+          <span aria-hidden="true">☰</span>
+        </button>
+        <div class="header-page-copy">
+          <p id="page-section">教务工作台</p>
+          <h1 id="page-title">概览</h1>
+        </div>
+      </div>
       <div class="header-actions">
-        <button id="btn-status" class="btn btn-secondary">查看状态</button>
-        <button id="btn-solve" class="btn btn-primary">求解课表</button>
+        <button id="btn-command-search" class="command-trigger" type="button" aria-haspopup="dialog">
+          <span aria-hidden="true">⌕</span>
+          <span>搜索页面与功能</span>
+          <kbd>⌘ K</kbd>
+        </button>
+        <button id="btn-theme-toggle" class="shell-icon-button" type="button" aria-label="切换深色模式">
+          <span class="theme-icon" aria-hidden="true">☾</span>
+        </button>
+        <button id="btn-status" class="btn btn-secondary">系统状态</button>
+        <button id="btn-solve" class="btn btn-primary">进入排课</button>
       </div>
     </header>
 
     <div class="container">
-      <nav class="sidebar">
+      <nav class="sidebar" aria-label="主导航">
+        <div class="sidebar-brand">
+          <div class="sidebar-brand-mark" aria-hidden="true">排</div>
+          <div class="sidebar-brand-copy">
+            <strong>智能排课</strong>
+            <span>Academic Scheduler</span>
+          </div>
+        </div>
         <div class="nav-section nav-section-primary">
-          <h3>🎯 排课表</h3>
+          <h3>排课工作台</h3>
           <ul>
-            <li><a href="#" data-view="welcome" class="active">🏠 首页</a></li>
-            <li><a href="#" data-view="manual-timetable">🗓️ 排课表</a></li>
-            <li><a href="#" data-view="teacher-availability">🖌️ 涂课表</a></li>
-            <li><a href="#" data-view="schedule-editor">🛠️ 改课表</a></li>
-            <li><a href="#" data-view="past-timetables">🕘 过往课表</a></li>
+            <li><a href="#" data-view="welcome" class="active"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">概览</span></a></li>
+            <li><a href="#" data-view="manual-timetable"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">排课表</span></a></li>
+            <li><a href="#" data-view="teacher-availability"><span class="nav-icon" aria-hidden="true">◩</span><span class="nav-label">涂课表</span></a></li>
+            <li><a href="#" data-view="schedule-editor"><span class="nav-icon" aria-hidden="true">↔</span><span class="nav-label">改课表</span></a></li>
+            <li><a href="#" data-view="past-timetables"><span class="nav-icon" aria-hidden="true">◷</span><span class="nav-label">过往课表</span></a></li>
           </ul>
         </div>
         <div class="nav-section">
-          <h3>📊 课表查看</h3>
+          <h3>课表查看</h3>
           <ul>
-            <li><a href="#" data-view="overview-timetable">总课表概览</a></li>
-            <li><a href="#" data-view="class-timetable">🏫 按班级</a></li>
-            <li><a href="#" data-view="teacher-timetable">👨‍🏫 按教师</a></li>
-            <li><a href="#" data-view="student-timetable">👨‍🎓 按学生</a></li>
-            <li><a href="#" data-view="ap-group-timetable">🧩 AP 分流组</a></li>
-            <li><a href="#" data-view="room-timetable">🚪 按教室</a></li>
+            <li><a href="#" data-view="overview-timetable"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">总课表概览</span></a></li>
+            <li><a href="#" data-view="class-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">班</span><span class="nav-label">按班级</span></a></li>
+            <li><a href="#" data-view="teacher-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">按教师</span></a></li>
+            <li><a href="#" data-view="student-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">生</span><span class="nav-label">按学生</span></a></li>
+            <li><a href="#" data-view="ap-group-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">AP</span><span class="nav-label">AP 分流组</span></a></li>
+            <li><a href="#" data-view="room-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">按教室</span></a></li>
           </ul>
         </div>
         <div class="nav-section">
-          <h3>📋 数据管理</h3>
+          <h3>数据管理</h3>
           <ul>
-            <li><a href="#" data-view="students">学生管理</a></li>
-            <li><a href="#" data-view="teachers">教师管理</a></li>
-            <li><a href="#" data-view="classes">班级管理</a></li>
-            <li><a href="#" data-view="courses">课程管理</a></li>
-            <li><a href="#" data-view="rooms">教室管理</a></li>
-            <li><a href="#" data-view="assignments">教师分工</a></li>
-            <li><a href="#" data-view="selections">AP选课</a></li>
-            <li><a href="#" data-view="elective-selections">其他选课</a></li>
-            <li><a href="#" data-view="sectioning">分班管理</a></li>
-            <li><a href="#" data-view="constraints">约束管理</a></li>
+            <li><a href="#" data-view="students"><span class="nav-icon nav-icon-text" aria-hidden="true">生</span><span class="nav-label">学生管理</span></a></li>
+            <li><a href="#" data-view="teachers"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">教师管理</span></a></li>
+            <li><a href="#" data-view="classes"><span class="nav-icon nav-icon-text" aria-hidden="true">班</span><span class="nav-label">班级管理</span></a></li>
+            <li><a href="#" data-view="courses"><span class="nav-icon nav-icon-text" aria-hidden="true">课</span><span class="nav-label">课程管理</span></a></li>
+            <li><a href="#" data-view="rooms"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">教室管理</span></a></li>
+            <li><a href="#" data-view="assignments"><span class="nav-icon" aria-hidden="true">⌘</span><span class="nav-label">教师分工</span></a></li>
+            <li><a href="#" data-view="selections"><span class="nav-icon nav-icon-text" aria-hidden="true">AP</span><span class="nav-label">AP 选课</span></a></li>
+            <li><a href="#" data-view="elective-selections"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">其他选课</span></a></li>
+            <li><a href="#" data-view="sectioning"><span class="nav-icon" aria-hidden="true">⑂</span><span class="nav-label">分班管理</span></a></li>
+            <li><a href="#" data-view="constraints"><span class="nav-icon" aria-hidden="true">≋</span><span class="nav-label">约束管理</span></a></li>
           </ul>
         </div>
         <div class="nav-section">
-          <h3>🔧 工具</h3>
+          <h3>系统工具</h3>
           <ul>
-            <li><a href="#" data-view="import">📥 数据导入</a></li>
-            <li><a href="#" data-view="graduation-archives">🎓 毕业学生选课信息</a></li>
-            <li><a href="#" data-view="export">📤 导出课表</a></li>
-            <li><a href="#" data-view="settings">⚙️ 系统设置</a></li>
+            <li><a href="#" data-view="import"><span class="nav-icon" aria-hidden="true">⇩</span><span class="nav-label">数据导入</span></a></li>
+            <li><a href="#" data-view="graduation-archives"><span class="nav-icon" aria-hidden="true">⌑</span><span class="nav-label">毕业学生选课信息</span></a></li>
+            <li><a href="#" data-view="export"><span class="nav-icon" aria-hidden="true">⇧</span><span class="nav-label">导出课表</span></a></li>
+            <li><a href="#" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">系统设置</span></a></li>
           </ul>
+        </div>
+        <div class="sidebar-footer">
+          <span class="sidebar-status-dot" aria-hidden="true"></span>
+          <div class="sidebar-footer-copy">
+            <strong>Rules-first 引擎</strong>
+            <span>硬约束独立校验</span>
+          </div>
         </div>
       </nav>
 
-      <main class="main">
+      <main id="main-content" class="main" tabindex="-1">
         <!-- 欢迎页面 -->
         <div id="view-welcome" class="view active">
           <div class="welcome-container">
             <div class="welcome-header">
-              <h1>📚 排课系统</h1>
-              <p class="welcome-subtitle">AP课程选科走班排课系统</p>
+              <div>
+                <span class="page-kicker">新学期排课工作台</span>
+                <h1>把复杂约束变成可执行课表</h1>
+                <p class="welcome-subtitle">从数据校验、金框锁定到 AI 补全，在一个工作区完成并保留每一步依据。</p>
+              </div>
+              <div class="welcome-header-actions">
+                <button class="btn btn-secondary" type="button" data-shell-view="import">导入数据</button>
+                <button class="btn btn-primary" type="button" data-shell-view="manual-timetable">开始排课</button>
+              </div>
             </div>
 
-            <div class="welcome-content">
-              <div class="welcome-card">
-                <div class="welcome-card-icon">🕐</div>
-                <h3>当前时间</h3>
-                <div id="current-datetime" class="datetime-display">
-                  加载中...
-                </div>
-              </div>
+            <div class="welcome-metrics" aria-label="基础数据概览">
+              <article class="metric-card">
+                <div class="metric-card-header"><span>学生</span><span class="metric-icon" aria-hidden="true">生</span></div>
+                <strong id="dashboard-students">—</strong>
+                <p>参与当前学期排课</p>
+              </article>
+              <article class="metric-card">
+                <div class="metric-card-header"><span>教师</span><span class="metric-icon" aria-hidden="true">师</span></div>
+                <strong id="dashboard-teachers">—</strong>
+                <p>已录入任课资源</p>
+              </article>
+              <article class="metric-card">
+                <div class="metric-card-header"><span>课程</span><span class="metric-icon" aria-hidden="true">课</span></div>
+                <strong id="dashboard-courses">—</strong>
+                <p>必修、AP 与其他选修</p>
+              </article>
+              <article class="metric-card">
+                <div class="metric-card-header"><span>排课规则</span><span class="metric-icon" aria-hidden="true">≋</span></div>
+                <strong id="dashboard-constraints">—</strong>
+                <p>硬约束与质量目标</p>
+              </article>
+            </div>
 
-              <div class="welcome-card">
-                <div class="welcome-card-icon">🤖</div>
-                <h3>AI API 连接测试</h3>
-                <p class="welcome-card-desc">测试 DeepSeek API 是否正常连接</p>
-                <button class="btn btn-primary" onclick="testAIConnection()">🔗 测试连接</button>
+            <div class="dashboard-grid">
+              <section class="dashboard-panel workflow-panel">
+                <div class="panel-heading">
+                  <div>
+                    <span class="panel-eyebrow">推荐流程</span>
+                    <h2>完成一次可靠排课</h2>
+                  </div>
+                  <span id="dashboard-stage" class="status-badge status-badge-neutral">读取状态中</span>
+                </div>
+                <div class="workflow-list">
+                  <button class="workflow-item" type="button" data-shell-view="import">
+                    <span class="workflow-step">01</span>
+                    <span><strong>导入并核对基础数据</strong><small>学生、教师、课程、选课名单与 Block</small></span>
+                    <span class="workflow-arrow" aria-hidden="true">→</span>
+                  </button>
+                  <button class="workflow-item" type="button" data-shell-view="manual-timetable">
+                    <span class="workflow-step">02</span>
+                    <span><strong>设置金框必要条件</strong><small>金框锁定是硬指标，AI 补全不可移动</small></span>
+                    <span class="workflow-arrow" aria-hidden="true">→</span>
+                  </button>
+                  <button class="workflow-item" type="button" data-shell-view="overview-timetable">
+                    <span class="workflow-step">03</span>
+                    <span><strong>审查并发布课表</strong><small>检查上午空档、质量门槛与待复核项</small></span>
+                    <span class="workflow-arrow" aria-hidden="true">→</span>
+                  </button>
+                </div>
+              </section>
+
+              <aside class="dashboard-panel system-panel">
+                <div class="panel-heading">
+                  <div>
+                    <span class="panel-eyebrow">运行状态</span>
+                    <h2>系统就绪情况</h2>
+                  </div>
+                  <span class="live-indicator"><i></i>实时</span>
+                </div>
+                <dl class="system-status-list">
+                  <div><dt>求解引擎</dt><dd id="dashboard-backend">读取中</dd></div>
+                  <div><dt>课表状态</dt><dd id="dashboard-publication">读取中</dd></div>
+                  <div><dt>人工复核</dt><dd id="dashboard-review">读取中</dd></div>
+                </dl>
+                <div class="dashboard-time">
+                  <span>当前时间</span>
+                  <div id="current-datetime" class="datetime-display">加载中...</div>
+                </div>
+                <div class="ai-connection-row">
+                  <div>
+                    <strong>AI 服务</strong>
+                    <span>测试 DeepSeek API 连接</span>
+                  </div>
+                  <button class="btn btn-secondary btn-sm" type="button" onclick="testAIConnection()">测试连接</button>
+                </div>
                 <div id="ai-test-result" class="ai-test-result"></div>
-              </div>
-
-              <div class="welcome-card">
-                <div class="welcome-card-icon">📊</div>
-                <h3>快速开始</h3>
-                <div class="quick-links">
-                  <a href="#" onclick="switchView('manual-timetable')">🗓️ 排课表</a>
-                  <a href="#" onclick="switchView('past-timetables')">🕘 过往课表</a>
-                  <a href="#" onclick="switchView('students')">👨‍🎓 学生管理</a>
-                  <a href="#" onclick="switchView('import')">📥 数据导入</a>
-                </div>
-              </div>
+              </aside>
             </div>
           </div>
         </div>
@@ -808,8 +897,50 @@
         <div id="view-export" class="view">
           <h2>📤 导出课表</h2>
           <div class="export-container">
+            <div class="export-section template-export-section">
+              <div class="template-export-heading">
+                <div>
+                  <span class="panel-eyebrow">Excel 模板导出</span>
+                  <h3>生成学校正式版课表</h3>
+                  <p>系统已内置学校的三个年级课表和全部教师课表模板，可直接使用；如选择新文件，只替换对应模板。系统会识别 Senior1/2/3、Class 1/2/3 与教师姓名，把当前有效课表写入模板副本。</p>
+                </div>
+                <span class="status-badge status-badge-success">推荐</span>
+              </div>
+
+              <div class="template-upload-grid">
+                <label class="template-upload-card" for="class-template-input">
+                  <span class="template-upload-step">1</span>
+                  <span class="template-upload-copy">
+                    <strong>三个年级课表模板</strong>
+                    <span id="class-template-filename">默认：2026-2027 学年三个年级课表</span>
+                  </span>
+                  <span class="template-upload-action">替换默认</span>
+                  <input id="class-template-input" type="file" accept=".xls,.xlsx" hidden>
+                </label>
+                <label class="template-upload-card" for="teacher-template-input">
+                  <span class="template-upload-step">2</span>
+                  <span class="template-upload-copy">
+                    <strong>全部教师课表模板</strong>
+                    <span id="teacher-template-filename">默认：9 月 1 日起全部教师课表</span>
+                  </span>
+                  <span class="template-upload-action">替换默认</span>
+                  <input id="teacher-template-input" type="file" accept=".xlsx,.xls" hidden>
+                </label>
+              </div>
+
+              <div class="template-export-actions">
+                <button id="btn-template-preview" class="btn btn-secondary" type="button">识别工作表</button>
+                <button id="btn-template-ai-match" class="btn btn-secondary" type="button" disabled>让 AI 判断剩余项</button>
+                <button id="btn-template-generate" class="btn btn-primary" type="button">生成并下载两份 Excel</button>
+                <span id="template-export-status" class="template-export-status" role="status">内置默认模板已就绪，无需上传文件。</span>
+              </div>
+
+              <div id="template-export-preview" class="template-export-preview hidden" aria-live="polite"></div>
+              <p class="template-export-note">不上传时使用内置默认模板；上传任意一个文件时，只替换该模板。点击“让 AI 判断剩余项”后，只向已配置模型发送工作表标题、课程、年级和受限候选教师，不发送学生信息或完整课表。原模板不会被修改。</p>
+            </div>
+
             <div class="export-section">
-              <h3>选择导出内容</h3>
+              <h3>其他导出格式</h3>
               <div class="export-options">
                 <div class="form-group">
                   <label>导出维度</label>
@@ -950,6 +1081,22 @@
         </div>
       </aside>
       <button id="btn-ai-assistant-open" class="ai-assistant-open hidden" type="button" aria-label="打开 AI 助手">🤖 AI</button>
+    </div>
+
+    <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-labelledby="command-palette-title">
+      <div class="command-palette-panel">
+        <div class="command-search-row">
+          <span aria-hidden="true">⌕</span>
+          <label id="command-palette-title" class="sr-only" for="command-search-input">搜索页面与功能</label>
+          <input id="command-search-input" type="search" autocomplete="off" placeholder="输入页面名称，例如“学生”或“排课”…">
+          <kbd>Esc</kbd>
+        </div>
+        <div id="command-results" class="command-results" role="listbox" aria-label="页面搜索结果"></div>
+        <div class="command-palette-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+          <span><kbd>Enter</kbd> 打开</span>
+        </div>
+      </div>
     </div>
 
     <div id="modal" class="modal hidden">

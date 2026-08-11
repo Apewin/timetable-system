@@ -182,6 +182,25 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
     case 'preferred_slots':
       return targetMeetings.filter(meeting => !params.slots.includes(meeting.slot_id))
         .map(meeting => violation(rule.id, `section ${meeting.section_id} 未排入偏好时段`, meeting));
+    case 'target_occurrences_in_slots': {
+      const preferred = new Set(params.slots);
+      const groups = groupedEvents(rule, sections, meetings, studentEvents);
+      return [...groups].flatMap(([targetId, events]) => {
+        const actual = events.filter(event => preferred.has(event.slot_id)).length;
+        const deviation = Math.abs(actual - params.target);
+        return deviation ? [violation(
+          rule.id,
+          `${targetId} 在指定时段安排 ${actual} 次，目标为 ${params.target} 次`,
+          {
+            target_id: targetId,
+            actual_occurrences: actual,
+            target_occurrences: params.target,
+            deviation,
+            penalty: (rule.weight || 0) * deviation,
+          },
+        )] : [];
+      });
+    }
     case 'max_occurrences_per_day': {
       const groups = groupedEvents(rule, sections, meetings, studentEvents);
       const issues = [];

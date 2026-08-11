@@ -1,14 +1,23 @@
 import { solveSchedule } from './cpsat-solver.mjs';
 import { validateSchedule } from './schedule-validator.mjs';
 
-const DEFAULT_DEFERRED_RULE_TYPES = new Set(['no_internal_gaps']);
+const DEFAULT_DEFERRED_RULE_TYPES = new Set();
+const EXPLICITLY_DEFERABLE_HARD_RULE_TYPES = new Set(['no_internal_gaps']);
+
+export function deferableHardRules(problem) {
+  return (problem.rules || []).filter(rule =>
+    rule.hard && EXPLICITLY_DEFERABLE_HARD_RULE_TYPES.has(rule.type));
+}
 
 function effectiveRules(problem, options) {
   const deferredTypes = new Set(options.deferredRuleTypes || DEFAULT_DEFERRED_RULE_TYPES);
+  const approvedIds = new Set(options.deferredRuleIds || []);
   const qualityWeight = Math.max(1, Number(options.deferredRuleWeight || 100));
   const deferredIds = [];
   const rules = (problem.rules || []).map(rule => {
-    if (!rule.hard || !deferredTypes.has(rule.type)) return rule;
+    if (!rule.hard
+      || !EXPLICITLY_DEFERABLE_HARD_RULE_TYPES.has(rule.type)
+      || (!approvedIds.has(rule.id) && !deferredTypes.has(rule.type))) return rule;
     deferredIds.push(rule.id);
     return {
       ...rule,
@@ -20,7 +29,7 @@ function effectiveRules(problem, options) {
   return { rules, deferredIds };
 }
 
-function candidateQuality(originalValidation, effectiveValidation, deferredIds) {
+function candidateQuality(originalValidation, effectiveValidation, deferredIds, solution) {
   const deferred = new Set(deferredIds);
   const reviewItems = originalValidation.hard_violations
     .filter(item => deferred.has(item.rule_id));
@@ -28,12 +37,38 @@ function candidateQuality(originalValidation, effectiveValidation, deferredIds) 
     .filter(item => !deferred.has(item.rule_id));
   return {
     reviewItems,
+    reviewItemCount: reviewItems.length,
     immutableViolations,
-    // Producing a complete timetable dominates preference tuning.  Among
-    // complete candidates, first reduce the number of daily prefix issues,
-    // then use the ordinary weighted soft score as a deterministic tie-break.
+    // Producing a complete timetable dominates preference tuning. Approved
+    // review items remain first; then candidate selection follows the same
+    // student-morning and weighted-soft hierarchy as the CP-SAT objective.
     score: reviewItems.length * 1_000_000 + effectiveValidation.soft_score,
+    softScore: effectiveValidation.soft_score,
+    apBlockAfternoonOccurrences: Number(
+      solution.ap_block_outside_preferred_band_occurrences
+        ?? solution.ap_block_afternoon_occurrences
+        ?? Number.MAX_SAFE_INTEGER,
+    ),
+    apBlockFirstPeriodDeviation: Number(
+      solution.ap_block_first_period_deviation ?? Number.MAX_SAFE_INTEGER,
+    ),
+    morningEmptyStudentPeriods: Number(
+      solution.morning_empty_student_periods ?? Number.MAX_SAFE_INTEGER,
+    ),
+    firstPeriodGapDays: (effectiveValidation.soft_violations || [])
+      .filter(item => item.rule_id === 'ap_block_students_compact_daily_schedule'
+        && (item.missing_periods || []).includes(1))
+      .length,
   };
+}
+
+function compareQuality(left, right) {
+  return left.reviewItemCount - right.reviewItemCount
+    || left.apBlockFirstPeriodDeviation - right.apBlockFirstPeriodDeviation
+    || left.apBlockAfternoonOccurrences - right.apBlockAfternoonOccurrences
+    || left.morningEmptyStudentPeriods - right.morningEmptyStudentPeriods
+    || left.softScore - right.softScore
+    || left.firstPeriodGapDays - right.firstPeriodGapDays;
 }
 
 /**
@@ -58,6 +93,7 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
   const candidates = [];
   const attempts = [];
   let bestSoFar = null;
+  let earlyStopReason = null;
   const firstCandidateShare = candidateCount > 1 ? 0.65 : 1;
   const laterCandidateSeconds = candidateCount > 1
     ? maxTimeSeconds * (1 - firstCandidateShare) / (candidateCount - 1)
@@ -114,6 +150,7 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
       originalValidation,
       effectiveValidation,
       prepared.deferredIds,
+      solution,
     );
     if (quality.immutableViolations.length) continue;
     candidates.push({
@@ -123,19 +160,32 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
       quality,
       seed,
     });
-    if (!bestSoFar || quality.score < bestSoFar.quality.score) {
+    if (!bestSoFar || compareQuality(quality, bestSoFar.quality) < 0) {
       bestSoFar = candidates.at(-1);
     }
     options.onProgress?.({
       stage: 'feasible-first-candidate-complete',
       candidate: index + 1,
       quality_score: quality.score,
+      ap_block_first_period_deviation: quality.apBlockFirstPeriodDeviation,
+      ap_block_afternoon_occurrences: quality.apBlockAfternoonOccurrences,
+      morning_empty_student_periods: quality.morningEmptyStudentPeriods,
+      first_period_gap_days: quality.firstPeriodGapDays,
       review_item_count: quality.reviewItems.length,
     });
+    // With no alternate AI decision strategy and no deferred hard rule, every
+    // candidate has the same feasible region and objective. Once CP-SAT proves
+    // that objective optimal, new seeds cannot improve the saved candidate.
+    if (solution.status === 'OPTIMAL'
+      && aiPriorityRules.length === 0
+      && prepared.deferredIds.length === 0) {
+      earlyStopReason = 'optimal_without_alternate_search_strategy';
+      break;
+    }
   }
 
   candidates.sort((left, right) =>
-    left.quality.score - right.quality.score || left.seed - right.seed);
+    compareQuality(left.quality, right.quality) || left.seed - right.seed);
   const best = candidates[0];
   if (!best) {
     const statuses = attempts.map(attempt => attempt.status);
@@ -159,17 +209,20 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
     ...best.solution,
     status: best.quality.reviewItems.length
       ? 'FEASIBLE_FIRST_REVIEW'
+      : prepared.deferredIds.length
+        ? 'FEASIBLE_FIRST_APPROVED_RELAXATION'
       : 'FEASIBLE_FIRST',
     algorithm: 'bounded-feasible-first',
     effective_rules: prepared.rules,
     deferred_rule_ids: prepared.deferredIds,
-    review_required: best.quality.reviewItems.length > 0,
+    review_required: prepared.deferredIds.length > 0,
     review_items: best.quality.reviewItems,
     quality_score: best.quality.score,
     validation: best.effectiveValidation,
     policy_validation: best.originalValidation,
     candidate_count: candidates.length,
     attempts,
+    early_stop_reason: earlyStopReason,
     solve_duration_ms: Math.round(performance.now() - startedAt),
   };
 }

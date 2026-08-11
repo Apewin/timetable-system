@@ -2,7 +2,7 @@
 
 面向国际课程学校的选课、分班、手动排课和全校课表生成系统。系统同时处理行政班、教学班、AP 选修班、其他选修班，以及跨年级授课教师和混合年级课程。
 
-当前网页流程以 `packages/backend` 的 rules-first 后端为唯一数据和算法入口。
+当前网页和 CLI 均以 `packages/backend` 的 rules-first 后端为唯一数据和算法入口。
 
 ## 当前版本能做什么
 
@@ -37,7 +37,7 @@
 
 ### 硬约束与软约束
 
-硬约束无法自动放宽，典型包括：
+硬约束不会自动放宽，典型包括：
 
 - 教师同一时段不能重复授课。
 - 同一学生同一时段不能上两门课。
@@ -46,22 +46,24 @@
 - 行政班课程和选修/混编课程的分离规则。
 - 配置为硬规则的每日次数、连续节数、最少上课天数等限制。
 
+当严格求解失败时，只有明确列入可审批范围的策略硬规则（目前仅学生每日连续性）才会在页面中逐条展示，并要求教务人员二次确认。批准仅对本次求解和确切规则 ID 生效；固定时段、禁排、锁定、教师与学生冲突不能通过此机制降级。使用审批降级生成的课表会保存审批记录并标记为“待复核”，不能存为正式课表。
+
 软约束用于择优，不保证全部满足，例如课程分散、连堂偏好、时段优先级等。当前默认算法优先寻找完整且无硬冲突的课表，再在有限候选中按软规则择优；不会穷举所有分班组合，也不承诺数学意义上的全局最优。
+
+课表生成成功与正式发布是两个状态：硬约束可行表示求解完成；只有质量门槛通过且没有硬规则降级时，`publication_status` 才是 `ready`。默认质量门槛要求 AP 学生不存在日内空堂；未达到时课表仍可查看和人工调整，但界面显示“待复核”，且不能进入过往正式课表。API 调用方可通过 `quality_limits.max_ap_student_gap_days` 显式设置本次发布上限。
 
 ## 系统结构
 
 ```text
-Excel / 页面操作
-        │
-        ▼
-packages/web  ── HTTP /api ──>  packages/backend
-                                  │
-                                  ├─ 状态仓库：timetable.json
-                                  ├─ 规则校验与编译
-                                  ├─ section / 选课建模
-                                  ├─ bounded-feasible-first + CP-SAT
-                                  ├─ 独立课表校验
-                                  └─ DeepSeek：表格整理、策略建议、页面助手
+Excel / 页面操作 ─> packages/web ─┐
+                                  ├─ HTTP /api ─> packages/backend
+大模型 / 管理员 ─> packages/cli ──┘                 │
+                                                     ├─ 状态仓库：timetable.json
+                                                     ├─ 规则校验与编译
+                                                     ├─ section / 选课建模
+                                                     ├─ bounded-feasible-first + CP-SAT
+                                                     ├─ 独立课表校验
+                                                     └─ DeepSeek：表格整理、策略建议、页面助手
 ```
 
 ### 目录说明
@@ -69,11 +71,11 @@ packages/web  ── HTTP /api ──>  packages/backend
 | 路径 | 用途 |
 | --- | --- |
 | `packages/backend` | 当前唯一网页后端、数据导入、规则编译、排课求解、校验、AI 接口 |
-| `packages/web` | 当前网页界面和 Vite 开发服务器 |
-| `packages/core` | 早期 TypeScript 求解原型，当前网页后端不调用 |
-| `packages/cli` | 早期 CLI 原型，当前网页工作流不使用 |
+| `packages/cli` | 面向管理员和大模型的机器可读 API 适配器，不包含独立求解逻辑 |
+| `packages/web` | 当前网页界面、前端测试和 Vite 构建配置 |
+| `packages/backend/assets` | 商用导出所需的默认班级、教师 Excel 模板 |
 | `timetable.json` | 本地运行时状态文件，包含学校数据，不纳入 Git |
-| `backups/`、各类 `*-candidate.json` | 历史求解快照或本地实验文件，不是当前服务入口 |
+| `backups/`、`outputs/` | 本地备份和导出结果，均不纳入 Git |
 
 ## 快速开始
 
@@ -88,12 +90,12 @@ packages/web  ── HTTP /api ──>  packages/backend
 pnpm install
 ```
 
-### 启动当前网页系统
+### 开发模式
 
-推荐直接启动前端和当前后端：
+在根目录启动前后端开发环境：
 
 ```bash
-pnpm --filter @timetable/web start
+pnpm dev
 ```
 
 启动后访问：
@@ -101,12 +103,10 @@ pnpm --filter @timetable/web start
 - 网页：<http://localhost:3000/>
 - 当前 API：<http://localhost:3001/api/status>
 
-`web start` 会同时启动：
+开发模式会同时启动：
 
 - `packages/backend/src/server.mjs`：端口 `3001`
-- Vite：端口 `3000`
-
-不要运行 `packages/web/server.js`，它是弃用的旧后端。当前系统不使用 `3101` 端口。
+- Vite：端口 `3000`，并把 `/api` 代理到后端
 
 也可以分别启动：
 
@@ -118,7 +118,66 @@ pnpm --filter @timetable/backend start
 pnpm --filter @timetable/web dev
 ```
 
-`pnpm dev` 会启动工作区内所有带 `dev` 脚本的包，包含早期 `core/cli` 的 TypeScript 监听任务；日常使用网页系统时不需要运行它。
+### CLI：给管理员和大模型的操作抓手
+
+CLI 输出稳定 JSON，并直接调用当前后端 `/api`；它不读取或改写求解器内部文件，也不保留另一套业务规则。先启动后端，再在仓库根目录执行：
+
+```bash
+# 离线查看命令能力和写操作策略
+pnpm --silent tt -- capabilities
+pnpm --silent tt -- describe
+pnpm --silent tt -- describe manual-plan
+pnpm --silent tt -- describe schedule.solve
+
+# 只读诊断
+pnpm --silent tt -- status
+pnpm --silent tt -- validate-input
+pnpm --silent tt -- validate
+pnpm --silent tt -- list students
+pnpm --silent tt -- timetable teacher T_TEACHER_ID
+
+# 通用 API 入口；/api 前缀可省略
+pnpm --silent tt -- request GET /state
+
+# 命名业务操作；路径参数和请求体格式由 describe 返回
+pnpm --silent tt -- action archive.timetable --param archiveId=ARCHIVE_ID --param by=class --param id=C101
+
+# 手工必要条件、归档、毕业与 AP Block 均有高层命令
+pnpm --silent tt -- manual-plan show
+pnpm --silent tt -- manual-plan draft --data-file draft.json --apply
+pnpm --silent tt -- archive list
+pnpm --silent tt -- archive show ARCHIVE_ID
+pnpm --silent tt -- graduation preview
+pnpm --silent tt -- ap-block show
+
+# 排课会写入当前状态，必须显式确认
+pnpm --silent tt -- solve --max-time 120 --candidates 2 --random-seed 77 --apply
+
+# Excel 导入先预览，再把人工核对后的请求体确认写入
+pnpm --silent tt -- import ap /path/to/ap-roster.xlsx
+pnpm --silent tt -- import ap /path/to/ap-roster.xlsx --ai
+pnpm --silent tt -- import confirm ap reviewed-ap-changes.json --apply
+
+# 班级和教师课表模板可预览、AI 匹配并生成两份 Excel；未上传时使用仓库默认模板
+pnpm --silent tt -- export preview
+pnpm --silent tt -- export ai-match --teacher-template /path/to/teachers.xlsx
+pnpm --silent tt -- export generate --mappings reviewed-mappings.json --output-dir outputs --apply
+```
+
+`describe` 是供管理员和大模型离线发现业务能力的清单，包含接口方法、路径参数、请求体提示、是否写状态、是否调用外部模型。`action` 执行清单中的 JSON 操作；`import`/`export` 处理 multipart 和本地文件。仍可用 `request` 调用当前后端的其他相对路径，所有非 `GET` 的通用请求一律要求 `--apply`。
+
+`--silent` 用于抑制 pnpm 自身的脚本标题，使标准输出只包含 CLI JSON；也可以直接执行 `node packages/cli/src/cli.mjs ...`。后端不在默认地址时，设置 `TIMETABLE_API_URL`，例如 `http://127.0.0.1:4000/api`。CLI 退出码固定为：`0` 成功、`2` 参数或 JSON 错误、`3` 后端连接/API 失败、`4` 操作缺少 `--apply`。
+
+`--apply` 只表示调用者明确要求执行状态变更或本地文件写入，不会绕过后端权限或业务校验。导入预览、模板预览和 AI 模板匹配虽使用 `POST`，但不会写系统状态，因此命名命令不要求 `--apply`；确认导入、排课、编辑、归档、毕业和生成本地 Excel 必须使用。对于排课，已确认的金框课程仍是硬条件；需要降级的策略硬规则仍须携带后端认可的精确规则审批信息。大模型应先执行 `describe` 和只读命令分析，再把拟执行的写操作展示给用户，获得确认后才加入 `--apply`。
+
+### 商用构建与启动
+
+```bash
+pnpm build
+pnpm start
+```
+
+生产构建由后端同时提供网页和 `/api`，默认地址为 <http://127.0.0.1:3001/>。服务器默认只监听本机；确需在受信任的校园内网部署时，可显式设置 `HOST`。系统当前没有面向公网的账户、权限和租户隔离，不应直接暴露到互联网。
 
 ## DeepSeek / AI 配置
 
@@ -145,7 +204,9 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 方式二：打开网页“系统设置”，填写 API 地址、模型名称和 API Key。API Key 只保存在本地配置中，接口返回时会脱敏为“已配置”。
 
-AI 的安全边界：模型可以解释数据、给出排班方案并生成待确认卡片，但不会因为一句自然语言直接写入学生、教师或课表数据。教师调换、课程调时等操作必须经过页面确认，后端还会再次检查数据版本和全部硬约束。
+AI 的安全边界：模型可以解释数据、给出排班方案并生成待确认卡片，但不会因为一句自然语言直接写入学生、教师或课表数据。页面中的教师调换、课程调时等操作必须经过确认；通过 CLI 操作时，写请求必须显式添加 `--apply`。两种入口都会由后端再次检查数据版本、金框锁定和全部硬约束。
+
+页面助手已接入受控 CLI 工具层。模型只会看到白名单操作：状态、规则、校验等无学生个人信息的查询可以在一次对话中经 CLI 执行；排课、金框、AP Block、课表标注和归档等写操作只能生成带操作名与 JSON 参数的确认卡。点击确认后，系统检查数据版本，再通过真实 CLI 的 `action … --apply` 执行。完整状态、学生实体列表、系统设置、毕业、任意实体删除、文件路径和任意 Shell 命令不向页面助手开放。
 
 ## 推荐使用流程
 
@@ -222,7 +283,7 @@ AI 的安全边界：模型可以解释数据、给出排班方案并生成待�
 默认状态文件是仓库根目录的 `timetable.json`。也可以通过 `STATE_FILE` 指定其他路径：
 
 ```bash
-STATE_FILE=/path/to/timetable.json pnpm --filter @timetable/web start
+STATE_FILE=/path/to/timetable.json pnpm start
 ```
 
 状态文件包含学生和选课等学校数据，已被 `.gitignore` 排除。不要把 `timetable.json`、`.env.local` 或真实 API Key 提交到 Git。需要保留版本时，应使用网页“过往课表”或单独备份状态文件。
@@ -230,24 +291,10 @@ STATE_FILE=/path/to/timetable.json pnpm --filter @timetable/web start
 ## 测试与检查
 
 ```bash
-# 后端语法检查
-pnpm --filter @timetable/backend check
-
-# 后端测试
-pnpm --filter @timetable/backend test
-
-# 前端测试
-pnpm --filter @timetable/web test
-
-# 全仓 lint
-pnpm lint
-
-# 全工作区构建
-pnpm build
+# 一次完成后端与 CLI 语法、lint、全部测试和生产构建
+pnpm check
 ```
 
 真实学校数据相关的集成测试可能因本地尚未导入完整高三 A/B/C 选课而跳过；这不等同于测试失败。发布前应同时检查测试输出、`/api/validate` 和网页中的待人工复核项。
 
-## 旧版代码说明
-
-`packages/core`、`packages/cli` 和 `packages/web/server.js` 保留用于历史对照或旧实验，不是当前浏览器系统的生产入口。修改当前系统时，优先从 `packages/backend/src` 和 `packages/web/app.js` 开始；不要把旧 CLI 的实体模型或旧服务端口重新接回网页流程。
+提交或部署前还应执行 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)；数据和网络安全边界见 [SECURITY.md](./SECURITY.md)。

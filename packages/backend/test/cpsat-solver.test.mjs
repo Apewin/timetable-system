@@ -317,6 +317,515 @@ test('treats a soft student prefix rule as a quality score instead of blocking a
   assert.equal(validation.soft_violations.length, 1);
 });
 
+test('optimizes soft student prefixes by affected student-days instead of unique timetable shapes', async () => {
+  const bigStudentIds = ['B1', 'B2', 'B3', 'B4', 'B5'];
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D1P3', day: 1, period: 3 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'big-core-first', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['BIG_CORE'], section_target_ids: ['BIG_CORE'], params: { slots: ['D1P1'], mode: 'exact' },
+      },
+      {
+        id: 'small-core-first', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['SMALL_CORE'], section_target_ids: ['SMALL_CORE'], params: { slots: ['D1P1'], mode: 'exact' },
+      },
+      {
+        id: 'student-prefix', type: 'no_internal_gaps', hard: false, weight: 10,
+        scope: 'student', target_ids: [...bigStudentIds, 'S1'], params: {},
+      },
+      {
+        id: 'prefer-big-late', type: 'preferred_slots', hard: false, weight: 1,
+        scope: 'section', target_ids: ['BIG_FLEX'], section_target_ids: ['BIG_FLEX'], params: { slots: ['D1P3'] },
+      },
+    ],
+    sections: [
+      {
+        id: 'BIG_CORE', course_id: 'BIG_CORE', teacher_id: 'T_BIG_CORE', class_type: 'teaching', weekly_hours: 1,
+        student_ids: bigStudentIds, eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'BIG_FLEX', course_id: 'BIG_FLEX', teacher_id: 'T_SHARED', class_type: 'teaching', weekly_hours: 1,
+        student_ids: bigStudentIds, eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'SMALL_CORE', course_id: 'SMALL_CORE', teacher_id: 'T_SMALL_CORE', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'SMALL_FLEX', course_id: 'SMALL_FLEX', teacher_id: 'T_SHARED', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings.find(item => item.section_id === 'BIG_FLEX')?.slot_id, 'D1P2');
+  assert.equal(solution.meetings.find(item => item.section_id === 'SMALL_FLEX')?.slot_id, 'D1P3');
+  assert.equal(validateSchedule(problem, solution).soft_score, 11);
+});
+
+test('charges one soft prefix penalty per student-day regardless of the number of missing periods', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D1P3', day: 1, period: 3 },
+      { id: 'D1P4', day: 1, period: 4 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'core-first', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['CORE'], section_target_ids: ['CORE'], params: { slots: ['D1P1'], mode: 'exact' },
+      },
+      {
+        id: 'flex-after-second', type: 'forbid_slots', hard: true, scope: 'section',
+        target_ids: ['FLEX'], section_target_ids: ['FLEX'], params: { slots: ['D1P1', 'D1P2'] },
+      },
+      {
+        id: 'student-prefix', type: 'no_internal_gaps', hard: false, weight: 10,
+        scope: 'student', target_ids: ['S1'], params: {},
+      },
+      {
+        id: 'prefer-fourth', type: 'preferred_slots', hard: false, weight: 1,
+        scope: 'section', target_ids: ['FLEX'], section_target_ids: ['FLEX'], params: { slots: ['D1P4'] },
+      },
+    ],
+    sections: [
+      {
+        id: 'CORE', course_id: 'CORE', teacher_id: 'T_CORE', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'FLEX', course_id: 'FLEX', teacher_id: 'T_FLEX', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings.find(item => item.section_id === 'FLEX')?.slot_id, 'D1P4');
+  assert.equal(validateSchedule(problem, solution).soft_score, 10);
+});
+
+test('uses first-period occupancy as a tie-break without changing the primary gap-day score', async () => {
+  const problem = {
+    // Put P2 first in the raw domain so fixed search demonstrates that the
+    // result comes from the objective, not the solver's lowest-value default.
+    slots: [
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P3', day: 1, period: 3 },
+      { id: 'D1P4', day: 1, period: 4 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'last-fixed', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['LAST'], section_target_ids: ['LAST'], params: { slots: ['D1P4'], mode: 'exact' },
+      },
+      {
+        id: 'student-prefix', type: 'no_internal_gaps', hard: false, weight: 10,
+        scope: 'student', target_ids: ['S1'], params: {},
+      },
+    ],
+    sections: [
+      {
+        id: 'LAST', course_id: 'LAST', teacher_id: 'T_LAST', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'FLEX', course_id: 'FLEX', teacher_id: 'T_FLEX', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    fixedSearch: true,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings.find(item => item.section_id === 'FLEX')?.slot_id, 'D1P1');
+  assert.equal(validateSchedule(problem, solution).soft_score, 10);
+});
+
+test('moves optional empty time to the afternoon after preserving the primary score', async () => {
+  const problem = {
+    // P6 is the lowest raw value. Without an explicit morning-fill objective,
+    // fixed search leaves FLEX in the afternoon even though P2 is available.
+    slots: [
+      { id: 'D1P6', day: 1, period: 6 },
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D1P3', day: 1, period: 3 },
+      { id: 'D1P5', day: 1, period: 5 },
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P4', day: 1, period: 4 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'first-fixed', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['FIRST'], section_target_ids: ['FIRST'], params: { slots: ['D1P1'], mode: 'exact' },
+      },
+      {
+        id: 'fourth-fixed', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['FOURTH'], section_target_ids: ['FOURTH'], params: { slots: ['D1P4'], mode: 'exact' },
+      },
+      {
+        id: 'student-prefix', type: 'no_internal_gaps', hard: false, weight: 10,
+        scope: 'student', target_ids: ['S1'], params: { preferred_morning_periods: 5 },
+      },
+    ],
+    sections: [
+      {
+        id: 'FIRST', course_id: 'FIRST', teacher_id: 'T_FIRST', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'FOURTH', course_id: 'FOURTH', teacher_id: 'T_FOURTH', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'FLEX', course_id: 'FLEX', teacher_id: 'T_FLEX', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    fixedSearch: true,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.notEqual(solution.meetings.find(item => item.section_id === 'FLEX')?.slot_id, 'D1P6');
+  assert.equal(solution.morning_empty_student_periods, 2);
+  assert.equal(validateSchedule(problem, solution).soft_score, 10);
+});
+
+test('prioritizes AP morning occupancy ahead of ordinary soft preferences', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P6', day: 1, period: 6 },
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D1P3', day: 1, period: 3 },
+      { id: 'D1P5', day: 1, period: 5 },
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P4', day: 1, period: 4 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'first-fixed', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['FIRST'], section_target_ids: ['FIRST'], params: { slots: ['D1P1'], mode: 'exact' },
+      },
+      {
+        id: 'fourth-fixed', type: 'fixed_slots', hard: true, scope: 'section',
+        target_ids: ['FOURTH'], section_target_ids: ['FOURTH'], params: { slots: ['D1P4'], mode: 'exact' },
+      },
+      {
+        id: 'student-prefix', type: 'no_internal_gaps', hard: false, weight: 10,
+        scope: 'student', target_ids: ['S1'], params: { preferred_morning_periods: 5 },
+      },
+      {
+        id: 'prefer-afternoon', type: 'preferred_slots', hard: false, weight: 100,
+        scope: 'section', target_ids: ['FLEX'], section_target_ids: ['FLEX'], params: { slots: ['D1P6'] },
+      },
+    ],
+    sections: [
+      {
+        id: 'FIRST', course_id: 'FIRST', teacher_id: 'T_FIRST', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'FOURTH', course_id: 'FOURTH', teacher_id: 'T_FOURTH', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'FLEX', course_id: 'FLEX', teacher_id: 'T_FLEX', class_type: 'teaching', weekly_hours: 1,
+        student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    fixedSearch: true,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.notEqual(solution.meetings.find(item => item.section_id === 'FLEX')?.slot_id, 'D1P6');
+  assert.equal(solution.morning_empty_student_periods, 2);
+  assert.equal(validateSchedule(problem, solution).soft_score, 110);
+});
+
+test('keeps the AP Block preferred band ahead of competing ordinary soft weights', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P6', day: 1, period: 6 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'ap_block_AP_BLOCK_1_compact_band',
+        type: 'preferred_slots', hard: false, weight: 2_000,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: { slots: ['D1P1'] },
+        generated_by: 'ap_block_compactness',
+      },
+      {
+        id: 'ordinary-core-morning-preference',
+        type: 'preferred_slots', hard: false, weight: 10_000,
+        scope: 'section', target_ids: ['CORE'], section_target_ids: ['CORE'],
+        params: { slots: ['D1P1'] },
+      },
+    ],
+    sections: [
+      {
+        id: 'AP', course_id: 'AP', teacher_id: 'T_AP', class_type: 'ap', ap_block_id: 'AP_BLOCK_1',
+        weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'CORE', course_id: 'CORE', teacher_id: 'T_CORE', class_type: 'teaching',
+        weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    fixedSearch: true,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings.find(item => item.section_id === 'AP')?.slot_id, 'D1P1');
+  assert.equal(solution.ap_block_afternoon_occurrences, 0);
+});
+
+test('uses the calibrated AP Block weight when the competing preference is weaker', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P6', day: 1, period: 6 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'ap_block_AP_BLOCK_1_compact_band',
+        type: 'preferred_slots', hard: false, weight: 2_000,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: { slots: ['D1P1'] }, generated_by: 'ap_block_compactness',
+      },
+      {
+        id: 'ordinary-core-morning-preference',
+        type: 'preferred_slots', hard: false, weight: 1_000,
+        scope: 'section', target_ids: ['CORE'], section_target_ids: ['CORE'],
+        params: { slots: ['D1P1'] },
+      },
+    ],
+    sections: [
+      {
+        id: 'AP', course_id: 'AP', teacher_id: 'T_AP', class_type: 'ap', ap_block_id: 'AP_BLOCK_1',
+        weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+      {
+        id: 'CORE', course_id: 'CORE', teacher_id: 'T_CORE', class_type: 'teaching',
+        weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+      },
+    ],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    fixedSearch: true,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings.find(item => item.section_id === 'AP')?.slot_id, 'D1P1');
+  assert.equal(solution.ap_block_afternoon_occurrences, 0);
+});
+
+test('allows an AP Block meeting in the afternoon when a hard rule requires it', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P6', day: 1, period: 6 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'ap-block-fixed-afternoon', type: 'fixed_slots', hard: true,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: { slots: ['D1P6'], mode: 'exact' },
+      },
+      {
+        id: 'ap_block_AP_BLOCK_1_compact_band',
+        type: 'preferred_slots', hard: false, weight: 2_000,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: { slots: ['D1P1'] },
+        generated_by: 'ap_block_compactness',
+      },
+    ],
+    sections: [{
+      id: 'AP', course_id: 'AP', teacher_id: 'T_AP', class_type: 'ap', ap_block_id: 'AP_BLOCK_1',
+      weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings[0]?.slot_id, 'D1P6');
+  assert.equal(solution.ap_block_afternoon_occurrences, 1);
+});
+
+test('gives each AP Block one first period before optimizing ordinary soft weights', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D1P6', day: 1, period: 6 },
+      { id: 'D2P1', day: 2, period: 1 },
+      { id: 'D2P2', day: 2, period: 2 },
+      { id: 'D2P6', day: 2, period: 6 },
+      { id: 'D2P7', day: 2, period: 7 },
+    ],
+    rooms: [],
+    rules: [
+      {
+        id: 'ap_block_AP_BLOCK_1_one_first_period',
+        type: 'target_occurrences_in_slots', hard: false, weight: 5_000,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: {
+          slots: ['D1P1', 'D2P1'], target: 1,
+          objective_tier: 'ap_block_first_period_pattern',
+        },
+        generated_by: 'ap_block_compactness',
+      },
+      {
+        id: 'ap_block_AP_BLOCK_1_compact_band',
+        type: 'preferred_slots', hard: false, weight: 2_000,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: { slots: ['D1P1', 'D1P2', 'D1P6', 'D2P1', 'D2P2', 'D2P6'] },
+        generated_by: 'ap_block_compactness',
+      },
+      {
+        id: 'strong-ordinary-first-period-preference',
+        type: 'preferred_slots', hard: false, weight: 100_000,
+        scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+        params: { slots: ['D1P1', 'D2P1'] },
+      },
+    ],
+    sections: [{
+      id: 'AP', course_id: 'AP', teacher_id: 'T_AP', class_type: 'ap', ap_block_id: 'AP_BLOCK_1',
+      weekly_hours: 3, student_ids: [], eligible_student_ids: [], grades: [11],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    fixedSearch: true,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.equal(solution.meetings.filter(item => item.slot_id.endsWith('P1')).length, 1);
+  assert.ok(solution.meetings.every(item => Number(item.slot_id.split('P')[1]) <= 6));
+  assert.equal(solution.ap_block_first_period_deviation, 0);
+  assert.equal(solution.ap_block_first_period_actual_count, 1);
+  assert.equal(solution.ap_block_first_period_target_count, 1);
+});
+
+test('keeps hard locks even when they force an AP Block away from its first-period target', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P2', day: 1, period: 2 },
+      { id: 'D2P1', day: 2, period: 1 },
+      { id: 'D2P2', day: 2, period: 2 },
+    ],
+    rooms: [],
+    rules: [{
+      id: 'ap_block_AP_BLOCK_1_one_first_period',
+      type: 'target_occurrences_in_slots', hard: false, weight: 5_000,
+      scope: 'section', target_ids: ['AP'], section_target_ids: ['AP'],
+      params: {
+        slots: ['D1P1', 'D2P1'], target: 1,
+        objective_tier: 'ap_block_first_period_pattern',
+      },
+      generated_by: 'ap_block_compactness',
+    }],
+    sections: [{
+      id: 'AP', course_id: 'AP', teacher_id: 'T_AP', class_type: 'ap', ap_block_id: 'AP_BLOCK_1',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [], grades: [11],
+    }],
+  };
+  const locks = [
+    { section_id: 'AP', slot_id: 'D1P1' },
+    { section_id: 'AP', slot_id: 'D2P1' },
+  ];
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    optimizeSoft: true,
+    freezeMembership: true,
+    useConstructiveSeed: false,
+    lockedMeetings: locks,
+  });
+
+  assert.equal(solution.ok, true, solution.status);
+  assert.deepEqual(solution.meetings.map(item => item.slot_id).sort(), ['D1P1', 'D2P1']);
+  assert.equal(solution.ap_block_first_period_actual_count, 2);
+  assert.equal(solution.ap_block_first_period_target_count, 1);
+  assert.equal(solution.ap_block_first_period_deviation, 1);
+  assert.equal(validateSchedule(problem, { ...solution, locks }).ok, true);
+});
+
 test('returns the core timetable assumptions responsible for infeasibility', async () => {
   const problem = {
     slots,

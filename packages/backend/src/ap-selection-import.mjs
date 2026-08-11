@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { apBlockConfigForState } from './ap-block-sectioning.mjs';
 
 function text(value) {
   return String(value ?? '').trim();
@@ -41,18 +42,40 @@ function courseAppliesToStudentGrade(course, grade) {
   return !grades.length || grades.includes(Number(grade));
 }
 
-function findRosterHeader(matrix) {
+function blockIdForRoster(matrix, headerRowIndex, chineseNameColumn) {
+  const startColumn = Math.max(0, chineseNameColumn - 2);
+  const endColumn = chineseNameColumn + 2;
+  for (let rowIndex = headerRowIndex - 1; rowIndex >= 0; rowIndex -= 1) {
+    for (let column = startColumn; column <= endColumn; column += 1) {
+      const match = /\bblock\s*([1-6])\b/i.exec(text(matrix[rowIndex]?.[column]));
+      if (match) return `AP_BLOCK_${match[1]}`;
+    }
+  }
+  return null;
+}
+
+function findRosterHeaders(matrix) {
   for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 20); rowIndex++) {
     const headers = (matrix[rowIndex] || []).map(compact);
-    const find = candidates => headers.findIndex(header => candidates.includes(header));
-    const columns = {
-      chineseName: find(['namechinese', '姓名', '中文名', '中文姓名']),
-      pinyinName: find(['namepinyin', '拼音', '姓名拼音']),
-      englishName: find(['englishname', '英文名', '英文姓名']),
-    };
-    if (columns.chineseName >= 0) return { rowIndex, columns };
+    const chineseNameColumns = headers
+      .map((header, index) => ['namechinese', '姓名', '中文名', '中文姓名'].includes(header) ? index : -1)
+      .filter(index => index >= 0);
+    if (!chineseNameColumns.length) continue;
+    return chineseNameColumns.map(chineseName => {
+      const localColumn = candidates => headers.findIndex((header, index) =>
+        index > chineseName && index <= chineseName + 3 && candidates.includes(header));
+      return {
+        rowIndex,
+        blockId: blockIdForRoster(matrix, rowIndex, chineseName),
+        columns: {
+          chineseName,
+          pinyinName: localColumn(['namepinyin', '拼音', '姓名拼音']),
+          englishName: localColumn(['englishname', '英文名', '英文姓名']),
+        },
+      };
+    });
   }
-  return undefined;
+  return [];
 }
 
 function sheetTitle(matrix, sheetName, headerRowIndex) {
@@ -101,6 +124,7 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
   const courses = state.courses || [];
   const courseOrder = new Map(courses.map((course, index) => [course.id, index]));
   const selectedByStudent = new Map();
+  const blockAssignmentsByStudent = new Map();
   const sheets = [];
   const unmatched = [];
   const ambiguous = [];
@@ -111,12 +135,12 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
 
   for (const sheetName of workbook.SheetNames) {
     const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
-    const header = findRosterHeader(matrix);
-    if (!header) {
+    const headers = findRosterHeaders(matrix);
+    if (!headers.length) {
       ignoredSheets.push({ sheet_name: sheetName, reason: '未找到中文姓名表头' });
       continue;
     }
-    const title = sheetTitle(matrix, sheetName, header.rowIndex);
+    const title = sheetTitle(matrix, sheetName, headers[0].rowIndex);
     const course = courseForTitle(title, courses);
     if (!course) {
       const issue = { sheet_name: sheetName, title: title || '未识别', reason: '标题无法对应系统 AP 课程' };
@@ -125,21 +149,25 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
       continue;
     }
 
-    const rows = [];
-    for (let rowIndex = header.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
-      const values = matrix[rowIndex] || [];
-      const chineseName = text(values[header.columns.chineseName]);
-      if (!chineseName) continue;
-      rows.push({
-        sheet_name: sheetName,
-        excel_row: rowIndex + 1,
-        course_id: course.id,
-        course_name: course.name,
-        chinese_name: chineseName,
-        pinyin_name: header.columns.pinyinName >= 0 ? text(values[header.columns.pinyinName]) : '',
-        english_name: header.columns.englishName >= 0 ? text(values[header.columns.englishName]) : '',
-      });
-    }
+    const rows = headers.flatMap(header => {
+      const rosterRows = [];
+      for (let rowIndex = header.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
+        const values = matrix[rowIndex] || [];
+        const chineseName = text(values[header.columns.chineseName]);
+        if (!chineseName) continue;
+        rosterRows.push({
+          sheet_name: sheetName,
+          excel_row: rowIndex + 1,
+          course_id: course.id,
+          course_name: course.name,
+          block_id: header.blockId,
+          chinese_name: chineseName,
+          pinyin_name: header.columns.pinyinName >= 0 ? text(values[header.columns.pinyinName]) : '',
+          english_name: header.columns.englishName >= 0 ? text(values[header.columns.englishName]) : '',
+        });
+      }
+      return rosterRows;
+    });
 
     let sheetMatched = 0;
     let sheetUnmatched = 0;
@@ -163,6 +191,12 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
         matchedRows++;
         if (!selectedByStudent.has(match.student.id)) selectedByStudent.set(match.student.id, new Set());
         selectedByStudent.get(match.student.id).add(course.id);
+        if (row.block_id) {
+          if (!blockAssignmentsByStudent.has(match.student.id)) {
+            blockAssignmentsByStudent.set(match.student.id, new Map());
+          }
+          blockAssignmentsByStudent.get(match.student.id).set(course.id, row.block_id);
+        }
       } else if (match.status === 'ambiguous') {
         sheetAmbiguous++;
         ambiguous.push({ ...row, candidate_ids: match.candidates.map(student => student.id) });
@@ -202,11 +236,32 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
       course_names: next.map(id => courseNameById.get(id) || id),
       added_course_ids: next.filter(id => !previous.includes(id)),
       removed_course_ids: previous.filter(id => !next.includes(id)),
+      block_assignments: [...(blockAssignmentsByStudent.get(studentId) || [])]
+        .sort(([left], [right]) => (courseOrder.get(left) ?? 9999) - (courseOrder.get(right) ?? 9999))
+        .map(([course_id, block_id]) => ({ course_id, block_id })),
     };
   }).sort((left, right) => left.student_id.localeCompare(right.student_id, 'zh-CN', { numeric: true }));
 
   const recognizedSheets = sheets.filter(sheet => sheet.status === 'recognized');
-  const issueCount = unmatched.length + ambiguous.length + gradeMismatches.length + unmappedCourseSheets.length;
+  const blockConflicts = changes.flatMap(change => {
+    const coursesByBlock = new Map();
+    for (const assignment of change.block_assignments || []) {
+      const courseIds = coursesByBlock.get(assignment.block_id) || [];
+      courseIds.push(assignment.course_id);
+      coursesByBlock.set(assignment.block_id, courseIds);
+    }
+    return [...coursesByBlock]
+      .filter(([, courseIds]) => courseIds.length > 1)
+      .map(([block_id, courseIds]) => ({
+        student_id: change.student_id,
+        student_name: change.student_name,
+        block_id,
+        course_ids: courseIds.sort((left, right) =>
+          (courseOrder.get(left) ?? 9999) - (courseOrder.get(right) ?? 9999)),
+      }));
+  });
+  const issueCount = unmatched.length + ambiguous.length + gradeMismatches.length
+    + unmappedCourseSheets.length + blockConflicts.length;
   return {
     filename,
     total_sheets: workbook.SheetNames.length,
@@ -218,6 +273,7 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
     unmatched,
     ambiguous,
     grade_mismatches: gradeMismatches,
+    block_conflicts: blockConflicts,
     unmapped_course_sheets: unmappedCourseSheets,
     issue_count: issueCount,
     can_confirm: recognizedSheets.length > 0 && changes.length > 0 && issueCount === 0,
@@ -236,7 +292,9 @@ export function applyApSelectionChanges(state, changes, mode = 'replace') {
   const apCourseIds = new Set((state.courses || []).filter(course => course.type === 'ap').map(course => course.id));
   const courseById = new Map((state.courses || []).map(course => [course.id, course]));
   const studentById = new Map((state.students || []).map(student => [student.id, student]));
+  const validBlockIds = new Set(apBlockConfigForState(state).blocks.map(block => block.id));
   const changeByStudent = new Map();
+  const importedBlockAssignments = [];
   for (const change of changes) {
     if (!change?.student_id || !Array.isArray(change.course_ids)) throw new Error('AP 选课变更数据不完整');
     if (changeByStudent.has(change.student_id)) throw new Error(`学生 ${change.student_id} 在导入数据中重复`);
@@ -250,6 +308,35 @@ export function applyApSelectionChanges(state, changes, mode = 'replace') {
         throw new Error(`${course.name || courseId} 不适用于 ${student.name || student.id}（年级 ${student.grade}）`);
       }
     }
+    if (change.block_assignments !== undefined && !Array.isArray(change.block_assignments)) {
+      throw new Error(`学生 ${change.student_id} 的 AP Block 分班必须是数组`);
+    }
+    const assignedCourses = new Set();
+    const assignedBlocks = new Set();
+    for (const assignment of change.block_assignments || []) {
+      if (!assignment?.course_id || !assignment?.block_id) {
+        throw new Error(`学生 ${change.student_id} 的 AP Block 分班数据不完整`);
+      }
+      if (!unique.includes(assignment.course_id)) {
+        throw new Error(`学生 ${change.student_id} 的 Block 分班引用了未选择课程 ${assignment.course_id}`);
+      }
+      if (!validBlockIds.has(assignment.block_id)) {
+        throw new Error(`学生 ${change.student_id} 的 Block 不存在: ${assignment.block_id}`);
+      }
+      if (assignedCourses.has(assignment.course_id)) {
+        throw new Error(`学生 ${change.student_id} 的课程 ${assignment.course_id} 重复分配 Block`);
+      }
+      if (assignedBlocks.has(assignment.block_id)) {
+        throw new Error(`学生 ${change.student_id} 在同一 Block ${assignment.block_id} 有多门 AP 课程`);
+      }
+      assignedCourses.add(assignment.course_id);
+      assignedBlocks.add(assignment.block_id);
+      importedBlockAssignments.push({
+        student_id: change.student_id,
+        course_id: assignment.course_id,
+        block_id: assignment.block_id,
+      });
+    }
     changeByStudent.set(change.student_id, unique);
   }
   let updated = 0;
@@ -262,5 +349,19 @@ export function applyApSelectionChanges(state, changes, mode = 'replace') {
   });
   const missing = [...changeByStudent.keys()].filter(id => !students.some(student => student.id === id));
   if (missing.length) throw new Error(`找不到学生: ${missing.join(', ')}`);
-  return { students, updated, mode };
+  const importedStudentIds = new Set(changeByStudent.keys());
+  const previousAssignments = (state.ap_block_assignments || []).filter(assignment =>
+    mode === 'merge' || !importedStudentIds.has(assignment.student_id));
+  const assignmentByKey = new Map(previousAssignments.map(assignment => [
+    `${assignment.student_id}\u0000${assignment.course_id}`,
+    assignment,
+  ]));
+  for (const assignment of importedBlockAssignments) {
+    assignmentByKey.set(`${assignment.student_id}\u0000${assignment.course_id}`, assignment);
+  }
+  const apBlockAssignments = [...assignmentByKey.values()].sort((left, right) =>
+    left.student_id.localeCompare(right.student_id, 'zh-CN', { numeric: true })
+      || left.course_id.localeCompare(right.course_id)
+      || left.block_id.localeCompare(right.block_id));
+  return { students, ap_block_assignments: apBlockAssignments, updated, mode };
 }

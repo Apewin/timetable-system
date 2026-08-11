@@ -305,6 +305,79 @@ function assignRosters(offerings, courseBlocks, blockIds, records = studentCours
   return rosters;
 }
 
+function exactRosters(state, offerings, config, resolveTeacher) {
+  const assignments = state.ap_block_assignments || [];
+  if (!assignments.length) return null;
+  const validBlockIds = new Set(config.blocks.map(block => block.id));
+  const offeringByStudentCourse = new Map();
+  for (const [offeringId, offering] of offerings) {
+    for (const studentId of offering.students.keys()) {
+      offeringByStudentCourse.set(`${studentId}\u0000${offering.course_id}`, { offeringId, offering });
+    }
+  }
+  const assignmentByStudentCourse = new Map();
+  const courseByStudentBlock = new Map();
+  const rosters = new Map();
+  const blocksByOffering = new Map();
+  for (const assignment of assignments) {
+    const studentId = String(assignment?.student_id || '').trim();
+    const courseId = String(assignment?.course_id || '').trim();
+    const blockId = String(assignment?.block_id || '').trim();
+    const key = `${studentId}\u0000${courseId}`;
+    const selected = offeringByStudentCourse.get(key);
+    if (!selected) {
+      throw new Error(`AP Block 精确名单包含未选课程或未知学生: ${studentId}/${courseId}`);
+    }
+    if (!validBlockIds.has(blockId)) throw new Error(`AP Block 精确名单引用了不存在的 Block: ${blockId}`);
+    if (assignmentByStudentCourse.has(key)) {
+      throw new Error(`AP Block 精确名单重复分配学生课程: ${studentId}/${courseId}`);
+    }
+    const usedBlockKey = `${studentId}\u0000${blockId}`;
+    if (courseByStudentBlock.has(usedBlockKey)) {
+      throw new Error(
+        `学生 ${studentId} 在 ${blockId} 同时选择了 ${courseByStudentBlock.get(usedBlockKey)} 和 ${courseId}`,
+      );
+    }
+    const configuredBlocks = config.offering_block_ids[selected.offeringId]
+      || config.course_block_ids[courseId];
+    if (configuredBlocks && !configuredBlocks.includes(blockId)) {
+      throw new Error(`AP Block 精确名单中的 ${courseId}/${blockId} 不在配置允许范围内`);
+    }
+    assignmentByStudentCourse.set(key, blockId);
+    courseByStudentBlock.set(usedBlockKey, courseId);
+    const rosterKey = JSON.stringify([selected.offeringId, blockId]);
+    const roster = rosters.get(rosterKey) || [];
+    roster.push(selected.offering.students.get(studentId));
+    rosters.set(rosterKey, roster);
+    const offeringBlocks = blocksByOffering.get(selected.offeringId) || new Set();
+    offeringBlocks.add(blockId);
+    blocksByOffering.set(selected.offeringId, offeringBlocks);
+  }
+  const missing = [...offeringByStudentCourse.keys()].filter(key => !assignmentByStudentCourse.has(key));
+  if (missing.length) {
+    throw new Error(`AP Block 精确名单缺少 ${missing.length} 条选课分班: ${missing.slice(0, 5).join('、')}`);
+  }
+  const teacherByBlock = new Map();
+  for (const [offeringId, blockIds] of blocksByOffering) {
+    const offering = offerings.get(offeringId);
+    if (blockIds.size > offering.section_limit) {
+      throw new Error(
+        `课程 ${displayName(offering.course)} 的精确名单需要 ${blockIds.size} 个 Block section，超过配置上限 ${offering.section_limit}`,
+      );
+    }
+    const teacher = teacherForOffering(state, offering, resolveTeacher);
+    for (const blockId of blockIds) {
+      const occupiedKey = `${teacher.id}\u0000${blockId}`;
+      const occupiedOffering = teacherByBlock.get(occupiedKey);
+      if (occupiedOffering && occupiedOffering !== offeringId) {
+        throw new Error(`教师 ${teacher.name || teacher.id} 在 ${blockId} 被分配到多个 AP section`);
+      }
+      teacherByBlock.set(occupiedKey, offeringId);
+    }
+  }
+  return rosters;
+}
+
 function chooseCourseBlocks(state, offerings, config, resolveTeacher) {
   const blockIds = config.blocks.map(block => block.id);
   const candidateSets = new Map();
@@ -381,7 +454,8 @@ export function buildApBlockSections(state, courses, studentsByCourse, resolveTe
   if (!config.enabled) return null;
   if (!studentsByCourse.size) return [];
   const offerings = apOfferings(studentsByCourse, courses);
-  const { rosters } = chooseCourseBlocks(state, offerings, config, resolveTeacher);
+  const rosters = exactRosters(state, offerings, config, resolveTeacher)
+    || chooseCourseBlocks(state, offerings, config, resolveTeacher).rosters;
   const blockById = byId(config.blocks);
   const sections = [];
   for (const [key, students] of [...rosters.entries()].sort(([left], [right]) => left.localeCompare(right))) {

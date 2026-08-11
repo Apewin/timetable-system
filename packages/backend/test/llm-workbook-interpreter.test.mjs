@@ -4,13 +4,60 @@ import * as XLSX from 'xlsx';
 import {
   AI_ASSISTANT_PROMPT,
   AI_SCHEDULING_STRATEGY_PROMPT,
+  AI_TEACHER_TEMPLATE_MATCH_PROMPT,
   askAiAssistant,
   assistantContextSnapshot,
   interpretWorkbook,
   planSchedulingStrategy,
+  suggestTeacherTemplateMappings,
   workbookFromInterpretation,
   workbookSnapshot,
 } from '../src/llm-workbook-interpreter.mjs';
+
+test('teacher-template AI can only suggest a supplied course-assignment candidate', async () => {
+  assert.match(AI_TEACHER_TEMPLATE_MATCH_PROMPT, /候选之外/);
+  assert.match(AI_TEACHER_TEMPLATE_MATCH_PROMPT, /不得根据候选顺序/);
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    assert.equal(request.max_tokens, 2400);
+    const input = JSON.parse(request.messages[1].content);
+    assert.deepEqual(input.worksheets[0].candidates.map(item => item.teacher_id), ['T_PE_1', 'T_PE_2']);
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({
+          suggestions: [{
+            sheet_name: '高二体育宋志勇',
+            teacher_id: 'T_PE_1',
+            confidence: 0.78,
+            reason: '工作表课程与同年级体育分工候选一致',
+          }],
+        }) } }],
+      }),
+    };
+  };
+  const result = await suggestTeacherTemplateMappings([{
+    sheet_name: '高二体育宋志勇',
+    status: 'ambiguous',
+    identity_texts: ['高二体育宋志勇'],
+    detected_grade: 11,
+    detected_course_ids: ['PE'],
+    detected_course_names: ['体育'],
+    ai_candidates: [
+      { teacher_id: 'T_PE_1', teacher_name: '体育教师一', course_ids: ['PE'], grades: [11], same_grade: true },
+      { teacher_id: 'T_PE_2', teacher_name: '体育教师二', course_ids: ['PE'], grades: [11], same_grade: true },
+    ],
+  }], {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+  assert.deepEqual(result.suggestions[0], {
+    sheet_name: '高二体育宋志勇',
+    teacher_id: 'T_PE_1',
+    confidence: 0.78,
+    reason: '工作表课程与同年级体育分工候选一致',
+  });
+});
 
 test('builds aggregate-only context for the page assistant', () => {
   const snapshot = assistantContextSnapshot({
@@ -85,6 +132,95 @@ test('page assistant uses a bounded read-only prompt and page summary', async ()
   });
   assert.equal(result.response, '请在课程管理中核对。');
   assert.equal(result.model, 'test-model');
+});
+
+test('page assistant can use one safe read-only CLI operation before answering', async () => {
+  const requests = [];
+  const cliCalls = [];
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const payload = JSON.parse(request.messages.at(-1).content);
+    if (requests.length === 1) {
+      assert.ok(payload.cli_tools.some(tool => tool.operation === 'system.status'));
+      assert.equal(payload.cli_tools.some(tool => tool.operation === 'system.state'), false);
+      assert.equal(payload.cli_tools.some(tool => tool.operation === 'data.entity.list'), false);
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({
+          response: '我先检查当前课表状态。',
+          action: null,
+          cli_call: { operation: 'system.status', params: {}, body: null },
+        }) } }] }),
+      };
+    }
+    assert.equal(payload.cli_tool_result.operation, 'system.status');
+    assert.equal(payload.cli_tool_result.result.publication_status, 'review_required');
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({
+        response: '当前课表已经生成，但仍处于待复核状态。',
+        action: null,
+        cli_call: null,
+      }) } }] }),
+    };
+  };
+
+  const result = await askAiAssistant({
+    message: '当前课表可以正式发布了吗？',
+    context: { view: 'status' },
+    state: { meta: { revision: 8 }, students: [] },
+  }, {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+    executeCliCall: async call => {
+      cliCalls.push(call);
+      return { publication_status: 'review_required', review_required: true };
+    },
+  });
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(cliCalls, [{ operation: 'system.status', params: {}, body: null }]);
+  assert.equal(result.response, '当前课表已经生成，但仍处于待复核状态。');
+  assert.deepEqual(result.cli_usage, [{ operation: 'system.status', mode: 'read' }]);
+});
+
+test('page assistant turns a CLI mutation into a revision-bound confirmation action', async () => {
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const payload = JSON.parse(request.messages.at(-1).content);
+    const solve = payload.cli_tools.find(tool => tool.operation === 'schedule.solve');
+    assert.equal(solve.mode, 'confirm');
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({
+        response: '已经整理为待确认的 CLI 排课操作。',
+        action: null,
+        cli_call: {
+          operation: 'schedule.solve',
+          params: {},
+          body: { max_time_seconds: 120, candidate_count: 2 },
+        },
+      }) } }] }),
+    };
+  };
+
+  const result = await askAiAssistant({
+    message: '请按两个候选重新排课，最多运行 120 秒',
+    context: { view: 'status' },
+    state: { meta: { revision: 17 }, students: [] },
+  }, {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+    executeCliCall: async () => assert.fail('a CLI mutation must wait for user confirmation'),
+  });
+
+  assert.equal(result.action.type, 'cli_operation');
+  assert.equal(result.action.operation, 'schedule.solve');
+  assert.deepEqual(result.action.body, { max_time_seconds: 120, candidate_count: 2 });
+  assert.equal(result.action.expected_revision, 17);
+  assert.match(result.action.impacts[0], /确认/);
+  assert.equal(result.cli_usage, undefined);
 });
 
 test('accepts only a validated teacher-swap proposal from the model', async () => {
@@ -381,4 +517,46 @@ test('uses the model only for a validated scheduling strategy', async () => {
   });
   assert.deepEqual(strategy.priority_section_ids, ['SEC_1']);
   assert.deepEqual(strategy.soft_rule_weight_overrides, { SOFT: 9 });
+});
+
+test('does not let an AI strategy downweight generated AP compactness priorities', async () => {
+  const problem = {
+    sections: [{
+      id: 'AP_1', course_id: 'AP', teacher_id: 'T1', class_type: 'ap', grades: [11], weekly_hours: 1,
+    }],
+    rules: [{
+      id: 'ap_block_students_compact_daily_schedule',
+      name: 'AP Block 学生当天课程尽量连续',
+      type: 'no_internal_gaps',
+      hard: false,
+      weight: 1000,
+      scope: 'student',
+      target_ids: ['S1'],
+      generated_by: 'ap_block_compactness',
+    }],
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            priority_section_ids: [],
+            soft_rule_weight_overrides: { ap_block_students_compact_daily_schedule: 0 },
+            warnings: [],
+            notes: [],
+          }),
+        },
+      }],
+    }),
+  });
+
+  const strategy = await planSchedulingStrategy(problem, {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+
+  assert.deepEqual(strategy.soft_rule_weight_overrides, {
+    ap_block_students_compact_daily_schedule: 1000,
+  });
 });

@@ -5,6 +5,7 @@ export const RULE_TYPES = new Set([
   'fixed_slots',
   'forbid_slots',
   'preferred_slots',
+  'target_occurrences_in_slots',
   'max_occurrences_per_day',
   'min_occurrence_days',
   'no_internal_gaps',
@@ -39,6 +40,10 @@ function validateTypeParameters(rule) {
     case 'forbid_slots':
     case 'preferred_slots':
       slots(params.slots, rule, 'slots');
+      break;
+    case 'target_occurrences_in_slots':
+      slots(params.slots, rule, 'slots');
+      positiveInteger(params.target, rule, 'target');
       break;
     case 'max_occurrences_per_day':
     case 'max_consecutive_lessons':

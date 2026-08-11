@@ -111,6 +111,32 @@ test('separates hard rule failures from weighted soft rule penalties', () => {
   assert.equal(result.soft_score, 14);
 });
 
+test('scores the absolute deviation from a target occurrence count in selected slots', () => {
+  const targetRule = {
+    id: 'one-first-period', type: 'target_occurrences_in_slots', hard: false, weight: 11,
+    scope: 'section', target_ids: ['AP1'], section_target_ids: ['AP1'],
+    params: { slots: ['D1P1', 'D1P2'], target: 1 },
+  };
+  const result = validateSchedule(problem([targetRule]), { meetings: [
+    { section_id: 'CORE', slot_id: 'D1P4' },
+    { section_id: 'AP1', slot_id: 'D1P1' },
+    { section_id: 'AP2', slot_id: 'D1P3' },
+  ] });
+  assert.equal(result.soft_score, 0);
+
+  const missed = validateSchedule(problem([targetRule]), { meetings: [
+    { section_id: 'CORE', slot_id: 'D1P4' },
+    { section_id: 'AP1', slot_id: 'D1P3' },
+    { section_id: 'AP2', slot_id: 'D1P5' },
+  ] });
+  assert.equal(missed.soft_score, 11);
+  assert.deepEqual(missed.soft_violations.find(item => item.rule_id === targetRule.id) && {
+    actual: missed.soft_violations.find(item => item.rule_id === targetRule.id).actual_occurrences,
+    target: missed.soft_violations.find(item => item.rule_id === targetRule.id).target_occurrences,
+    deviation: missed.soft_violations.find(item => item.rule_id === targetRule.id).deviation,
+  }, { actual: 0, target: 1, deviation: 1 });
+});
+
 test('scores a missing requested teaching-class double period', () => {
   const result = validateSchedule({
     slots,

@@ -205,10 +205,10 @@ function applyBound(model, values, maximum, penaltyTerms, weight, name) {
   if (weight === null) { model.addLessOrEqual(sum(values), BigInt(maximum)); return; }
   const excess = model.newIntVar(0n, BigInt(values.length), name);
   model.addLessOrEqual(sum(values), excess.add(BigInt(maximum)));
-  penaltyTerms.push({ variable: excess, weight });
+  penaltyTerms.push({ variable: excess, weight, maxValue: values.length });
 }
 
-function applyRules(model, problem, sections, occurrencesBySection, selectedByStudentCourse, coreByStudent, studentRepresentatives, penaltyTerms, dayVariables, includeSoft) {
+function applyRules(model, problem, sections, occurrencesBySection, selectedByStudentCourse, coreByStudent, studentRepresentatives, penaltyTerms, apBlockMorningTerms, apBlockFirstPeriodTerms, morningFillTerms, firstPeriodTieBreakTerms, dayVariables, includeSoft) {
   const rankBuckets = new Map();
   const slotByDay = new Map();
   const periodsPerDay = Math.max(...problem.slots.map(slot => slot.period));
@@ -301,12 +301,21 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
         const equals = slotValues.map(value => addEquals(model, occurrence.time, value, `${rule.id}_${occurrence.section.id}_${occurrence.index}_${value}`));
         if (rule.type === 'forbid_slots') {
           if (hardWeight === null) equals.forEach(literal => model.addEquality(literal, 0n));
-          else equals.forEach(literal => penaltyTerms.push({ variable: literal, weight: hardWeight }));
+          else equals.forEach(literal => penaltyTerms.push({
+            variable: literal,
+            weight: hardWeight,
+            maxValue: 1,
+          }));
         } else {
           const outside = model.newBoolVar(`${rule.id}_OUTSIDE_${occurrence.section.id}_${occurrence.index}`);
           model.addBoolOr([...equals, outside]);
           if (hardWeight === null) model.addEquality(outside, 0n);
-          else penaltyTerms.push({ variable: outside, weight: hardWeight });
+          else {
+            penaltyTerms.push({ variable: outside, weight: hardWeight, maxValue: 1 });
+            if (rule.generated_by === 'ap_block_compactness') {
+              apBlockMorningTerms.push({ variable: outside, weight: 1 });
+            }
+          }
         }
       }
       continue;
@@ -320,6 +329,58 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
       && hardWeight === null
       && rule.params.max === 1) continue;
     const valuesByTarget = valuesForRule(rule, occurrencesBySection, selectedByStudentCourse, coreByStudent, sections, studentRepresentatives);
+    if (rule.type === 'target_occurrences_in_slots') {
+      const slotValues = rule.params.slots.map(slot => slotIndex(problem, slot));
+      for (const [targetId, values] of valuesByTarget) {
+        const flags = values.flatMap((value, index) => slotValues.map(slotValue => addEquals(
+          model,
+          value,
+          slotValue,
+          `${rule.id}_${targetId}_${index}_${slotValue}`,
+        )));
+        if (!flags.length) {
+          if (hardWeight === null) {
+            throw new Error(`规则 ${rule.id} 的 ${targetId} 没有课时，无法满足目标次数 ${rule.params.target}`);
+          }
+          const shortfall = model.newIntVar(
+            BigInt(rule.params.target),
+            BigInt(rule.params.target),
+            `${rule.id}_${targetId}_SHORTFALL`,
+          );
+          const term = { variable: shortfall, weight: hardWeight, maxValue: rule.params.target };
+          penaltyTerms.push(term);
+          if (rule.params.objective_tier === 'ap_block_first_period_pattern') {
+            apBlockFirstPeriodTerms.push({ ...term, weight: 1 });
+          }
+          continue;
+        }
+        if (hardWeight === null) {
+          model.addEquality(sum(flags), BigInt(rule.params.target));
+          continue;
+        }
+        const shortfall = model.newIntVar(
+          0n,
+          BigInt(rule.params.target),
+          `${rule.id}_${targetId}_SHORTFALL`,
+        );
+        model.addGreaterOrEqual(sum(flags).add(shortfall), BigInt(rule.params.target));
+        const excess = model.newIntVar(
+          0n,
+          BigInt(values.length),
+          `${rule.id}_${targetId}_EXCESS`,
+        );
+        model.addLessOrEqual(sum(flags), excess.add(BigInt(rule.params.target)));
+        const terms = [
+          { variable: shortfall, weight: hardWeight, maxValue: rule.params.target },
+          { variable: excess, weight: hardWeight, maxValue: values.length },
+        ];
+        penaltyTerms.push(...terms);
+        if (rule.params.objective_tier === 'ap_block_first_period_pattern') {
+          apBlockFirstPeriodTerms.push(...terms.map(term => ({ ...term, weight: 1 })));
+        }
+      }
+      continue;
+    }
     if (rule.type === 'no_internal_gaps') {
       // Many students share exactly the same section-time variables (for
       // example, classmates with the same administrative and teaching
@@ -327,6 +388,19 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
       // building it repeatedly creates tens of thousands of redundant
       // literals.  Canonicalize by variable identity while leaving the
       // student collision constraints themselves untouched.
+      const targetMultiplicities = new Map();
+      if (rule.scope === 'student') {
+        const represented = new Map();
+        for (const studentId of rule.target_ids || []) {
+          const representative = studentRepresentatives?.get(studentId) || studentId;
+          const item = represented.get(representative) || { targetId: studentId, count: 0 };
+          item.count += 1;
+          represented.set(representative, item);
+        }
+        for (const { targetId, count } of represented.values()) {
+          targetMultiplicities.set(targetId, count);
+        }
+      }
       const variableIds = new Map();
       const uniqueTargets = new Map();
       for (const [targetId, rawValues] of valuesByTarget) {
@@ -335,9 +409,12 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
           if (!variableIds.has(value)) variableIds.set(value, variableIds.size + 1);
           return variableIds.get(value);
         }).sort((left, right) => left - right).join(',');
-        if (!uniqueTargets.has(signature)) uniqueTargets.set(signature, { targetId, values });
+        const multiplicity = targetMultiplicities.get(targetId) || 1;
+        const existing = uniqueTargets.get(signature);
+        if (existing) existing.multiplicity += multiplicity;
+        else uniqueTargets.set(signature, { targetId, values, multiplicity });
       }
-      for (const { targetId, values } of uniqueTargets.values()) {
+      for (const { targetId, values, multiplicity } of uniqueTargets.values()) {
         const emptyCount = problem.slots.length - values.length;
         if (hardWeight !== null) {
           if (emptyCount <= 0) continue;
@@ -373,18 +450,51 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
             model.addBoolOr([...flags, empty.not()]);
             return empty;
           });
-          for (const daySlots of slotByDay.values()) {
+          const preferredMorningPeriods = Math.max(
+            0,
+            Math.floor(Number(rule.params?.preferred_morning_periods || 0)),
+          );
+          if (preferredMorningPeriods) {
+            for (const slot of problem.slots) if (slot.period <= preferredMorningPeriods) {
+              morningFillTerms.push({
+                variable: emptyAtSlot[slotIndex(problem, slot.id)],
+                weight: multiplicity,
+              });
+            }
+          }
+          for (const [day, daySlots] of slotByDay) {
             const ordered = [...daySlots].sort((left, right) => left.period - right.period);
+            const dayHasGap = model.newBoolVar(`${rule.id}_${targetId}_DAY_${day}_HAS_GAP`);
             for (let earlier = 0; earlier < ordered.length - 1; earlier += 1) {
               const earlierEmpty = emptyAtSlot[slotIndex(problem, ordered[earlier].id)];
               for (let later = earlier + 1; later < ordered.length; later += 1) {
                 const laterEmpty = emptyAtSlot[slotIndex(problem, ordered[later].id)];
-                const inversion = model.newBoolVar(
-                  `${rule.id}_${targetId}_GAP_${ordered[earlier].id}_${ordered[later].id}`,
-                );
-                model.addBoolOr([earlierEmpty.not(), laterEmpty, inversion]);
-                penaltyTerms.push({ variable: inversion, weight: hardWeight });
+                model.addBoolOr([earlierEmpty.not(), laterEmpty, dayHasGap]);
               }
+            }
+            penaltyTerms.push({
+              variable: dayHasGap,
+              weight: hardWeight * multiplicity,
+              maxValue: 1,
+            });
+            // The published quality metric intentionally counts one violation
+            // per affected student-day. Among solutions with the same primary
+            // score, prefer one whose first actual lesson is P1. This removes
+            // the previous zero-marginal-cost case where P1 could be empty on
+            // a day that already contained some other gap.
+            if (ordered[0]?.period === 1 && ordered.length > 1) {
+              const firstEmpty = emptyAtSlot[slotIndex(problem, ordered[0].id)];
+              const firstPeriodGap = model.newBoolVar(
+                `${rule.id}_${targetId}_DAY_${day}_FIRST_PERIOD_GAP`,
+              );
+              for (const laterSlot of ordered.slice(1)) {
+                const laterEmpty = emptyAtSlot[slotIndex(problem, laterSlot.id)];
+                model.addBoolOr([firstEmpty.not(), laterEmpty, firstPeriodGap]);
+              }
+              firstPeriodTieBreakTerms.push({
+                variable: firstPeriodGap,
+                weight: multiplicity,
+              });
             }
           }
           continue;
@@ -511,7 +621,11 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
         if (!pairs.length) {
           if (hardWeight === null) throw new Error(`规则 ${rule.id} 的 section ${section.id} 没有可用的相邻时段`);
           const shortfall = model.newIntVar(BigInt(expectedPairs), BigInt(expectedPairs), `${rule.id}_${section.id}_SHORTFALL`);
-          penaltyTerms.push({ variable: shortfall, weight: hardWeight });
+          penaltyTerms.push({
+            variable: shortfall,
+            weight: hardWeight,
+            maxValue: expectedPairs,
+          });
           continue;
         }
         if (hardWeight === null) {
@@ -519,7 +633,11 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
         } else {
           const shortfall = model.newIntVar(0n, BigInt(expectedPairs), `${rule.id}_${section.id}_SHORTFALL`);
           model.addGreaterOrEqual(sum(pairs).add(shortfall), BigInt(expectedPairs));
-          penaltyTerms.push({ variable: shortfall, weight: hardWeight });
+          penaltyTerms.push({
+            variable: shortfall,
+            weight: hardWeight,
+            maxValue: expectedPairs,
+          });
         }
       }
       continue;
@@ -551,7 +669,7 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
         model.addImplication(both, hasFirst);
         model.addImplication(both, hasLast);
         model.addBoolOr([hasFirst.not(), hasLast.not(), both]);
-        penaltyTerms.push({ variable: both, weight: hardWeight });
+        penaltyTerms.push({ variable: both, weight: hardWeight, maxValue: 1 });
       }
       continue;
     }
@@ -588,7 +706,11 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
         } else {
           const shortfall = model.newIntVar(0n, BigInt(rule.params.min), `${rule.id}_${targetId}_DAY_SHORTFALL`);
           model.addGreaterOrEqual(sum(usedDays).add(shortfall), BigInt(rule.params.min));
-          penaltyTerms.push({ variable: shortfall, weight: hardWeight });
+          penaltyTerms.push({
+            variable: shortfall,
+            weight: hardWeight,
+            maxValue: rule.params.min,
+          });
         }
       }
       continue;
@@ -1204,6 +1326,10 @@ export async function solveSchedule(problem, options = {}) {
   }
 
   const penaltyTerms = [];
+  const apBlockMorningTerms = [];
+  const apBlockFirstPeriodTerms = [];
+  const morningFillTerms = [];
+  const firstPeriodTieBreakTerms = [];
   // Channeled student times inherit a day variable as well, which keeps
   // daily rules compact (five values rather than fifty slot comparisons).
   for (const selected of selectedByStudentCourse.values()) for (const time of selected) {
@@ -1211,7 +1337,22 @@ export async function solveSchedule(problem, options = {}) {
     model.addDivisionEquality(day, time, BigInt(periodsPerDay));
     dayVariables.set(time, day);
   }
-  applyRules(model, problem, sections, occurrencesBySection, selectedByStudentCourse, coreByStudent, studentRepresentatives, penaltyTerms, dayVariables, options.optimizeSoft === true);
+  applyRules(
+    model,
+    problem,
+    sections,
+    occurrencesBySection,
+    selectedByStudentCourse,
+    coreByStudent,
+    studentRepresentatives,
+    penaltyTerms,
+    apBlockMorningTerms,
+    apBlockFirstPeriodTerms,
+    morningFillTerms,
+    firstPeriodTieBreakTerms,
+    dayVariables,
+    options.optimizeSoft === true,
+  );
   if (options.fixedSearch === true) {
     if (assignmentChoiceVariables.length) {
       model.addDecisionStrategy(
@@ -1226,11 +1367,53 @@ export async function solveSchedule(problem, options = {}) {
       DomainReductionStrategy.SELECT_MIN_VALUE,
     );
   }
-  if (penaltyTerms.length) model.minimize(sum(penaltyTerms.map(({ variable, weight }) => variable.mul(BigInt(weight)))));
+  // Lexicographic objective in one CP-SAT pass:
+  //   1. deviation from one first-period meeting per synchronized AP Block;
+  //   2. AP Block occurrences outside P1-P6;
+  //   3. empty AP student-periods in the configured morning band;
+  //   4. original weighted soft score;
+  //   5. first-period gaps among solutions still tied above.
+  // Gold-frame locks and every other hard rule are model constraints and stay
+  // above all three objective levels. Exact term bounds make the hierarchy
+  // mathematical rather than dependent on an arbitrary large weight.
+  const firstPeriodMaximum = firstPeriodTieBreakTerms
+    .reduce((total, term) => total + term.weight, 0);
+  const primaryScale = firstPeriodMaximum + 1;
+  const primaryMaximum = penaltyTerms.reduce((total, term) =>
+    total + term.weight * (term.maxValue ?? 1), 0);
+  const morningScale = primaryMaximum * primaryScale + firstPeriodMaximum + 1;
+  const morningMaximum = morningFillTerms.reduce((total, term) => total + term.weight, 0);
+  const apBlockBandScale = morningMaximum * morningScale
+    + primaryMaximum * primaryScale
+    + firstPeriodMaximum
+    + 1;
+  const apBlockBandMaximum = apBlockMorningTerms.reduce((total, term) =>
+    total + term.weight, 0);
+  const apBlockFirstPeriodScale = apBlockBandMaximum * apBlockBandScale
+    + morningMaximum * morningScale
+    + primaryMaximum * primaryScale
+    + firstPeriodMaximum
+    + 1;
+  if (![primaryScale, morningScale, apBlockBandScale, apBlockFirstPeriodScale]
+    .every(Number.isSafeInteger)) {
+    throw new Error('排课软目标权重超出安全整数范围，请降低自定义权重');
+  }
+  const objectiveTerms = [
+    ...apBlockFirstPeriodTerms.map(({ variable, weight }) =>
+      variable.mul(BigInt(weight) * BigInt(apBlockFirstPeriodScale))),
+    ...apBlockMorningTerms.map(({ variable, weight }) =>
+      variable.mul(BigInt(weight) * BigInt(apBlockBandScale))),
+    ...morningFillTerms.map(({ variable, weight }) =>
+      variable.mul(BigInt(weight) * BigInt(morningScale))),
+    ...penaltyTerms.map(({ variable, weight }) =>
+      variable.mul(BigInt(weight) * BigInt(primaryScale))),
+    ...firstPeriodTieBreakTerms.map(({ variable, weight }) =>
+      variable.mul(BigInt(weight))),
+  ];
+  if (objectiveTerms.length) model.minimize(sum(objectiveTerms));
 
-  const solveBudgetSeconds = options.maxTimeSeconds || 120;
+  const solveBudgetSeconds = Math.max(0.01, Number(options.maxTimeSeconds || 120));
   const deadline = performance.now() + solveBudgetSeconds * 1000;
-  while (performance.now() < deadline) {
     const solver = new CpSolver();
     solver.parameters.maxTimeInSeconds = Math.max(0.01, (deadline - performance.now()) / 1000);
     const hasHints = (options.hintMeetings || []).length > 0 || hintMembershipCount > 0;
@@ -1312,6 +1495,15 @@ export async function solveSchedule(problem, options = {}) {
       slot_id: problem.slots[Number(solver.value(occurrence.time))].id,
       room_id: null,
     }));
+    const apBlockFirstPeriodCounts = (problem.rules || [])
+      .filter(rule => rule.type === 'target_occurrences_in_slots'
+        && rule.params?.objective_tier === 'ap_block_first_period_pattern')
+      .flatMap(rule => (rule.section_target_ids || rule.target_ids || []).map(sectionId => {
+        const targetSlots = new Set(rule.params.slots || []);
+        const actual = meetings.filter(meeting => meeting.section_id === sectionId
+          && targetSlots.has(meeting.slot_id)).length;
+        return { actual, target: rule.params.target };
+      }));
     const assignments = meetings.flatMap(meeting => {
       const section = allocatedById.get(meeting.section_id);
       return section.student_ids.map(studentId => ({
@@ -1330,7 +1522,28 @@ export async function solveSchedule(problem, options = {}) {
       hint_meeting_count: (options.hintMeetings || []).length,
       hint_membership_count: hintMembershipCount,
       search_seed: Number.isInteger(options.randomSeed) ? options.randomSeed : null,
+      ap_block_afternoon_occurrences: apBlockMorningTerms.reduce((total, term) =>
+        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0),
+      ap_block_morning_term_count: apBlockMorningTerms.length,
+      // Semantic names for the P1-P6 preference. Keep the two legacy fields
+      // above so older saved schedules and clients remain readable.
+      ap_block_outside_preferred_band_occurrences: apBlockMorningTerms.reduce((total, term) =>
+        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0),
+      ap_block_preferred_band_term_count: apBlockMorningTerms.length,
+      ap_block_first_period_deviation: apBlockFirstPeriodCounts.reduce((total, item) =>
+        total + Math.abs(item.actual - item.target), 0),
+      ap_block_first_period_actual_count: apBlockFirstPeriodCounts.reduce((total, item) =>
+        total + item.actual, 0),
+      ap_block_first_period_target_count: apBlockFirstPeriodCounts.reduce((total, item) =>
+        total + item.target, 0),
+      ap_block_first_period_rule_count: apBlockFirstPeriodCounts.length,
+      morning_empty_student_periods: morningFillTerms.reduce((total, term) =>
+        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0),
+      morning_fill_term_count: morningFillTerms.length,
+      first_period_tie_break_terms: firstPeriodTieBreakTerms.length,
+      morning_objective_scale: morningScale,
+      ap_block_first_period_objective_scale: apBlockFirstPeriodScale,
+      ap_block_band_objective_scale: apBlockBandScale,
+      primary_objective_scale: primaryScale,
     };
-  }
-  return { ok: false, status: 'UNKNOWN', reason: '在求解时限内未找到满足课程、教师、学生和时段约束的课表', sections: [], meetings: [], assignments: [] };
 }

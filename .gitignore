@@ -11,6 +11,7 @@ packages/web/.env.local
 # Build output
 dist/
 build/
+outputs/
 
 # IDE
 .vscode/
@@ -31,10 +32,11 @@ pnpm-debug.log*
 /tmp/
 .tmp-artifact/
 
-# State files (contains school data, not for version control)
-timetable.json
-*.json
-!package.json
-!tsconfig.json
-!pnpm-lock.yaml
-!packages/web/package.json
+# Runtime data (contains school or user data, not for version control)
+/timetable.json
+/timetable.*.json
+/rules.json
+/*-candidate.json
+/grade-*.json
+/integer-*.json
+/backups/

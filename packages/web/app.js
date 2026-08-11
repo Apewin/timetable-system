@@ -318,6 +318,7 @@ async function switchView(viewName) {
     }
   });
 
+  updateAdminShellContext(viewName);
   updateAiAssistantContext(viewName);
 
   // 加载视图数据
@@ -328,7 +329,7 @@ async function switchView(viewName) {
 async function loadViewData(viewName) {
   switch (viewName) {
     case 'welcome':
-      loadWelcomePage();
+      await loadWelcomePage();
       break;
     case 'status':
       await loadStatus();
@@ -1274,17 +1275,40 @@ async function loadManualTimetable() {
         ? `；${new Set(incompleteChoices.map(item => item.student_id)).size} 名学生尚未完成选课，已暂不分配对应选修课`
         : '';
       const reviewCount = result.review_items?.length || 0;
-      const reviewWarning = reviewCount
-        ? `；课程靠前规则有 ${reviewCount} 项待人工复核`
+      const gapDays = result.quality_gate?.metrics?.ap_student_gap_days || 0;
+      const firstPeriodGapDays = result.quality_gate?.metrics?.ap_first_period_gap_days || 0;
+      const morningEmptyPeriods = result.quality_gate?.metrics?.ap_morning_empty_student_periods || 0;
+      const blockPreferredTermCount = result.ap_block_preferred_band_term_count
+        ?? result.ap_block_morning_term_count
+        ?? 0;
+      const blockOutsidePreferredCount = result.ap_block_outside_preferred_band_occurrences
+        ?? result.ap_block_afternoon_occurrences
+        ?? 0;
+      const blockFirstPeriodTarget = result.ap_block_first_period_target_count || 0;
+      const blockFirstPeriodActual = result.ap_block_first_period_actual_count || 0;
+      const blockFirstPeriodDeviation = result.ap_block_first_period_deviation || 0;
+      const blockMorningSummary = blockPreferredTermCount
+        ? `；AP Block 第一节 ${blockFirstPeriodActual}/${blockFirstPeriodTarget} 次（偏差 ${blockFirstPeriodDeviation}），第1–6节 ${blockPreferredTermCount - blockOutsidePreferredCount}/${blockPreferredTermCount} 个同步时段`
         : '';
-      renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${reviewWarning}${selectionWarning}${warning}`);
-      const hasWarning = incompleteChoices.length || reviewCount;
-      showToast(reviewCount
-        ? `完整课表已生成；${reviewCount} 项课程靠前问题待人工复核`
+      const qualityWarning = result.quality_gate?.passed === false
+        ? `；质量门槛未通过：AP 学生空堂 ${gapDays} 个学生日；上午空节 ${morningEmptyPeriods} 个学生节次，其中第一节空窗 ${firstPeriodGapDays} 个学生日`
+        : '';
+      const policyWarning = result.policy_relaxed
+        ? `；已审批降级 ${result.approved_hard_rule_relaxations?.length || 0} 条硬规则`
+        : '';
+      const reviewWarning = reviewCount
+        ? `；有 ${reviewCount} 项待人工复核`
+        : '';
+      renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${blockMorningSummary}${reviewWarning}${qualityWarning}${policyWarning}${selectionWarning}${warning}`);
+      const hasWarning = result.publication_status === 'review_required'
+        || incompleteChoices.length
+        || reviewCount;
+      showToast(hasWarning
+        ? `课表已生成但不可正式发布；${reviewCount || 1} 项问题待人工复核`
         : incompleteChoices.length
           ? `AI 排课完成；${new Set(incompleteChoices.map(item => item.student_id)).size} 名学生待补选课`
           : `AI 排课完成，用时 ${duration} 秒`, hasWarning ? 'warning' : 'success');
-      if (confirm(`完整课表已生成，核心硬约束校验通过${reviewCount ? `，另有 ${reviewCount} 项课程靠前问题待人工复核` : ''}。现在查看总课表吗？`)) {
+      if (confirm(`完整课表已生成，核心硬约束校验通过${hasWarning ? '，但当前状态为“待复核”，不能视为正式发布' : ''}。现在查看总课表吗？`)) {
         await switchView('overview-timetable');
       }
     } catch (error) {
@@ -1689,7 +1713,7 @@ async function openPastTimetable(archiveId) {
 }
 
 // 加载欢迎页面
-function loadWelcomePage() {
+async function loadWelcomePage() {
   console.log('加载欢迎页面');
 
   // 清除旧的定时器
@@ -1703,6 +1727,52 @@ function loadWelcomePage() {
 
   // 每秒更新时间
   window._dateTimeInterval = setInterval(updateDateTime, 1000);
+
+  try {
+    const status = await api('/status');
+    renderDashboardStatus(status);
+  } catch (_error) {
+    renderDashboardStatus(null);
+  }
+}
+
+function setDashboardText(id, value) {
+  const element = document.getElementById(id);
+  if (element) element.textContent = value;
+}
+
+function renderDashboardStatus(status) {
+  const counts = status?.counts || {};
+  setDashboardText('dashboard-students', status ? String(counts.students ?? 0) : '—');
+  setDashboardText('dashboard-teachers', status ? String(counts.teachers ?? 0) : '—');
+  setDashboardText('dashboard-courses', status ? String(counts.courses ?? 0) : '—');
+  setDashboardText('dashboard-constraints', status ? String(counts.constraints ?? 0) : '—');
+  setDashboardText('dashboard-backend', status?.backend === 'rules-first-v1' ? 'Rules-first CP-SAT' : status?.backend || '未连接');
+
+  const publicationLabels = {
+    ready: '可发布',
+    review_required: '需人工复核',
+    not_ready: '尚未生成',
+  };
+  setDashboardText('dashboard-publication', status ? (publicationLabels[status.publication_status] || status.publication_status || '未生成') : '后端未连接');
+  setDashboardText('dashboard-review', status ? (status.review_required ? '存在待复核项' : '无需复核') : '状态未知');
+
+  const stage = document.getElementById('dashboard-stage');
+  if (!stage) return;
+  const stageLabels = {
+    timetable: '课表已生成',
+    needs_resolve: '数据已变更，需重排',
+    sections: '分班完成，待排课',
+    not_run: '尚未开始排课',
+  };
+  stage.textContent = status ? (stageLabels[status.last_stage] || status.last_stage || '状态未知') : '后端未连接';
+  stage.className = `status-badge ${!status
+    ? 'status-badge-danger'
+    : status.review_required || status.last_stage === 'needs_resolve'
+      ? 'status-badge-warning'
+      : status.last_stage === 'timetable'
+        ? 'status-badge-success'
+        : 'status-badge-neutral'}`;
 }
 
 // 更新时间显示（使用浏览器本地时间）
@@ -5087,17 +5157,32 @@ async function aiSolve() {
 // The second request is sent only after the operator explicitly confirms the
 // exact rule ids the first attempt could not preserve.
 async function solveWithRequiredApproval(body = {}, endpoint = '/solve') {
-  let result = await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
-  if (result.solved || result.status !== 'NEEDS_APPROVAL_TO_RELAX') return result;
-  const blocked = result.blocked_by || [];
-  const labels = blocked.map(rule => `${rule.id}（${rule.scope}/${rule.type}）`).join('\n');
-  const confirmed = confirm(`在不破坏以下受保护软规则的前提下无法排课：\n${labels}\n\n${result.diagnostic || ''}\n\n是否明确批准本次排课放宽这些规则？`);
-  if (!confirmed) return result;
-  result = await api(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({ ...body, approved_rule_relaxations: blocked.map(rule => rule.id) }),
-  });
-  return result;
+  const requestBody = { ...body };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await api(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    if (result.solved) return result;
+    const blocked = result.blocked_by || [];
+    const labels = blocked
+      .map(rule => `${rule.name || rule.id}（${rule.id}，${rule.scope}/${rule.type}）`)
+      .join('\n');
+    if (result.status === 'NEEDS_APPROVAL_TO_RELAX') {
+      const confirmed = confirm(`在不破坏以下受保护软规则的前提下无法排课：\n${labels}\n\n${result.diagnostic || ''}\n\n是否明确批准本次排课放宽这些规则？`);
+      if (!confirmed) return result;
+      requestBody.approved_rule_relaxations = blocked.map(rule => rule.id);
+      continue;
+    }
+    if (result.status === 'NEEDS_APPROVAL_TO_DEFER_HARD_RULE') {
+      const confirmed = confirm(`严格遵守以下硬规则时无法生成课表：\n${labels}\n\n${result.diagnostic || ''}\n\n警告：批准后这些规则将仅作为质量目标，课表会标记为“待复核”，不能视为正式发布。是否批准本次降级？`);
+      if (!confirmed) return result;
+      requestBody.approved_hard_rule_relaxations = blocked.map(rule => rule.id);
+      continue;
+    }
+    return result;
+  }
+  throw new Error('规则审批后仍未得到稳定的排课结果，请检查规则配置');
 }
 
 // 执行排课
@@ -5563,34 +5648,231 @@ function getCurrentView() {
   return activeView ? activeView.id.replace('view-', '') : 'status';
 }
 
-const AI_ASSISTANT_VIEW_LABELS = {
-  welcome: '首页',
-  'manual-timetable': '排课表',
-  'teacher-availability': '涂课表',
-  'schedule-editor': '改课表',
-  'past-timetables': '过往课表',
-  'overview-timetable': '总课表概览',
-  'class-timetable': '按班级查看',
-  'teacher-timetable': '按教师查看',
-  'student-timetable': '按学生查看',
-  'ap-group-timetable': 'AP 分流组查看',
-  'room-timetable': '按教室查看',
-  students: '学生管理',
-  teachers: '教师管理',
-  classes: '班级管理',
-  courses: '课程管理',
-  rooms: '教室管理',
-  assignments: '教师分工',
-  selections: 'AP 选课',
-  'elective-selections': '其他选课',
-  sectioning: '分班管理',
-  constraints: '约束管理',
-  import: '数据导入',
-  'graduation-archives': '毕业学生选课信息',
-  export: '导出课表',
-  settings: '系统设置',
-  status: '系统状态',
+const ADMIN_SHELL_VIEW_META = {
+  welcome: { title: '概览', section: '教务工作台' },
+  'manual-timetable': { title: '排课表', section: '排课工作台' },
+  'teacher-availability': { title: '涂课表', section: '排课工作台' },
+  'schedule-editor': { title: '改课表', section: '排课工作台' },
+  'past-timetables': { title: '过往课表', section: '排课工作台' },
+  'overview-timetable': { title: '总课表概览', section: '课表查看' },
+  'class-timetable': { title: '按班级查看', section: '课表查看' },
+  'teacher-timetable': { title: '按教师查看', section: '课表查看' },
+  'student-timetable': { title: '按学生查看', section: '课表查看' },
+  'ap-group-timetable': { title: 'AP 分流组查看', section: '课表查看' },
+  'room-timetable': { title: '按教室查看', section: '课表查看' },
+  students: { title: '学生管理', section: '数据管理' },
+  teachers: { title: '教师管理', section: '数据管理' },
+  classes: { title: '班级管理', section: '数据管理' },
+  courses: { title: '课程管理', section: '数据管理' },
+  rooms: { title: '教室管理', section: '数据管理' },
+  assignments: { title: '教师分工', section: '数据管理' },
+  selections: { title: 'AP 选课', section: '数据管理' },
+  'elective-selections': { title: '其他选课', section: '数据管理' },
+  sectioning: { title: '分班管理', section: '数据管理' },
+  constraints: { title: '约束管理', section: '数据管理' },
+  import: { title: '数据导入', section: '系统工具' },
+  'graduation-archives': { title: '毕业学生选课信息', section: '系统工具' },
+  export: { title: '导出课表', section: '系统工具' },
+  settings: { title: '系统设置', section: '系统工具' },
+  status: { title: '系统状态', section: '系统工具' },
+  'formal-timetable': { title: '正式课表', section: '排课工作台' },
+  'temp-timetable': { title: '临时课表', section: '排课工作台' },
 };
+
+const AI_ASSISTANT_VIEW_LABELS = Object.fromEntries(
+  Object.entries(ADMIN_SHELL_VIEW_META).map(([view, meta]) => [view, meta.title]),
+);
+
+const ADMIN_THEME_STORAGE_KEY = 'timetable.admin-theme.v1';
+const ADMIN_SIDEBAR_STORAGE_KEY = 'timetable.admin-sidebar-collapsed.v1';
+let commandResultButtons = [];
+let selectedCommandIndex = 0;
+
+function updateAdminShellContext(viewName = getCurrentView()) {
+  const meta = ADMIN_SHELL_VIEW_META[viewName] || { title: '排课系统', section: '教务工作台' };
+  setDashboardText('page-title', meta.title);
+  setDashboardText('page-section', meta.section);
+  document.title = `${meta.title} · 排课系统`;
+  if (window.matchMedia('(max-width: 980px)').matches) {
+    document.querySelector('.app')?.classList.remove('sidebar-mobile-open');
+  }
+}
+
+function applyAdminTheme(theme) {
+  const resolvedTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = resolvedTheme;
+  const themeButton = document.getElementById('btn-theme-toggle');
+  const icon = themeButton?.querySelector('.theme-icon');
+  if (icon) icon.textContent = resolvedTheme === 'dark' ? '☀' : '☾';
+  if (themeButton) themeButton.setAttribute('aria-label', resolvedTheme === 'dark' ? '切换浅色模式' : '切换深色模式');
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (themeColor) themeColor.setAttribute('content', resolvedTheme === 'dark' ? '#101012' : '#ffffff');
+}
+
+function commandNavigationItems() {
+  return [...document.querySelectorAll('.nav-section a[data-view]')].map(link => ({
+    view: link.dataset.view,
+    label: link.querySelector('.nav-label')?.textContent?.trim() || link.textContent.trim(),
+    icon: link.querySelector('.nav-icon')?.textContent?.trim() || '·',
+    section: link.closest('.nav-section')?.querySelector('h3')?.textContent?.trim() || '页面',
+  }));
+}
+
+function selectCommandResult(index) {
+  if (!commandResultButtons.length) return;
+  selectedCommandIndex = (index + commandResultButtons.length) % commandResultButtons.length;
+  commandResultButtons.forEach((button, buttonIndex) => {
+    button.classList.toggle('is-selected', buttonIndex === selectedCommandIndex);
+    button.setAttribute('aria-selected', buttonIndex === selectedCommandIndex ? 'true' : 'false');
+  });
+  commandResultButtons[selectedCommandIndex]?.scrollIntoView({ block: 'nearest' });
+}
+
+function renderCommandResults(query = '') {
+  const results = document.getElementById('command-results');
+  if (!results) return;
+  const keyword = query.trim().toLocaleLowerCase('zh-CN');
+  const items = commandNavigationItems().filter(item =>
+    !keyword || `${item.label} ${item.section} ${item.view}`.toLocaleLowerCase('zh-CN').includes(keyword));
+  results.replaceChildren();
+  commandResultButtons = [];
+  selectedCommandIndex = 0;
+
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'command-empty';
+    empty.textContent = '没有找到匹配的页面';
+    results.append(empty);
+    return;
+  }
+
+  let currentSection = '';
+  for (const item of items) {
+    if (item.section !== currentSection) {
+      currentSection = item.section;
+      const group = document.createElement('div');
+      group.className = 'command-result-group';
+      group.textContent = currentSection;
+      results.append(group);
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'command-result';
+    button.setAttribute('role', 'option');
+    button.dataset.commandView = item.view;
+
+    const icon = document.createElement('span');
+    icon.className = 'nav-icon nav-icon-text';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = item.icon;
+    const copy = document.createElement('span');
+    copy.className = 'command-result-copy';
+    const title = document.createElement('strong');
+    title.textContent = item.label;
+    const section = document.createElement('small');
+    section.textContent = item.section;
+    copy.append(title, section);
+    const shortcut = document.createElement('span');
+    shortcut.setAttribute('aria-hidden', 'true');
+    shortcut.textContent = '→';
+    button.append(icon, copy, shortcut);
+    button.addEventListener('mouseenter', () => selectCommandResult(commandResultButtons.indexOf(button)));
+    button.addEventListener('click', async () => {
+      closeCommandPalette();
+      await switchView(item.view);
+    });
+    results.append(button);
+    commandResultButtons.push(button);
+  }
+  selectCommandResult(0);
+}
+
+function openCommandPalette() {
+  const palette = document.getElementById('command-palette');
+  const input = document.getElementById('command-search-input');
+  if (!palette || !input) return;
+  palette.classList.remove('hidden');
+  input.value = '';
+  renderCommandResults();
+  requestAnimationFrame(() => input.focus());
+}
+
+function closeCommandPalette() {
+  document.getElementById('command-palette')?.classList.add('hidden');
+  document.getElementById('btn-command-search')?.focus();
+}
+
+function initAdminShell() {
+  const app = document.querySelector('.app');
+  const sidebarToggle = document.getElementById('btn-sidebar-toggle');
+  const themeButton = document.getElementById('btn-theme-toggle');
+  const commandTrigger = document.getElementById('btn-command-search');
+  const commandPalette = document.getElementById('command-palette');
+  const commandInput = document.getElementById('command-search-input');
+  const storedTheme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY);
+  const initialTheme = storedTheme || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  applyAdminTheme(initialTheme);
+
+  if (!window.matchMedia('(max-width: 980px)').matches && localStorage.getItem(ADMIN_SIDEBAR_STORAGE_KEY) === 'true') {
+    app?.classList.add('sidebar-collapsed');
+    sidebarToggle?.setAttribute('aria-expanded', 'false');
+    sidebarToggle?.setAttribute('aria-label', '展开侧栏');
+  }
+
+  sidebarToggle?.addEventListener('click', () => {
+    if (window.matchMedia('(max-width: 980px)').matches) {
+      const open = app?.classList.toggle('sidebar-mobile-open') === true;
+      sidebarToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      sidebarToggle.setAttribute('aria-label', open ? '关闭侧栏' : '打开侧栏');
+      return;
+    }
+    const collapsed = app?.classList.toggle('sidebar-collapsed') === true;
+    localStorage.setItem(ADMIN_SIDEBAR_STORAGE_KEY, String(collapsed));
+    sidebarToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    sidebarToggle.setAttribute('aria-label', collapsed ? '展开侧栏' : '收起侧栏');
+  });
+
+  themeButton?.addEventListener('click', () => {
+    const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(ADMIN_THEME_STORAGE_KEY, nextTheme);
+    applyAdminTheme(nextTheme);
+  });
+
+  commandTrigger?.addEventListener('click', openCommandPalette);
+  commandInput?.addEventListener('input', event => renderCommandResults(event.target.value));
+  commandPalette?.addEventListener('click', event => {
+    if (event.target === commandPalette) closeCommandPalette();
+  });
+
+  document.addEventListener('keydown', event => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
+      event.preventDefault();
+      if (commandPalette?.classList.contains('hidden')) openCommandPalette();
+      else closeCommandPalette();
+      return;
+    }
+    if (commandPalette?.classList.contains('hidden')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeCommandPalette();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      selectCommandResult(selectedCommandIndex + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      selectCommandResult(selectedCommandIndex - 1);
+    } else if (event.key === 'Enter' && document.activeElement === commandInput) {
+      event.preventDefault();
+      commandResultButtons[selectedCommandIndex]?.click();
+    }
+  });
+
+  document.querySelectorAll('[data-shell-view]').forEach(button => {
+    button.addEventListener('click', () => switchView(button.dataset.shellView));
+  });
+
+  updateAdminShellContext();
+}
 
 let aiAssistantConversation = [];
 let aiAssistantBusy = false;
@@ -5655,36 +5937,53 @@ function appendAiAssistantActionLine(container, text) {
 async function executeAiAssistantAction(action, card, confirmButton) {
   const isTeacherSwap = action.type === 'swap_teaching_assignments';
   const isScheduleMove = action.type === 'move_schedule_meeting';
-  if (!isTeacherSwap && !isScheduleMove) return;
+  const isCliOperation = action.type === 'cli_operation';
+  if (!isTeacherSwap && !isScheduleMove && !isCliOperation) return;
   const confirmation = isTeacherSwap
     ? '确认调换这两项课程的授课教师吗？当前课表会标记为待重排。'
-    : `确认将“${action.course_name}”从${action.from_label}调整到${action.to_label}吗？`;
+    : isScheduleMove
+      ? `确认将“${action.course_name}”从${action.from_label}调整到${action.to_label}吗？`
+      : `确认通过 CLI 执行“${action.title || action.operation}”吗？`;
   if (!confirm(confirmation)) return;
   confirmButton.disabled = true;
-  setAiAssistantStatus(isTeacherSwap ? '正在执行已确认的教师调换…' : '正在校验并调整课程时段…');
+  setAiAssistantStatus(isTeacherSwap
+    ? '正在执行已确认的教师调换…'
+    : isScheduleMove ? '正在校验并调整课程时段…' : '正在通过 CLI 执行已确认操作…');
   try {
-    const result = await api(isTeacherSwap
+    const endpoint = isTeacherSwap
       ? '/assistant/actions/swap-teaching-assignments'
-      : '/assistant/actions/move-schedule-meeting', {
+      : isScheduleMove
+        ? '/assistant/actions/move-schedule-meeting'
+        : '/assistant/actions/execute-cli-operation';
+    const result = await api(endpoint, {
       method: 'POST',
       body: JSON.stringify(isTeacherSwap
         ? { assignment_ids: action.assignment_ids, expected_revision: action.expected_revision }
-        : {
+        : isScheduleMove ? {
           section_id: action.section_id,
           from_slot: action.from_slot,
           to_slot: action.to_slot,
+          expected_revision: action.expected_revision,
+        } : {
+          operation: action.operation,
+          params: action.params || {},
+          body: action.body ?? null,
           expected_revision: action.expected_revision,
         }),
     });
     card.classList.add('ai-assistant-action-complete');
     card.replaceChildren();
     const title = document.createElement('h3');
-    title.textContent = isTeacherSwap ? '✓ 已执行教师调换' : '✓ 已调整课程时段';
+    title.textContent = isTeacherSwap
+      ? '✓ 已执行教师调换'
+      : isScheduleMove ? '✓ 已调整课程时段' : '✓ CLI 操作已执行';
     card.appendChild(title);
-    appendAiAssistantActionLine(card, result.message || '教师分工已更新。');
+    appendAiAssistantActionLine(card, result.message || '操作已执行。');
     renderAiAssistantMessage('assistant', isTeacherSwap
       ? '教师分工已更新。现有课表已标记为待重排，请重新确认必要条件后再运行 AI 排课。'
-      : '课程时段已调整并通过硬约束校验，当前课表已刷新。');
+      : isScheduleMove
+        ? '课程时段已调整并通过硬约束校验，当前课表已刷新。'
+        : `CLI 操作 ${action.operation} 已执行，页面数据已刷新。`);
     setAiAssistantStatus('操作已完成，页面数据已刷新。');
     await loadViewData(getCurrentView());
     updateAiAssistantContext();
@@ -5695,7 +5994,7 @@ async function executeAiAssistantAction(action, card, confirmButton) {
 }
 
 function renderAiAssistantActionProposal(action) {
-  if (!action || !['swap_teaching_assignments', 'move_schedule_meeting'].includes(action.type)) return;
+  if (!action || !['swap_teaching_assignments', 'move_schedule_meeting', 'cli_operation'].includes(action.type)) return;
   const messages = document.getElementById('ai-assistant-messages');
   if (!messages) return;
   const card = document.createElement('section');
@@ -5708,8 +6007,12 @@ function renderAiAssistantActionProposal(action) {
     const [left, right] = action.assignments;
     appendAiAssistantActionLine(card, `“${left.course_name}”目前由 ${left.teacher_name} 负责，确认后改由 ${right.teacher_name} 负责。`);
     appendAiAssistantActionLine(card, `“${right.course_name}”目前由 ${right.teacher_name} 负责，确认后改由 ${left.teacher_name} 负责。`);
-  } else {
+  } else if (action.type === 'move_schedule_meeting') {
     appendAiAssistantActionLine(card, `“${action.course_name}”（${action.class_label}）：${action.from_label} → ${action.to_label}`);
+  } else {
+    appendAiAssistantActionLine(card, `CLI 操作：${action.operation}`);
+    const parameters = JSON.stringify({ params: action.params || {}, body: action.body ?? null });
+    appendAiAssistantActionLine(card, `参数：${parameters.length > 600 ? `${parameters.slice(0, 600)}…` : parameters}`);
   }
   if (Array.isArray(action.impacts) && action.impacts.length) {
     const impactTitle = document.createElement('p');
@@ -5728,7 +6031,9 @@ function renderAiAssistantActionProposal(action) {
   const confirmButton = document.createElement('button');
   confirmButton.type = 'button';
   confirmButton.className = 'btn btn-warning';
-  confirmButton.textContent = action.type === 'swap_teaching_assignments' ? '确认调换' : '确认调整';
+  confirmButton.textContent = action.type === 'swap_teaching_assignments'
+    ? '确认调换'
+    : action.type === 'move_schedule_meeting' ? '确认调整' : '确认执行 CLI';
   const dismissButton = document.createElement('button');
   dismissButton.type = 'button';
   dismissButton.className = 'btn btn-secondary';
@@ -5783,7 +6088,10 @@ async function sendAiAssistantMessage(rawMessage) {
     renderAiAssistantMessage('assistant', response);
     if (result?.action) renderAiAssistantActionProposal(result.action);
     if (result?.action_error) renderAiAssistantMessage('error', result.action_error);
-    setAiAssistantStatus(`已使用 ${result?.model || '当前模型'} 分析`);
+    const cliUsage = Array.isArray(result?.cli_usage) ? result.cli_usage : [];
+    setAiAssistantStatus(cliUsage.length
+      ? `已使用 ${result?.model || '当前模型'}，并通过 CLI 查询 ${cliUsage.map(item => item.operation).join('、')}`
+      : `已使用 ${result?.model || '当前模型'} 分析`);
   } catch (error) {
     const response = `暂时无法分析：${error.message || '请求失败'}`;
     aiAssistantConversation.push({ role: 'assistant', content: response });
@@ -5802,7 +6110,7 @@ function initAiAssistant() {
   const open = document.getElementById('btn-ai-assistant-open');
   if (!input || !sendButton || !toggle || !open) return;
   updateAiAssistantContext();
-  renderAiAssistantMessage('assistant', `我是排课助手。当前在${aiAssistantViewLabel()}，可以解释数据、排查问题，也能把明确的教师调换需求整理成待确认操作。任何数据修改都必须点击确认后才会执行。`);
+  renderAiAssistantMessage('assistant', `我是排课助手。当前在${aiAssistantViewLabel()}，可以解释数据、排查问题，也能使用受控 CLI 查询状态，或把明确的修改需求整理成待确认操作。任何数据修改都必须点击确认后才会执行。`);
   sendButton.addEventListener('click', () => sendAiAssistantMessage(input.value));
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -5820,6 +6128,7 @@ function initAiAssistant() {
 
 // 初始化应用
 function init() {
+  initAdminShell();
   initAiAssistant();
   // 导航点击事件
   document.querySelectorAll('.nav-section a').forEach(link => {
@@ -5845,17 +6154,9 @@ function init() {
     switchView('status');
   });
 
-  // 求解按钮
-  document.getElementById('btn-solve').addEventListener('click', async () => {
-    if (!confirm('确定要执行求解吗？这将覆盖现有的排课结果。')) {
-      return;
-    }
-    try {
-      await api('/build-tasks', { method: 'POST' });
-      showToast('教学任务已生成');
-    } catch (error) {
-      // 错误已由 api 函数处理
-    }
+  // 顶部主操作只进入排课工作区；实际求解仍由排课页发起，避免误触即修改课表。
+  document.getElementById('btn-solve').addEventListener('click', () => {
+    switchView('manual-timetable');
   });
 
   // 课表选择框事件
@@ -6582,6 +6883,11 @@ function renderApSelectionImportPreview() {
       name: `${item.chinese_name} (${seniorGradeLabel(item.student_grade)})`,
       detail: `${item.course_name} 不适用于该学生年级`,
     })),
+    ...(data.block_conflicts || []).map(item => ({
+      location: item.block_id,
+      name: `${item.student_name} (${item.student_id})`,
+      detail: `同一 Block 有多门同步课程：${(item.course_ids || []).join('、')}`,
+    })),
   ];
 
   const usedAi = data.recognition_method === 'ai';
@@ -6671,7 +6977,7 @@ function renderApSelectionImportPreview() {
       </div>
       <div class="student-import-preview-table">
         <table>
-          <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>年级</th><th>当前 AP 选课</th><th>导入后 AP 选课</th></tr></thead>
+          <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文名</th><th>年级</th><th>当前 AP 选课</th><th>导入后 AP 选课</th><th>精确 Block</th></tr></thead>
           <tbody>
             ${data.changes.map(change => `
               <tr>
@@ -6681,6 +6987,9 @@ function renderApSelectionImportPreview() {
                 <td>${escapeImportHtml(seniorGradeLabel(change.grade))}</td>
                 <td>${escapeImportHtml((change.previous_course_names || []).join('、') || '无')}</td>
                 <td>${escapeImportHtml((change.course_names || []).join('、') || '无')}</td>
+                <td>${escapeImportHtml((change.block_assignments || [])
+                  .map(item => `${item.course_id} → ${item.block_id}`)
+                  .join('、') || '未提供')}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -6750,6 +7059,7 @@ window.confirmApSelectionImport = async function() {
         changes: data.changes.map(change => ({
           student_id: change.student_id,
           course_ids: change.course_ids,
+          block_assignments: change.block_assignments || [],
         })),
       }),
     });
@@ -7267,8 +7577,292 @@ async function confirmImport() {
 
 // ==================== 导出功能 ====================
 
+let templateExportState = {
+  classFile: null,
+  teacherFile: null,
+  preview: null,
+};
+
+function setTemplateExportStatus(message, type = '') {
+  const status = document.getElementById('template-export-status');
+  if (!status) return;
+  status.textContent = message;
+  status.className = `template-export-status${type ? ` is-${type}` : ''}`;
+}
+
+function syncTemplateExportFiles() {
+  const classInput = document.getElementById('class-template-input');
+  const teacherInput = document.getElementById('teacher-template-input');
+  templateExportState = {
+    classFile: classInput?.files?.[0] || null,
+    teacherFile: teacherInput?.files?.[0] || null,
+    preview: null,
+  };
+  const className = document.getElementById('class-template-filename');
+  const teacherName = document.getElementById('teacher-template-filename');
+  if (className) className.textContent = templateExportState.classFile?.name || '默认：2026-2027 学年三个年级课表';
+  if (teacherName) teacherName.textContent = templateExportState.teacherFile?.name || '默认：9 月 1 日起全部教师课表';
+  classInput?.closest('.template-upload-card')?.classList.toggle('has-file', Boolean(templateExportState.classFile));
+  teacherInput?.closest('.template-upload-card')?.classList.toggle('has-file', Boolean(templateExportState.teacherFile));
+  classInput?.closest('.template-upload-card')?.querySelector('.template-upload-action')
+    ?.replaceChildren(document.createTextNode(templateExportState.classFile ? '更换文件' : '替换默认'));
+  teacherInput?.closest('.template-upload-card')?.querySelector('.template-upload-action')
+    ?.replaceChildren(document.createTextNode(templateExportState.teacherFile ? '更换文件' : '替换默认'));
+  const previewButton = document.getElementById('btn-template-preview');
+  const aiButton = document.getElementById('btn-template-ai-match');
+  const generateButton = document.getElementById('btn-template-generate');
+  if (previewButton) previewButton.disabled = false;
+  if (aiButton) aiButton.disabled = true;
+  if (generateButton) generateButton.disabled = false;
+  document.getElementById('template-export-preview')?.classList.add('hidden');
+  const customCount = Number(Boolean(templateExportState.classFile)) + Number(Boolean(templateExportState.teacherFile));
+  setTemplateExportStatus(customCount === 0
+    ? '内置默认模板已就绪，无需上传文件。'
+    : customCount === 2
+      ? '两个模板均使用自定义文件，可以开始识别。'
+      : '一个模板使用自定义文件，另一个继续使用内置默认模板。');
+}
+
+function templateExportFormData({ includeMappings = false } = {}) {
+  const formData = new FormData();
+  if (templateExportState.classFile) {
+    formData.append('class_template', templateExportState.classFile, templateExportState.classFile.name);
+  }
+  if (templateExportState.teacherFile) {
+    formData.append('teacher_template', templateExportState.teacherFile, templateExportState.teacherFile.name);
+  }
+  if (includeMappings) {
+    const mappings = {};
+    document.querySelectorAll('[data-template-teacher-sheet]').forEach(select => {
+      mappings[decodeURIComponent(select.dataset.templateTeacherSheet)] = select.value || '__skip__';
+    });
+    formData.append('teacher_mappings', JSON.stringify(mappings));
+  }
+  return formData;
+}
+
+async function templateExportRequest(path, formData) {
+  const response = await fetch(`/api${path}`, { method: 'POST', body: formData });
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result?.ok) {
+    throw new Error(result?.errors?.[0]?.msg || `模板处理失败（HTTP ${response.status}）`);
+  }
+  return result.data;
+}
+
+function mappingStatusLabel(mapping) {
+  if (mapping.status === 'matched' && mapping.match_method === 'course_assignment') return '课程分工匹配';
+  if (mapping.status === 'matched' && mapping.match_method === 'teacher_name') return '姓名自动匹配';
+  return ({
+    matched: '自动匹配',
+    llm_suggested: 'AI 建议（请确认）',
+    unmatched: '需要选择',
+    ambiguous: '匹配不唯一',
+    resource: '资源表保留',
+  })[mapping.status] || mapping.status;
+}
+
+function renderTemplateExportPreview(preview) {
+  const container = document.getElementById('template-export-preview');
+  if (!container) return;
+  const classTemplate = preview.class_template;
+  const teacherTemplate = preview.teacher_template;
+  const teacherOptions = (selectedId = '') => `
+    <option value="__skip__" ${selectedId ? '' : 'selected'}>保留空白（跳过）</option>
+    ${preview.teachers.map(teacher => `
+      <option value="${escapeHtml(teacher.id)}" ${teacher.id === selectedId ? 'selected' : ''}>${escapeHtml(teacher.name)} · ${escapeHtml(teacher.id)}</option>
+    `).join('')}
+  `;
+  const classRows = classTemplate.mapped_sheets.map(sheet => `
+    <div class="template-class-mapping">
+      <strong>${escapeHtml(sheet.sheet_name)} · 高${sheet.grade === 10 ? '一' : sheet.grade === 11 ? '二' : '三'}</strong>
+      <span>${sheet.classes.map(item => `Class ${item.template_class_number} → ${escapeHtml(item.class_name || '未匹配')}`).join(' · ')}</span>
+    </div>
+  `).join('');
+  const teacherRows = teacherTemplate.mappings.map(mapping => {
+    if (mapping.status === 'resource') {
+      return `
+        <tr>
+          <td>${escapeHtml(mapping.sheet_name)}</td>
+          <td class="mapping-status resource">${mappingStatusLabel(mapping)}</td>
+          <td>不会覆盖其中现有内容</td>
+        </tr>
+      `;
+    }
+    return `
+      <tr>
+        <td>${escapeHtml(mapping.sheet_name)}</td>
+        <td class="mapping-status ${escapeHtml(mapping.status)}">${mappingStatusLabel(mapping)}</td>
+        <td>
+          <select data-template-teacher-sheet="${encodeURIComponent(mapping.sheet_name)}" aria-label="${escapeHtml(mapping.sheet_name)} 对应教师">
+            ${teacherOptions(mapping.teacher_id || '')}
+          </select>
+          ${mapping.match_reason ? `<div class="template-mapping-reason">${escapeHtml(mapping.match_reason)}${mapping.ai_review?.confidence ? ` · 置信度 ${Math.round(mapping.ai_review.confidence * 100)}%` : ''}</div>` : ''}
+          ${mapping.ai_review?.reviewed && !mapping.ai_review.teacher_id ? `<div class="template-mapping-reason is-muted">AI 已复核：${escapeHtml(mapping.ai_review.reason || '证据不足，保留人工选择')}</div>` : ''}
+        </td>
+      </tr>
+    `;
+  }).join('');
+  container.innerHTML = `
+    <div class="template-export-summary">
+      <div><span>年级工作表</span><strong>${classTemplate.mapped_sheets.length} / ${classTemplate.sheet_count}</strong></div>
+      <div><span>匹配教学班</span><strong>${classTemplate.mapped_class_count} / 9</strong></div>
+      <div><span>自动匹配教师</span><strong>${teacherTemplate.matched_count} / ${teacherTemplate.sheet_count - teacherTemplate.resource_count}</strong><small>其中课程分工 ${teacherTemplate.course_matched_count || 0} 张</small></div>
+      <div><span>AI 建议 / 仍待选择</span><strong>${teacherTemplate.suggested_count || 0} / ${teacherTemplate.unmatched_count}</strong></div>
+    </div>
+    <div class="template-mapping-list">
+      <h4>年级与班级识别</h4>
+      ${classRows || '<div class="empty-state">没有识别到年级课表</div>'}
+      <h4>教师工作表识别</h4>
+      <div class="table-container">
+        <table class="teacher-mapping-table">
+          <thead><tr><th>工作表</th><th>识别状态</th><th>系统教师</th></tr></thead>
+          <tbody>${teacherRows}</tbody>
+        </table>
+      </div>
+    </div>
+    ${preview.warnings?.length ? `<ul class="template-warning-list">${preview.warnings.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
+  `;
+  container.classList.remove('hidden');
+}
+
+function base64WorkbookBlob(data, mimeType) {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mimeType });
+}
+
+function downloadTemplateFile(file) {
+  const url = URL.createObjectURL(base64WorkbookBlob(file.data_base64, file.mime_type));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = file.filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+async function previewScheduleTemplates() {
+  const previewButton = document.getElementById('btn-template-preview');
+  const aiButton = document.getElementById('btn-template-ai-match');
+  const generateButton = document.getElementById('btn-template-generate');
+  previewButton.disabled = true;
+  aiButton.disabled = true;
+  generateButton.disabled = true;
+  setTemplateExportStatus(templateExportState.classFile?.name.toLocaleLowerCase().endsWith('.xls')
+    ? '正在转换旧版 .xls 并识别全部工作表…'
+    : '正在识别内置模板与所选自定义模板的全部工作表…');
+  try {
+    const preview = await templateExportRequest('/export/templates/preview', templateExportFormData());
+    templateExportState.preview = preview;
+    renderTemplateExportPreview(preview);
+    generateButton.disabled = false;
+    const teacherTemplate = preview.teacher_template;
+    aiButton.disabled = !(teacherTemplate.ai_review?.configured && teacherTemplate.ai_review?.candidate_count);
+    const statusParts = [
+      `课程分工自动匹配 ${teacherTemplate.course_matched_count || 0} 张`,
+      teacherTemplate.suggested_count ? `AI 给出 ${teacherTemplate.suggested_count} 张建议` : '',
+      teacherTemplate.unmatched_count ? `仍有 ${teacherTemplate.unmatched_count} 张需要人工选择` : '没有未匹配工作表',
+    ].filter(Boolean);
+    setTemplateExportStatus(`${statusParts.join('；')}。`, teacherTemplate.unmatched_count ? '' : 'success');
+  } catch (error) {
+    setTemplateExportStatus(error.message, 'error');
+    showToast(error.message, 'error');
+  } finally {
+    previewButton.disabled = false;
+  }
+}
+
+async function aiMatchScheduleTemplates() {
+  const previewButton = document.getElementById('btn-template-preview');
+  const aiButton = document.getElementById('btn-template-ai-match');
+  const generateButton = document.getElementById('btn-template-generate');
+  if (!templateExportState.preview) return;
+  previewButton.disabled = true;
+  aiButton.disabled = true;
+  generateButton.disabled = true;
+  setTemplateExportStatus('正在把工作表标题、课程、年级和受限候选交给已配置模型判断…');
+  try {
+    const preview = await templateExportRequest('/export/templates/ai-match', templateExportFormData());
+    templateExportState.preview = preview;
+    renderTemplateExportPreview(preview);
+    generateButton.disabled = false;
+    const teacherTemplate = preview.teacher_template;
+    setTemplateExportStatus(
+      `AI 已复核 ${teacherTemplate.ai_review?.reviewed_count || 0} 张候选表，给出 ${teacherTemplate.suggested_count || 0} 张建议；仍有 ${teacherTemplate.unmatched_count} 张需要人工选择。`,
+      teacherTemplate.unmatched_count ? '' : 'success',
+    );
+  } catch (error) {
+    setTemplateExportStatus(error.message, 'error');
+    showToast(error.message, 'error');
+    aiButton.disabled = false;
+  } finally {
+    previewButton.disabled = false;
+    generateButton.disabled = !templateExportState.preview;
+  }
+}
+
+async function generateScheduleTemplateFiles() {
+  const previewButton = document.getElementById('btn-template-preview');
+  const aiButton = document.getElementById('btn-template-ai-match');
+  const generateButton = document.getElementById('btn-template-generate');
+  previewButton.disabled = true;
+  aiButton.disabled = true;
+  generateButton.disabled = true;
+  try {
+    if (!templateExportState.preview) {
+      setTemplateExportStatus(templateExportState.classFile?.name.toLocaleLowerCase().endsWith('.xls')
+        ? '正在先转换旧版 .xls 并识别工作表…'
+        : '正在先识别工作表，随后会自动生成两份 Excel…');
+      const preview = await templateExportRequest('/export/templates/preview', templateExportFormData());
+      templateExportState.preview = preview;
+      renderTemplateExportPreview(preview);
+    }
+    setTemplateExportStatus('正在把当前有效课表写入两个模板副本…');
+    const result = await templateExportRequest('/export/templates/generate', templateExportFormData({ includeMappings: true }));
+    for (let index = 0; index < result.files.length; index += 1) {
+      downloadTemplateFile(result.files[index]);
+      if (index < result.files.length - 1) await new Promise(resolve => setTimeout(resolve, 180));
+    }
+    const warningCount = result.summary.warnings?.length || 0;
+    setTemplateExportStatus(
+      `已生成 ${result.files.length} 个文件：填入 ${result.summary.class_filled_cells} 个班级课表格、${result.summary.teacher_filled_cells} 个教师课表格${warningCount ? `；另有 ${warningCount} 项保留空白` : ''}。`,
+      warningCount ? '' : 'success',
+    );
+    showToast('正式 Excel 课表已生成', 'success');
+  } catch (error) {
+    setTemplateExportStatus(error.message, 'error');
+    showToast(error.message, 'error');
+  } finally {
+    previewButton.disabled = false;
+    const teacherTemplate = templateExportState.preview?.teacher_template;
+    aiButton.disabled = !(teacherTemplate?.ai_review?.configured && teacherTemplate?.ai_review?.candidate_count);
+    generateButton.disabled = false;
+  }
+}
+
+function initTemplateExport() {
+  const classInput = document.getElementById('class-template-input');
+  const teacherInput = document.getElementById('teacher-template-input');
+  const previewButton = document.getElementById('btn-template-preview');
+  const aiButton = document.getElementById('btn-template-ai-match');
+  const generateButton = document.getElementById('btn-template-generate');
+  if (!classInput || !teacherInput || !previewButton || !aiButton || !generateButton
+    || classInput.dataset.initialized === 'true') return;
+  classInput.dataset.initialized = 'true';
+  classInput.addEventListener('change', syncTemplateExportFiles);
+  teacherInput.addEventListener('change', syncTemplateExportFiles);
+  previewButton.addEventListener('click', previewScheduleTemplates);
+  aiButton.addEventListener('click', aiMatchScheduleTemplates);
+  generateButton.addEventListener('click', generateScheduleTemplateFiles);
+  syncTemplateExportFiles();
+}
+
 // 加载导出页面
 async function loadExportPage() {
+  initTemplateExport();
   const dimension = document.getElementById('export-dimension');
   const target = document.getElementById('export-target');
 
@@ -8288,6 +8882,7 @@ window.startFormalSolve = async function() {
       contentDiv.innerHTML = `<div class="validation-result warning">⚠️ 未生成课表：${result.reason || '未获批准放宽受保护规则'}</div>`;
     } else {
       const hasViolations = result.hard_violations && result.hard_violations.length > 0;
+      const needsReview = result.publication_status === 'review_required';
 
       if (hasViolations) {
         // 有违规，显示违规详情和AI建议
@@ -8316,12 +8911,34 @@ window.startFormalSolve = async function() {
 
         // 自动请求AI建议
         await window.requestAISuggestions();
+      } else if (needsReview) {
+        const qualityIssues = result.quality_gate?.issues || [];
+        contentDiv.innerHTML = `
+          <div class="validation-result warning">
+            ⚠️ 课表已生成并通过物理硬约束校验，但质量或规则降级状态需要人工复核，当前不能视为正式发布
+          </div>
+          <div style="margin-top: 16px;">
+            ${result.policy_relaxed ? `<p><strong>硬规则降级：</strong>${(result.approved_hard_rule_relaxations || []).join('、') || '已审批'}</p>` : ''}
+            ${qualityIssues.map(item => `<p><strong>质量门槛：</strong>${item.message}</p>`).join('')}
+            <p>AP Block 第一节目标: <strong>${result.ap_block_first_period_actual_count || 0} / ${result.ap_block_first_period_target_count || 0}</strong>（偏差 ${result.ap_block_first_period_deviation || 0}）</p>
+            <p>AP Block 第1–6节: <strong>${Math.max(0, (result.ap_block_preferred_band_term_count ?? result.ap_block_morning_term_count ?? 0) - (result.ap_block_outside_preferred_band_occurrences ?? result.ap_block_afternoon_occurrences ?? 0))} / ${result.ap_block_preferred_band_term_count ?? result.ap_block_morning_term_count ?? 0}</strong></p>
+            <p>AP 上午空节: <strong>${result.quality_gate?.metrics?.ap_morning_empty_student_periods || 0}</strong> 个学生节次</p>
+            <p>AP 第一节空窗: <strong>${result.quality_gate?.metrics?.ap_first_period_gap_days || 0}</strong> 个学生日</p>
+            <p>软约束得分: <strong>${result.soft_score || 0}</strong></p>
+            <p>排课数量: <strong>${result.assignments?.length || 0}</strong> 节</p>
+          </div>
+          <div style="margin-top: 16px;">
+            <button class="btn btn-secondary" onclick="switchView('overview-timetable')">查看待复核课表</button>
+          </div>
+        `;
       } else {
         contentDiv.innerHTML = `
           <div class="validation-result success">
             ✅ 正式课表生成成功！所有硬约束满足
           </div>
           <div style="margin-top: 12px;">
+            <p>AP Block 第一节目标: <strong>${result.ap_block_first_period_actual_count || 0} / ${result.ap_block_first_period_target_count || 0}</strong>（偏差 ${result.ap_block_first_period_deviation || 0}）</p>
+            <p>AP Block 第1–6节: <strong>${Math.max(0, (result.ap_block_preferred_band_term_count ?? result.ap_block_morning_term_count ?? 0) - (result.ap_block_outside_preferred_band_occurrences ?? result.ap_block_afternoon_occurrences ?? 0))} / ${result.ap_block_preferred_band_term_count ?? result.ap_block_morning_term_count ?? 0}</strong></p>
             <p>软约束得分: <strong>${result.soft_score || 0}</strong></p>
             <p>排课数量: <strong>${result.assignments?.length || 0}</strong> 节</p>
           </div>
@@ -8336,7 +8953,12 @@ window.startFormalSolve = async function() {
     // 更新状态
     await loadFormalSolvePage();
 
-    showToast('正式课表生成完成！', 'success');
+    showToast(
+      result.publication_status === 'review_required'
+        ? '课表已生成，但质量或规则降级状态待人工复核'
+        : '正式课表生成完成！',
+      result.publication_status === 'review_required' ? 'warning' : 'success',
+    );
   } catch (error) {
     showToast(error.message, 'error');
   }

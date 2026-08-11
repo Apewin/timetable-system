@@ -1,4 +1,5 @@
 import express from 'express';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import multer from 'multer';
@@ -8,8 +9,14 @@ import { validateRules } from './rule-schema.mjs';
 import { buildSchedulingProblem } from './problem-builder.mjs';
 import { compileRules } from './rule-compiler.mjs';
 import { solveSchedule } from './cpsat-solver.mjs';
-import { solveFeasibleFirstSchedule } from './feasible-first-solver.mjs';
+import { deferableHardRules, solveFeasibleFirstSchedule } from './feasible-first-solver.mjs';
 import { validateSchedule } from './schedule-validator.mjs';
+import { priorTimetableHintForState } from './schedule-hints.mjs';
+import {
+  evaluateScheduleQuality,
+  publicationStatusForSchedule,
+  withScheduleQualityStatus,
+} from './schedule-quality.mjs';
 import { approvalGatedRules, enforceApprovalGates, relaxApprovedRules } from './approval-gate.mjs';
 import {
   normalizeCourseScope,
@@ -31,6 +38,7 @@ import {
   interpretWorkbook,
   planSchedulingStrategy,
   saveAiConfig,
+  suggestTeacherTemplateMappings,
   testAiConnection,
 } from './llm-workbook-interpreter.mjs';
 import {
@@ -43,7 +51,17 @@ import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from '
 import { synchronizeClassMemberships } from './state-integrity.mjs';
 import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
 import { applyTeacherAssignmentSwap } from './assistant-actions.mjs';
+import {
+  executeAssistantCliRead,
+  executeConfirmedAssistantCliAction,
+} from './assistant-cli-tools.mjs';
 import { createScheduleOverlay } from './schedule-overlays.mjs';
+import {
+  applyTeacherTemplateSuggestions,
+  analyzeScheduleTemplates,
+  exportScheduleTemplates,
+  resolveScheduleTemplateInputs,
+} from './schedule-template-export.mjs';
 import {
   applyTeacherTimetableAdjustment,
   evaluateTeacherTimetableAdjustments,
@@ -56,6 +74,13 @@ import {
 } from './graduation.mjs';
 
 const app = express();
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
 const repository = new StateRepository(
   process.env.STATE_FILE ? resolve(process.env.STATE_FILE) : defaultStateFile,
@@ -723,7 +748,7 @@ function saveValidatedScheduleEdit(
     const first = validation.hard_violations[0];
     throw new Error(`此次调整不会保存：${first?.message || '违反硬约束'}`);
   }
-  const saved = { ...schedule, validation };
+  const saved = withScheduleQualityStatus(schedule, validation);
   repository.write(
     { ...state, section_overrides: sectionOverrides, assignments: saved.assignments, schedule: saved, solve_status: 'valid' },
     { expectedRevision },
@@ -757,7 +782,8 @@ async function saveOrReplanSectionEdit(state, nextSections, sectionOverrides, { 
   if (!solution.ok) throw new Error(`重新排课失败：${solution.reason || solution.status}`);
   const validation = validateSchedule(problem, { ...solution, locks: state.schedule.locks || [] });
   if (!validation.ok) throw new Error(`重新排课结果未通过校验：${validation.hard_violations[0]?.message || '未知错误'}`);
-  const schedule = {
+  const schedule = withScheduleQualityStatus({
+    ...state.schedule,
     version: state.schedule.version || 1,
     created_at: new Date().toISOString(),
     solver_status: solution.status,
@@ -765,9 +791,8 @@ async function saveOrReplanSectionEdit(state, nextSections, sectionOverrides, { 
     sections: solution.sections,
     meetings: solution.meetings,
     assignments: solution.assignments,
-    validation,
     locks: state.schedule.locks || [],
-  };
+  }, validation);
   repository.write(
     { ...preparedState, assignments: solution.assignments, schedule, solve_status: 'valid' },
     { expectedRevision },
@@ -777,6 +802,13 @@ async function saveOrReplanSectionEdit(state, nextSections, sectionOverrides, { 
 
 app.get('/api/status', (_req, res) => reply(res, () => {
   const state = repository.read();
+  const storedQualityGate = state.schedule?.quality_gate
+    || evaluateScheduleQuality(state.schedule?.validation || {});
+  const storedPublicationStatus = state.schedule?.publication_status
+    || publicationStatusForSchedule({
+      qualityPassed: storedQualityGate.passed,
+      policyRelaxed: (state.schedule?.deferred_rule_ids || []).length > 0,
+    });
   return {
     backend: 'rules-first-v1',
     school: state.meta?.school,
@@ -787,6 +819,8 @@ app.get('/api/status', (_req, res) => reply(res, () => {
         ['schedule_archives', state.schedule_archives?.length || 0],
       ])),
     solve_status: state.solve_status || 'not_run',
+    publication_status: state.schedule ? storedPublicationStatus : 'not_ready',
+    review_required: state.schedule ? storedPublicationStatus === 'review_required' : false,
   };
 }));
 
@@ -1024,6 +1058,20 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   if (!Array.isArray(approvedRuleIds) || !approvedRuleIds.every(id => typeof id === 'string')) {
     throw new Error('approved_rule_relaxations 必须是规则 ID 数组');
   }
+  const approvedHardRuleIds = body.approved_hard_rule_relaxations || [];
+  if (!Array.isArray(approvedHardRuleIds)
+    || !approvedHardRuleIds.every(id => typeof id === 'string')) {
+    throw new Error('approved_hard_rule_relaxations 必须是规则 ID 数组');
+  }
+  const deferableRules = deferableHardRules(problem);
+  const deferableRuleIds = new Set(deferableRules.map(rule => rule.id));
+  const invalidHardApprovals = approvedHardRuleIds.filter(id => !deferableRuleIds.has(id));
+  if (invalidHardApprovals.length) {
+    throw new Error(`以下规则不是可审批降级的策略硬规则: ${invalidHardApprovals.join('、')}`);
+  }
+  const approvedHardRuleIdSet = new Set(approvedHardRuleIds);
+  const waitingForHardRuleApproval = deferableRules.filter(rule =>
+    !approvedHardRuleIdSet.has(rule.id));
   const waitingForApproval = approvalGatedRules(problem, approvedRuleIds);
   // AI may influence decision order and temporary soft weights only. Approval
   // gates and manual locks remain executable solver constraints.
@@ -1040,17 +1088,7 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   const candidateCount = Number.isFinite(requestedCandidateCount)
     ? Math.min(5, Math.max(1, Math.floor(requestedCandidateCount)))
     : 1;
-  // A previous timetable is a useful repair hint for ordinary incremental
-  // changes.  In Block mode, though, it can preserve an already scattered AP
-  // layer and prevent the compact-band objective from exploring a new global
-  // arrangement.  Manual gold-frame locks remain hard in either case.
-  const preservePriorTimetableAsHint = problem.diagnostics?.ap_block_mode?.enabled !== true;
-  const priorMeetings = preservePriorTimetableAsHint && state.solve_status === 'valid'
-    ? state.schedule?.meetings || []
-    : [];
-  const priorSections = preservePriorTimetableAsHint && state.solve_status === 'valid'
-    ? state.schedule?.sections || []
-    : [];
+  const priorHint = priorTimetableHintForState(state, problem);
   const solveStartedAt = performance.now();
   const feasibleFirst = body.feasible_first !== false;
   const solution = feasibleFirst
@@ -1060,8 +1098,9 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       randomSeed: Number.isInteger(body.random_seed) ? body.random_seed : 20260803,
       freezeMembership: body.lock_section_rosters === true,
       lockedMeetings,
-      hintMeetings: priorMeetings,
-      hintSections: priorSections,
+      hintMeetings: priorHint.meetings,
+      hintSections: priorHint.sections,
+      deferredRuleIds: approvedHardRuleIds,
     })
     : await solveSchedule(guardedProblem, {
       maxTimeSeconds,
@@ -1076,6 +1115,7 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     ai_strategy: strategy,
     ai_warnings: strategyWarnings,
     incomplete_required_choices: problem.diagnostics.incomplete_required_choices || [],
+    prior_timetable_hint: { enabled: priorHint.enabled, reason: priorHint.reason },
   };
   if (!solution.ok) {
     if (waitingForApproval.length) return {
@@ -1083,6 +1123,19 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       status: 'NEEDS_APPROVAL_TO_RELAX',
       reason: '在不破坏受保护软规则的前提下无解；系统没有自动放宽规则。',
       blocked_by: waitingForApproval.map(rule => ({ id: rule.id, name: rule.name || rule.id, type: rule.type, scope: rule.scope })),
+      diagnostic: solution.reason || solution.status,
+      ...diagnosticFields,
+    };
+    if (feasibleFirst && waitingForHardRuleApproval.length) return {
+      solved: false,
+      status: 'NEEDS_APPROVAL_TO_DEFER_HARD_RULE',
+      reason: '严格遵守全部硬规则时未找到课表；系统没有自动降级任何硬规则。',
+      blocked_by: waitingForHardRuleApproval.map(rule => ({
+        id: rule.id,
+        name: rule.name || rule.id,
+        type: rule.type,
+        scope: rule.scope,
+      })),
       diagnostic: solution.reason || solution.status,
       ...diagnosticFields,
     };
@@ -1099,6 +1152,10 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   const validation = validateSchedule(validationProblem, { ...solution, locks: lockedMeetings });
   if (!validation.ok) throw new Error(`求解器结果未通过独立校验: ${validation.hard_violations[0]?.message || '未知错误'}`);
   const deferredRuleIds = new Set(solution.deferred_rule_ids || []);
+  const qualityLimits = body.quality_limits || {};
+  if (typeof qualityLimits !== 'object' || Array.isArray(qualityLimits)) {
+    throw new Error('quality_limits 必须是对象');
+  }
   const savedRules = deferredRuleIds.size
     ? rules.map(rule => deferredRuleIds.has(rule.id)
       ? {
@@ -1110,7 +1167,7 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       }
       : rule)
     : rules;
-  const schedule = {
+  const schedule = withScheduleQualityStatus({
     version: (state.schedule?.version || 0) + 1,
     created_at: new Date().toISOString(),
     solver_status: solution.status,
@@ -1122,17 +1179,42 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     validation,
     algorithm: solution.algorithm || 'exact-cp-sat',
     deferred_rule_ids: [...deferredRuleIds],
-    review_required: solution.review_required === true,
     review_items: solution.review_items || [],
+    policy_relaxed: deferredRuleIds.size > 0,
+    hard_rule_relaxation_approvals: [...deferredRuleIds]
+      .map(rule_id => ({ rule_id, approved_at: new Date().toISOString() })),
     quality_score: solution.quality_score ?? validation.soft_score,
     candidate_count: solution.candidate_count || 1,
+    attempts: solution.attempts || [],
+    ap_block_afternoon_occurrences: solution.ap_block_afternoon_occurrences,
+    ap_block_morning_term_count: solution.ap_block_morning_term_count || 0,
+    ap_block_outside_preferred_band_occurrences:
+      solution.ap_block_outside_preferred_band_occurrences || 0,
+    ap_block_preferred_band_term_count: solution.ap_block_preferred_band_term_count || 0,
+    ap_block_first_period_deviation: solution.ap_block_first_period_deviation || 0,
+    ap_block_first_period_actual_count: solution.ap_block_first_period_actual_count || 0,
+    ap_block_first_period_target_count: solution.ap_block_first_period_target_count || 0,
+    ap_block_first_period_rule_count: solution.ap_block_first_period_rule_count || 0,
+    morning_empty_student_periods: solution.morning_empty_student_periods,
+    morning_fill_term_count: solution.morning_fill_term_count || 0,
+    morning_objective_scale: solution.morning_objective_scale || 1,
+    ap_block_first_period_objective_scale:
+      solution.ap_block_first_period_objective_scale || 1,
+    ap_block_band_objective_scale: solution.ap_block_band_objective_scale || 1,
+    first_period_tie_break_terms: solution.first_period_tie_break_terms || 0,
+    primary_objective_scale: solution.primary_objective_scale || 1,
+    early_stop_reason: solution.early_stop_reason || null,
     relaxation_approvals: approvedRuleIds.filter(id =>
       (problem.rules || []).some(rule => rule.id === id && rule.requires_approval_to_relax === true))
       .map(rule_id => ({ rule_id, approved_at: new Date().toISOString() })),
     locks: lockedMeetings,
     ai_strategy: strategy,
     ai_warnings: strategyWarnings,
-  };
+  }, validation, {
+    maxApStudentGapDays: qualityLimits.max_ap_student_gap_days,
+    maxApMorningEmptyStudentPeriods: qualityLimits.max_ap_morning_empty_student_periods,
+  });
+  const publicationStatus = schedule.publication_status;
   const manualPlan = state.manual_plan?.status === 'confirmed'
     ? {
       ...state.manual_plan,
@@ -1163,7 +1245,10 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   }
   return {
     solved: true,
-    status: solution.status,
+    status: publicationStatus === 'review_required'
+      ? 'REVIEW_REQUIRED'
+      : solution.status,
+    solver_status: solution.status,
     assignments: solution.assignments,
     validation,
     hard_violations: validation.hard_violations,
@@ -1175,7 +1260,28 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     deferred_rule_ids: schedule.deferred_rule_ids,
     quality_score: schedule.quality_score,
     candidate_count: schedule.candidate_count,
+    attempts: schedule.attempts,
+    ap_block_afternoon_occurrences: schedule.ap_block_afternoon_occurrences,
+    ap_block_morning_term_count: schedule.ap_block_morning_term_count,
+    ap_block_outside_preferred_band_occurrences:
+      schedule.ap_block_outside_preferred_band_occurrences,
+    ap_block_preferred_band_term_count: schedule.ap_block_preferred_band_term_count,
+    ap_block_first_period_deviation: schedule.ap_block_first_period_deviation,
+    ap_block_first_period_actual_count: schedule.ap_block_first_period_actual_count,
+    ap_block_first_period_target_count: schedule.ap_block_first_period_target_count,
+    ap_block_first_period_rule_count: schedule.ap_block_first_period_rule_count,
+    morning_empty_student_periods: schedule.morning_empty_student_periods,
+    morning_fill_term_count: schedule.morning_fill_term_count,
+    morning_objective_scale: schedule.morning_objective_scale,
+    first_period_tie_break_terms: schedule.first_period_tie_break_terms,
+    primary_objective_scale: schedule.primary_objective_scale,
+    early_stop_reason: schedule.early_stop_reason,
     approved_rule_relaxations: schedule.relaxation_approvals.map(item => item.rule_id),
+    approved_hard_rule_relaxations: schedule.hard_rule_relaxation_approvals
+      .map(item => item.rule_id),
+    policy_relaxed: schedule.policy_relaxed,
+    quality_gate: schedule.quality_gate,
+    publication_status: schedule.publication_status,
     ...diagnosticFields,
   };
 }
@@ -1360,7 +1466,28 @@ app.get('/api/validate', (_req, res) => reply(res, () => {
   }
   const problem = buildSchedulingProblem(state, state.schedule.rules || state.constraints || []);
   const result = validateSchedule(problem, state.schedule);
-  return { pass: result.ok, ...result };
+  const qualityGate = evaluateScheduleQuality(result, {
+    maxApStudentGapDays: state.schedule.quality_gate?.limits?.max_ap_student_gap_days,
+    maxApMorningEmptyStudentPeriods:
+      state.schedule.quality_gate?.limits?.max_ap_morning_empty_student_periods,
+    apBlockAfternoonOccurrences: state.schedule.ap_block_afternoon_occurrences,
+    apBlockFirstPeriodDeviation: state.schedule.ap_block_first_period_deviation,
+    apBlockFirstPeriodActualCount: state.schedule.ap_block_first_period_actual_count,
+    apBlockFirstPeriodTargetCount: state.schedule.ap_block_first_period_target_count,
+    apMorningEmptyStudentPeriods: state.schedule.morning_empty_student_periods,
+  });
+  const publicationStatus = publicationStatusForSchedule({
+    qualityPassed: qualityGate.passed,
+    policyRelaxed: state.schedule.policy_relaxed === true
+      || (state.schedule.deferred_rule_ids || []).length > 0,
+  });
+  return {
+    pass: result.ok,
+    ...result,
+    quality_gate: qualityGate,
+    publication_status: publicationStatus,
+    review_required: publicationStatus === 'review_required',
+  };
 }));
 
 app.post('/api/lock', (req, res) => reply(res, () => {
@@ -1375,7 +1502,8 @@ app.post('/api/lock', (req, res) => reply(res, () => {
   const schedule = { ...state.schedule, locks };
   const problem = buildSchedulingProblem(state, schedule.rules || state.constraints || []);
   const validation = validateSchedule(problem, schedule);
-  repository.write({ ...state, schedule: { ...schedule, validation }, solve_status: validation.ok ? 'valid' : 'stale' });
+  const saved = withScheduleQualityStatus(schedule, validation);
+  repository.write({ ...state, schedule: saved, solve_status: validation.ok ? 'valid' : 'stale' });
   return { message: '已锁定整个 section 的该节课', lock };
 }));
 
@@ -1409,7 +1537,7 @@ app.post('/api/teacher-timetable/adjust', (req, res) => reply(res, () => {
   const state = repository.read();
   const problem = problemForSchedule(state, state.schedule || {});
   const result = applyTeacherTimetableAdjustment(state, problem, req.body || {});
-  const schedule = result.schedule;
+  const schedule = withScheduleQualityStatus(result.schedule, result.schedule.validation);
   repository.write({
     ...state,
     assignments: schedule.assignments,
@@ -1444,7 +1572,8 @@ app.post('/api/swap', (req, res) => reply(res, () => {
   const problem = buildSchedulingProblem(state, schedule.rules || state.constraints || []);
   const validation = validateSchedule(problem, schedule);
   if (!validation.ok) throw new Error(`移动会违反硬约束: ${validation.hard_violations[0].message}`);
-  repository.write({ ...state, assignments: schedule.assignments, schedule: { ...schedule, validation }, solve_status: 'valid' });
+  const saved = withScheduleQualityStatus(schedule, validation);
+  repository.write({ ...state, assignments: saved.assignments, schedule: saved, solve_status: 'valid' });
   return { message: '已移动整个 section 的该节课', validation };
 }));
 
@@ -1497,6 +1626,79 @@ app.get('/api/timetable/:by/:id', (req, res) => reply(res, () => {
   return timetableGrid(state, req.params.by, req.params.id);
 }));
 
+const scheduleTemplateUpload = upload.fields([
+  { name: 'class_template', maxCount: 1 },
+  { name: 'teacher_template', maxCount: 1 },
+]);
+
+async function scheduleTemplateFiles(req) {
+  const classTemplate = req.files?.class_template?.[0];
+  const teacherTemplate = req.files?.teacher_template?.[0];
+  return resolveScheduleTemplateInputs({
+    classTemplateBuffer: classTemplate?.buffer,
+    classTemplateName: classTemplate ? decodedUploadFilename(classTemplate.originalname) : undefined,
+    teacherTemplateBuffer: teacherTemplate?.buffer,
+    teacherTemplateName: teacherTemplate ? decodedUploadFilename(teacherTemplate.originalname) : undefined,
+  });
+}
+
+app.post('/api/export/templates/preview', scheduleTemplateUpload, (req, res) => reply(res, async () => {
+  const state = repository.read();
+  const templateFiles = await scheduleTemplateFiles(req);
+  const result = await analyzeScheduleTemplates({ ...templateFiles, state });
+  const aiCandidateCount = result.teacher_template.mappings
+    .filter(mapping => ['unmatched', 'ambiguous'].includes(mapping.status))
+    .filter(mapping => mapping.ai_candidates?.length)
+    .length;
+  const aiConfig = getAiConfig();
+  result.teacher_template.ai_review = {
+    attempted: false,
+    configured: aiConfig.configured,
+    candidate_count: aiCandidateCount,
+    reason: aiCandidateCount
+      ? aiConfig.configured ? '等待用户明确点击 AI 判断' : '模型尚未配置'
+      : '没有需要模型判断的受限候选',
+  };
+  return { ...result, template_sources: templateFiles.templateSources };
+}));
+
+app.post('/api/export/templates/ai-match', scheduleTemplateUpload, (req, res) => reply(res, async () => {
+  const state = repository.read();
+  const templateFiles = await scheduleTemplateFiles(req);
+  const analysis = await analyzeScheduleTemplates({ ...templateFiles, state });
+  const suggestions = await suggestTeacherTemplateMappings(analysis.teacher_template.mappings);
+  const result = applyTeacherTemplateSuggestions(analysis, suggestions);
+  return { ...result, template_sources: templateFiles.templateSources };
+}));
+
+app.post('/api/export/templates/generate', scheduleTemplateUpload, (req, res) => reply(res, async () => {
+  const state = repository.read();
+  let teacherMappings = {};
+  if (req.body?.teacher_mappings) {
+    try {
+      teacherMappings = JSON.parse(req.body.teacher_mappings);
+    } catch (error) {
+      throw new Error('教师工作表映射格式无效，请重新预览后再导出', { cause: error });
+    }
+  }
+  const templateFiles = await scheduleTemplateFiles(req);
+  const result = await exportScheduleTemplates({
+    ...templateFiles,
+    teacherMappings,
+    state,
+  });
+  return {
+    summary: result.summary,
+    template_sources: templateFiles.templateSources,
+    files: result.files.map(file => ({
+      kind: file.kind,
+      filename: file.filename,
+      mime_type: file.mime_type,
+      data_base64: file.buffer.toString('base64'),
+    })),
+  };
+}));
+
 function nextScheduleArchiveId(archives, savedAt) {
   const base = `ARCHIVE_${savedAt.replace(/[^0-9]/g, '')}`;
   const ids = new Set(archives.map(archive => archive.id));
@@ -1522,9 +1724,14 @@ app.post('/api/schedule-archives', (_req, res) => reply(res, () => {
   if (!validation.ok) {
     throw new Error(`当前课表未通过硬约束校验：${validation.hard_violations[0]?.message || '未知错误'}`);
   }
+  const schedule = withScheduleQualityStatus(state.schedule, validation);
+  if (schedule.publication_status !== 'ready') {
+    const reason = schedule.quality_gate.issues[0]?.message
+      || '课表使用了经审批降级的硬规则';
+    throw new Error(`当前课表仍需人工复核，不能存为正式课表：${reason}`);
+  }
   const savedAt = new Date().toISOString();
   const archives = state.schedule_archives || [];
-  const schedule = { ...state.schedule, validation };
   const archive = createScheduleArchive({ ...state, schedule }, {
     id: nextScheduleArchiveId(archives, savedAt),
     savedAt,
@@ -1744,8 +1951,14 @@ app.post('/api/ap-selections/import/preview', upload.single('file'), (req, res) 
 app.post('/api/ap-selections/import/confirm', (req, res) => reply(res, () => {
   const state = repository.read();
   const result = applyApSelectionChanges(state, req.body?.changes, req.body?.mode || 'replace');
-  repository.write(changedState(state, 'students', result.students));
-  return { updated_students: result.updated, mode: result.mode };
+  repository.write(changedState(state, 'students', result.students, {
+    ap_block_assignments: result.ap_block_assignments,
+  }));
+  return {
+    updated_students: result.updated,
+    exact_block_assignments: result.ap_block_assignments.length,
+    mode: result.mode,
+  };
 }));
 
 app.post('/api/elective-selections/import/preview', upload.single('file'), (req, res) => reply(res, async () => {
@@ -1801,10 +2014,15 @@ app.post('/api/settings', (req, res) => reply(res, () => {
 app.post('/api/ai/test', (req, res) => reply(res, () =>
   testAiConnection(req.body?.message)));
 
-// The chat request itself is read-only. A natural-language request to apply a
-// timetable balancing suggestion can additionally return one separately
-// validated, confirmable move; no state changes until its action endpoint is
-// clicked by the user.
+// Chat may run one privacy-safe CLI query or return a revision-bound action
+// card. Mutations still require a separate UI confirmation endpoint, which
+// executes the reviewed operation through the CLI --apply gate.
+function internalApiBaseUrl(req) {
+  const address = String(req.socket.localAddress || '127.0.0.1');
+  const host = address.includes(':') ? `[${address}]` : address;
+  return `http://${host}:${req.socket.localPort}/api`;
+}
+
 app.post('/api/assistant/chat', (req, res) => reply(res, async () => {
   const state = repository.read();
   const result = await askAiAssistant({
@@ -1812,6 +2030,8 @@ app.post('/api/assistant/chat', (req, res) => reply(res, async () => {
     context: req.body?.context,
     history: req.body?.history,
     state,
+  }, {
+    executeCliCall: call => executeAssistantCliRead(call, { baseUrl: internalApiBaseUrl(req) }),
   });
   if (!result.action) result.action = automaticTeacherScheduleMoveProposal(state, req.body?.context, req.body?.message);
   return result;
@@ -1855,6 +2075,19 @@ app.post('/api/assistant/actions/move-schedule-meeting', (req, res) => reply(res
   return {
     message: `已将 ${proposal.course_name}（${proposal.class_label}）从${proposal.from_label}调整到${proposal.to_label}`,
     validation,
+  };
+}));
+
+app.post('/api/assistant/actions/execute-cli-operation', (req, res) => reply(res, async () => {
+  const operation = String(req.body?.operation || '');
+  const result = await executeConfirmedAssistantCliAction(req.body, {
+    state: repository.read(),
+    baseUrl: internalApiBaseUrl(req),
+  });
+  return {
+    message: `CLI 操作 ${operation} 已执行`,
+    operation,
+    result,
   };
 }));
 
@@ -1996,5 +2229,25 @@ app.get('/api/:entity', (req, res) => reply(res, () => {
   return value;
 }));
 
-const port = Number(process.env.PORT || 3001);
-app.listen(port, () => console.log(`rules-first backend listening on :${port}`));
+const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url));
+if (existsSync(webDist)) {
+  app.use(express.static(webDist, { index: false }));
+  app.get('*', (req, res, next) => {
+    if (req.path === '/api' || req.path.startsWith('/api/')) return next();
+    return res.sendFile(resolve(webDist, 'index.html'));
+  });
+}
+
+export function startServer({
+  port = Number(process.env.PORT || 3001),
+  host = process.env.HOST || '127.0.0.1',
+} = {}) {
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 必须是 0–65535 的整数');
+  return app.listen(port, host, () => {
+    console.log(`timetable server listening on http://${host}:${port}`);
+  });
+}
+
+const isMainModule = process.argv[1]
+  && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMainModule) startServer();

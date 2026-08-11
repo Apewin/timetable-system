@@ -1,0 +1,28 @@
+[Unit]
+Description=AP Timetable System
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=timetable
+Group=timetable
+WorkingDirectory=/opt/timetable/current
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3001
+Environment=STATE_FILE=/var/lib/timetable/timetable.json
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/node packages/backend/src/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/timetable /var/lib/timetable
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

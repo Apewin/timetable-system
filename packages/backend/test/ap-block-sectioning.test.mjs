@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildSchedulingProblem } from '../src/problem-builder.mjs';
 
-function blockState({ students, courses = ['AP_A', 'AP_B', 'AP_C'], slots = [], courseBlockIds = {} } = {}) {
+function blockState({
+  students,
+  courses = ['AP_A', 'AP_B', 'AP_C'],
+  slots = [],
+  courseBlockIds = {},
+  apBlockAssignments = [],
+} = {}) {
   return {
     teachers: courses.map(courseId => ({ id: `T_${courseId}`, can_teach: [courseId] })),
     rooms: [],
@@ -15,6 +21,7 @@ function blockState({ students, courses = ['AP_A', 'AP_B', 'AP_C'], slots = [], 
     teaching_assignments: [],
     selection_blocks: [],
     constraints: [],
+    ap_block_assignments: apBlockAssignments,
     ap_block_config: {
       enabled: true,
       blocks: [
@@ -26,6 +33,30 @@ function blockState({ students, courses = ['AP_A', 'AP_B', 'AP_C'], slots = [], 
     },
   };
 }
+
+test('AP Block mode preserves exact imported student-course-block rosters', () => {
+  const problem = buildSchedulingProblem(blockState({
+    courses: ['AP_A', 'AP_B'],
+    students: [
+      { id: 'S1', grade: 11, ap_courses: ['AP_A', 'AP_B'], elective_choices: {} },
+      { id: 'S2', grade: 11, ap_courses: ['AP_A', 'AP_B'], elective_choices: {} },
+    ],
+    apBlockAssignments: [
+      { student_id: 'S1', course_id: 'AP_A', block_id: 'AP_BLOCK_2' },
+      { student_id: 'S1', course_id: 'AP_B', block_id: 'AP_BLOCK_1' },
+      { student_id: 'S2', course_id: 'AP_A', block_id: 'AP_BLOCK_1' },
+      { student_id: 'S2', course_id: 'AP_B', block_id: 'AP_BLOCK_2' },
+    ],
+  }));
+  const apSections = problem.sections.filter(section => section.class_type === 'ap');
+  const assignedBlock = (studentId, courseId) => apSections.find(section =>
+    section.course_id === courseId && section.student_ids.includes(studentId))?.ap_block_id;
+
+  assert.equal(assignedBlock('S1', 'AP_A'), 'AP_BLOCK_2');
+  assert.equal(assignedBlock('S1', 'AP_B'), 'AP_BLOCK_1');
+  assert.equal(assignedBlock('S2', 'AP_A'), 'AP_BLOCK_1');
+  assert.equal(assignedBlock('S2', 'AP_B'), 'AP_BLOCK_2');
+});
 
 test('AP Block mode accepts students with fewer AP selections and assigns only their selected courses', () => {
   const problem = buildSchedulingProblem(blockState({
@@ -53,7 +84,7 @@ test('AP Block mode accepts students with fewer AP selections and assigns only t
   assert.ok(problem.rules.some(rule => rule.type === 'synchronized_slots' && rule.id.startsWith('ap_block_')));
 });
 
-test('AP Block mode adds flexible compact-band and student-gap preferences without fixing slots', () => {
+test('AP Block mode targets one first period per week and otherwise prefers periods 2 through 6', () => {
   const problem = buildSchedulingProblem(blockState({
     students: [
       { id: 'S1', grade: 11, ap_courses: ['AP_A', 'AP_B', 'AP_C'], elective_choices: {} },
@@ -65,19 +96,34 @@ test('AP Block mode adds flexible compact-band and student-gap preferences witho
     && rule.id.endsWith('_compact_band'));
   assert.ok(compactBands.length >= 2, 'each open Block should prefer a compact early band');
   assert.ok(compactBands.every(rule => rule.type === 'preferred_slots' && rule.hard === false));
+  assert.ok(compactBands.every(rule => rule.weight === 2_000));
+  assert.ok(compactBands.every(rule => !Object.hasOwn(rule.params, 'objective_tier')));
   assert.ok(compactBands.every(rule => rule.params.slots.includes('D1P1')));
-  assert.ok(compactBands.every(rule => rule.params.slots.includes('D5P5')));
+  assert.ok(compactBands.every(rule => rule.params.slots.includes('D5P6')));
+  assert.ok(compactBands.every(rule => !rule.params.slots.includes('D1P7')));
   assert.ok(compactBands.every(rule => !problem.rules.some(other =>
     other.id === rule.id.replace('_compact_band', '_fixed_slots'))));
+
+  const firstPeriodTargets = problem.rules.filter(rule => rule.id.startsWith('ap_block_')
+    && rule.id.endsWith('_one_first_period'));
+  assert.equal(firstPeriodTargets.length, compactBands.length);
+  assert.ok(firstPeriodTargets.every(rule => rule.type === 'target_occurrences_in_slots'));
+  assert.ok(firstPeriodTargets.every(rule => rule.hard === false && rule.weight === 5_000));
+  assert.ok(firstPeriodTargets.every(rule => rule.params.target === 1));
+  assert.ok(firstPeriodTargets.every(rule => rule.params.objective_tier === 'ap_block_first_period_pattern'));
+  assert.ok(firstPeriodTargets.every(rule => rule.params.slots.length === 5));
+  assert.ok(firstPeriodTargets.every(rule => rule.params.slots.every(slot => slot.endsWith('P1'))));
 
   const studentCompactness = problem.rules.find(rule => rule.id === 'ap_block_students_compact_daily_schedule');
   assert.deepEqual(studentCompactness && {
     type: studentCompactness.type,
     hard: studentCompactness.hard,
+    weight: studentCompactness.weight,
     target_ids: [...studentCompactness.target_ids].sort(),
   }, {
     type: 'no_internal_gaps',
     hard: false,
+    weight: 1000,
     target_ids: ['S1', 'S2'],
   });
 });

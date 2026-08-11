@@ -69,6 +69,17 @@ test('accepts a minimum number of teaching days', () => {
   assert.throws(() => validateRules([{ ...rule, params: { min: 0 } }]), /params.min/);
 });
 
+test('accepts a target count inside a named slot set', () => {
+  const rule = {
+    id: 'one-first-period', type: 'target_occurrences_in_slots', hard: false, weight: 5000,
+    scope: 'section', target_ids: ['AP_BLOCK_1'],
+    params: { slots: ['D1P1', 'D2P1'], target: 1 },
+  };
+  assert.equal(validateRules([rule])[0], rule);
+  assert.throws(() => validateRules([{ ...rule, params: { ...rule.params, target: 0 } }]), /params.target/);
+  assert.throws(() => validateRules([{ ...rule, params: { ...rule.params, slots: [] } }]), /params.slots/);
+});
+
 test('accepts the soft teacher first-and-last-period avoidance rule', () => {
   const rule = {
     id: 'teacher-day-extremes', type: 'avoid_teacher_day_extremes', hard: false, weight: 1000,
