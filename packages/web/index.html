@@ -868,10 +868,19 @@
                 <label for="policy-max-morning-empty">发布门槛：AP 上午空节学生节次上限</label>
                 <input id="policy-max-morning-empty" class="input" type="number" min="0" value="0">
               </div>
+              <div class="form-group">
+                <label for="policy-analysis-budget">单目标质量分析预算</label>
+                <select id="policy-analysis-budget" class="select">
+                  <option value="120">快速分析 · 120 秒（每项约 60 秒）</option>
+                  <option value="300">深度分析 · 300 秒（每项约 150 秒）</option>
+                  <option value="600">尝试证明 · 600 秒（每项约 300 秒）</option>
+                </select>
+                <p class="form-hint">分析冻结当前 Section 分班、保留金框且不改变硬约束。增加时间可能找到更好结果，但即使选择 600 秒也不保证证明数学最优。</p>
+              </div>
               <div class="settings-actions">
                 <button class="btn btn-primary" type="button" onclick="saveSchedulingPolicy()">💾 保存排课策略</button>
                 <button class="btn btn-secondary" type="button" onclick="loadSchedulingPolicy()">🔄 恢复已保存值</button>
-                <button class="btn btn-secondary" type="button" id="policy-analyze-bounds" onclick="analyzeQualityLowerBounds()">📐 计算当前质量下界</button>
+                <button class="btn btn-secondary" type="button" id="policy-analyze-bounds" onclick="analyzeQualityLowerBounds()">📐 运行质量极限分析</button>
               </div>
               <p id="policy-save-status" class="form-hint"></p>
               <div id="policy-lower-bound-result" class="settings-test-result"></div>

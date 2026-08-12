@@ -1773,6 +1773,10 @@ app.post('/api/schedule-quality-lower-bounds', (req, res) => reply(res, async ()
       lockedMeetings: state.schedule.locks || [],
       hintMeetings: state.schedule.meetings || [],
       hintSections: state.schedule.sections || [],
+      baselineSchedule: {
+        sections: state.schedule.sections || [],
+        meetings: state.schedule.meetings || [],
+      },
       randomSeed: Number.isInteger(req.body?.random_seed) ? req.body.random_seed : 20260812,
       numSearchWorkers: Math.min(8, Math.max(1, Number(req.body?.num_search_workers || 4))),
     },

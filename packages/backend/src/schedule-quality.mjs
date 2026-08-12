@@ -43,8 +43,8 @@ export function diagnoseScheduleQuality(apGapViolations, issues) {
     recommendations: [
       {
         action: 'analyze_single_objective_bound',
-        label: '计算两个空堂指标的严格单目标下界',
-        reason: '先区分算法尚未优化充分，还是当前 Block 与必修课结构决定无法达到 0。',
+        label: '运行两个空堂指标的单目标质量极限分析',
+        reason: '以当前课表为基准尝试改善；只有求解器证明最优时，结果才是数学下界。',
       },
       {
         action: 'adjust_block_structure',

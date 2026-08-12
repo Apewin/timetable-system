@@ -53,9 +53,21 @@ test('isolates the two-metric quality lower-bound analysis in the solver worker'
         weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
       }],
     },
-    options: { maxTimeSeconds: 2, numSearchWorkers: 1 },
+    options: {
+      maxTimeSeconds: 2,
+      numSearchWorkers: 1,
+      baselineSchedule: {
+        sections: [{
+          id: 'A', course_id: 'A', teacher_id: 'T', class_type: 'ap',
+          weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [], grades: [11],
+        }],
+        meetings: [{ section_id: 'A', slot_id: 'D1P1', room_id: null }],
+      },
+    },
   });
 
   assert.equal(result.ap_student_gap_days.proven, true);
   assert.equal(result.ap_morning_empty_student_periods.proven, true);
+  assert.equal(result.ap_student_gap_days.baseline_value, 0);
+  assert.equal(result.ap_morning_empty_student_periods.baseline_value, 1);
 });

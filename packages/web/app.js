@@ -13,6 +13,7 @@ import {
   shouldCollapseAdminSections,
 } from './manual-course-scope.mjs';
 import { escapeHtml, safeDataAttribute } from './dom-safety.mjs';
+import { qualityMetricSummary } from './quality-analysis-view.mjs';
 
 const API_BASE = '/api';
 
@@ -1347,8 +1348,8 @@ async function loadManualTimetable() {
         const issues = (review.quality_gate?.issues || []).map(item => item.message).join('\n');
         const bounds = review.lower_bound_analysis;
         const boundSummary = bounds
-          ? `\n\n已记录的单目标下界分析：\n- AP 空堂日：${bounds.ap_student_gap_days?.proven ? `数学下界 ${bounds.ap_student_gap_days.lower_bound}` : `最好已知 ${bounds.ap_student_gap_days?.best_known ?? '未知'}`}\n- 上午空节：${bounds.ap_morning_empty_student_periods?.proven ? `数学下界 ${bounds.ap_morning_empty_student_periods.lower_bound}` : `最好已知 ${bounds.ap_morning_empty_student_periods?.best_known ?? '未知'}`}`
-          : '\n\n尚未计算严格单目标下界；建议先在“系统设置 → 排课策略”执行质量下界分析。';
+          ? `\n\n已记录的单目标质量极限分析：\n- AP 空堂日：${qualityMetricSummary(bounds.ap_student_gap_days)}\n- 上午空节：${qualityMetricSummary(bounds.ap_morning_empty_student_periods)}\n- 分析范围：${bounds.analysis_scope?.note || '冻结当前分班，只优化一个指标'}`
+          : '\n\n尚未运行单目标质量极限分析；建议先在“系统设置 → 排课策略”运行分析。';
         if (!confirm(`当前课表已通过全部硬约束，但质量门槛未通过：\n${issues}${boundSummary}\n\n建议先进行结构调整：\n${recommendations}\n\n如果学校本学期决定接受当前结果，可继续进入管理员质量例外审批。是否继续？`)) return;
         const reason = prompt('请输入批准质量例外的具体原因（至少 10 个字符，将永久记录在课表存档中）：');
         if (reason === null) return;
@@ -9777,25 +9778,26 @@ window.saveSchedulingPolicy = async function() {
 window.analyzeQualityLowerBounds = async function() {
   const button = document.getElementById('policy-analyze-bounds');
   const output = document.getElementById('policy-lower-bound-result');
+  const budget = Number(document.getElementById('policy-analysis-budget').value || 120);
   button.disabled = true;
   output.className = 'settings-test-result testing';
-  output.textContent = '正在分别最小化 AP 学生空堂日和上午空节；两个目标互不交换，最长约 120 秒…';
+  output.textContent = `正在冻结当前 Section 分班，分别最小化 AP 学生空堂日和上午空节；总预算约 ${budget} 秒。即使完成，也可能只能得到未证明的最好已知值…`;
   try {
     const result = await api('/schedule-quality-lower-bounds', {
       method: 'POST',
-      body: JSON.stringify({ max_time_seconds: 120 }),
+      body: JSON.stringify({ max_time_seconds: budget }),
     });
     const gap = result.ap_student_gap_days;
     const morning = result.ap_morning_empty_student_periods;
-    const label = item => item.proven
-      ? `${item.lower_bound}（已证明数学下界，${item.status}）`
-      : `${item.best_known ?? '未得到'}（仅为最好已知值，${item.status}）`;
+    const scope = result.analysis_scope || {};
     output.className = 'settings-test-result success';
     output.innerHTML = `
-      <strong>质量下界分析完成</strong>
-      <p>AP 学生空堂日：${escapeHtml(label(gap))}</p>
-      <p>AP 上午空节学生节次：${escapeHtml(label(morning))}</p>
+      <strong>质量极限分析完成</strong>
+      <p>AP 学生空堂日：${escapeHtml(qualityMetricSummary(gap))}</p>
+      <p>AP 上午空节学生节次：${escapeHtml(qualityMetricSummary(morning))}</p>
+      <p><strong>分析范围：</strong>${escapeHtml(scope.note || '冻结当前 Section 分班；保留金框；硬约束不变；一次只优化一个指标。')}</p>
       <p>${escapeHtml(result.interpretation)}</p>
+      <p>${escapeHtml(result.budget?.note || '未证明的数字仅供决策参考。')}</p>
       <p>用时 ${(Number(result.solve_duration_ms || 0) / 1000).toFixed(1)} 秒；结果已与当前课表版本一起记录。</p>
     `;
   } catch (error) {
