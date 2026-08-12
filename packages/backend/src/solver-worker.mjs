@@ -23,6 +23,14 @@ async function solve(job) {
     const { solveConstructiveLnsSchedule } = await import('./constructive-lns-solver.mjs');
     return solveConstructiveLnsSchedule(job.problem, options);
   }
+  if (job.solver === 'resilient-optimize') {
+    const { solveResilientOptimizedSchedule } = await import('./resilient-optimizer.mjs');
+    return solveResilientOptimizedSchedule(job.problem, options);
+  }
+  if (job.solver === 'quality-lower-bounds') {
+    const { solveScheduleQualityLowerBounds } = await import('./quality-lower-bound.mjs');
+    return solveScheduleQualityLowerBounds(job.problem, options);
+  }
   throw Object.assign(new Error(`不支持的求解作业类型: ${job.solver}`), {
     code: 'SOLVER_JOB_TYPE_UNSUPPORTED',
   });

@@ -44,6 +44,13 @@ test('requires review when AP morning empty student-periods exceed the default l
   assert.equal(quality.passed, false);
   assert.ok(quality.issues.some(item => item.code === 'AP_MORNING_EMPTY_STUDENT_PERIODS_EXCEEDED'));
   assert.ok(quality.issues.some(item => item.code === 'AP_STUDENT_GAP_DAYS_EXCEEDED'));
+  assert.equal(quality.diagnosis.affected_students, 2);
+  assert.deepEqual(quality.diagnosis.top_days, [
+    { day: 1, student_days: 1 },
+    { day: 3, student_days: 1 },
+  ]);
+  assert.ok(quality.diagnosis.recommendations.some(item => item.action === 'analyze_single_objective_bound'));
+  assert.ok(quality.diagnosis.recommendations.some(item => item.action === 'approve_quality_exception'));
 });
 
 test('accepts an explicitly configured AP student-gap quality limit', () => {
@@ -76,6 +83,18 @@ test('reports the solver-measured AP morning empty student-periods', () => {
   assert.equal(quality.metrics.ap_morning_empty_student_periods, 12);
   assert.equal(quality.passed, false);
   assert.equal(quality.issues[0].code, 'AP_MORNING_EMPTY_STUDENT_PERIODS_EXCEEDED');
+});
+
+test('does not turn an unmodeled null quality metric into a perfect zero', () => {
+  const quality = evaluateScheduleQuality({
+    soft_score: 0,
+    soft_violations: [],
+  }, {
+    apMorningEmptyStudentPeriods: null,
+  });
+
+  assert.equal(quality.metrics.ap_morning_empty_student_periods, undefined);
+  assert.ok(quality.issues.some(item => item.code === 'AP_MORNING_EMPTY_METRIC_UNAVAILABLE'));
 });
 
 test('publishes only quality-passing schedules that used no hard-rule relaxation', () => {

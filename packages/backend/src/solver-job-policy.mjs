@@ -1,4 +1,9 @@
-const SUPPORTED_SOLVERS = new Set(['constructive-lns', 'feasible-first', 'exact']);
+const SUPPORTED_SOLVERS = new Set([
+  'resilient-optimize',
+  'constructive-lns',
+  'feasible-first',
+  'exact',
+]);
 
 function boundedSeconds(body) {
   const requested = Number(body.max_time_seconds
@@ -21,7 +26,7 @@ function boundedCandidateCount(body, strategy) {
 export function createSolverJob(problem, body = {}, context = {}) {
   const feasibleFirst = body.feasible_first !== false;
   const requestedSolver = String(body.solver_strategy || '').replaceAll('_', '-');
-  const solver = requestedSolver || (feasibleFirst ? 'constructive-lns' : 'exact');
+  const solver = requestedSolver || (feasibleFirst ? 'resilient-optimize' : 'exact');
   if (!SUPPORTED_SOLVERS.has(solver)) {
     throw new Error(`不支持的求解策略: ${body.solver_strategy}`);
   }

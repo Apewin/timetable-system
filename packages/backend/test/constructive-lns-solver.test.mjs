@@ -4,6 +4,7 @@ import {
   buildGradeNeighborhoods,
   solveConstructiveLnsSchedule,
 } from '../src/constructive-lns-solver.mjs';
+import { solveResilientOptimizedSchedule } from '../src/resilient-optimizer.mjs';
 import { validateSchedule } from '../src/schedule-validator.mjs';
 
 test('grade neighborhoods include cross-grade teachers and synchronized Block sections', () => {
@@ -52,6 +53,45 @@ test('constructs a complete timetable then improves it without discarding the fe
   assert.equal(result.algorithm, 'constructive-grade-lns');
   assert.equal(result.meetings[0].slot_id, 'D1P2');
   assert.equal(validateSchedule(problem, result).ok, true);
+});
+
+test('uses the constructive draft only as fallback before a global soft optimization pass', async () => {
+  const problem = {
+    slots: [
+      { id: 'D1P1', day: 1, period: 1 },
+      { id: 'D1P2', day: 1, period: 2 },
+    ],
+    rooms: [],
+    rules: [{
+      id: 'prefer-second', type: 'preferred_slots', hard: false, weight: 10,
+      scope: 'section', target_ids: ['A'], section_target_ids: ['A'], params: { slots: ['D1P2'] },
+    }],
+    sections: [{
+      id: 'A', course_id: 'A', teacher_id: 'TA', class_type: 'teaching',
+      weekly_hours: 1, student_ids: ['S1'], eligible_student_ids: [],
+      // A membership lock disables the graph-colouring shortcut, so the
+      // fallback CP pass deliberately runs without modeling soft objectives.
+      locked_student_ids: ['S1'], grades: [11],
+    }],
+  };
+
+  const result = await solveResilientOptimizedSchedule(problem, {
+    maxTimeSeconds: 5,
+    numSearchWorkers: 1,
+  });
+
+  assert.equal(result.ok, true, result.reason || result.status);
+  assert.equal(result.algorithm, 'constructive-fallback-global-optimize');
+  assert.equal(result.global_optimization.attempted, true);
+  assert.equal(result.global_optimization.accepted, true);
+  assert.equal(result.global_optimization.comparison, 'global_not_worse');
+  assert.equal(
+    result.global_optimization.fallback_quality.morning_empty_student_periods,
+    null,
+  );
+  assert.equal(result.global_optimization.fallback_quality.soft_score, 10);
+  assert.equal(result.global_optimization.optimized_quality.soft_score, 0);
+  assert.equal(result.meetings[0].slot_id, 'D1P2');
 });
 
 test('keeps manual locks hard during every improvement pass', async () => {

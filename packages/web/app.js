@@ -1253,14 +1253,14 @@ async function loadManualTimetable() {
         ? '继续优化：独立求解进程正在保留当前可行课表并寻找更好排法'
         : seconds < 45
         ? 'AI 排课阶段 1/2：DeepSeek 正在分析约束和课程优先级'
-        : '快速生成阶段 2/2：构造器正在先完成整张课表，再按年级邻域择优';
+        : '快速生成阶段 2/2：已保留可行初稿，正在用剩余预算进行全局择优';
       renderManualPlanControls(`${stage}（已用 ${seconds} 秒）…`);
     }, 1000);
     try {
       const result = await solveWithRequiredApproval({
         use_ai_strategy: true,
         feasible_first: true,
-        solver_strategy: optimize ? 'exact' : 'constructive_lns',
+        solver_strategy: optimize ? 'exact' : 'resilient_optimize',
         candidate_count: 2,
         max_time_seconds: 120,
         instruction: optimize
@@ -1335,12 +1335,47 @@ async function loadManualTimetable() {
     window._manualScheduleSaving = true;
     renderManualPlanControls('正在储存当前完整课表快照…');
     try {
-      const result = await api('/schedule-archives', { method: 'POST', body: '{}' });
+      const review = await api('/schedule-quality-review');
+      let body = {};
+      if (review.required) {
+        if (!review.allowed) throw new Error(review.blocked_reason || '当前课表不能通过质量例外审批归档');
+        const diagnosis = review.quality_gate?.diagnosis;
+        const recommendations = (diagnosis?.recommendations || [])
+          .filter(item => item.action !== 'approve_quality_exception')
+          .map((item, index) => `${index + 1}. ${item.label}：${item.reason}`)
+          .join('\n');
+        const issues = (review.quality_gate?.issues || []).map(item => item.message).join('\n');
+        const bounds = review.lower_bound_analysis;
+        const boundSummary = bounds
+          ? `\n\n已记录的单目标下界分析：\n- AP 空堂日：${bounds.ap_student_gap_days?.proven ? `数学下界 ${bounds.ap_student_gap_days.lower_bound}` : `最好已知 ${bounds.ap_student_gap_days?.best_known ?? '未知'}`}\n- 上午空节：${bounds.ap_morning_empty_student_periods?.proven ? `数学下界 ${bounds.ap_morning_empty_student_periods.lower_bound}` : `最好已知 ${bounds.ap_morning_empty_student_periods?.best_known ?? '未知'}`}`
+          : '\n\n尚未计算严格单目标下界；建议先在“系统设置 → 排课策略”执行质量下界分析。';
+        if (!confirm(`当前课表已通过全部硬约束，但质量门槛未通过：\n${issues}${boundSummary}\n\n建议先进行结构调整：\n${recommendations}\n\n如果学校本学期决定接受当前结果，可继续进入管理员质量例外审批。是否继续？`)) return;
+        const reason = prompt('请输入批准质量例外的具体原因（至少 10 个字符，将永久记录在课表存档中）：');
+        if (reason === null) return;
+        const approvedBy = prompt('请输入审批人姓名或管理员账号：');
+        if (approvedBy === null) return;
+        const confirmation = prompt(`最后请输入“${review.confirmation_phrase}”完成确认：`);
+        if (confirmation === null) return;
+        body = {
+          quality_exception: {
+            reason,
+            approved_by: approvedBy,
+            confirmation,
+          },
+        };
+      }
+      const result = await api('/schedule-archives', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
       const savedAt = formatArchiveDateTime(result.archive?.saved_at);
-      renderManualPlanControls(`课表已储存：${savedAt}。之后重排或修改数据不会影响这份记录。`);
-      showToast(`课表已储存（${savedAt}）`);
-    } catch {
-      renderManualPlanControls();
+      const exceptionNote = result.archive?.publication_status === 'ready_with_quality_exception'
+        ? '，已记录管理员质量例外审批'
+        : '';
+      renderManualPlanControls(`课表已储存：${savedAt}${exceptionNote}。之后重排或修改数据不会影响这份记录。`);
+      showToast(`课表已储存（${savedAt}）${exceptionNote}`, exceptionNote ? 'warning' : 'success');
+    } catch (error) {
+      renderManualPlanControls(`储存失败：${error.message}`);
     } finally {
       window._manualScheduleSaving = false;
       const saveButton = document.getElementById('manual-save-schedule');
@@ -1656,11 +1691,12 @@ async function loadPastTimetables() {
         ${archives.map(archive => `
           <article class="schedule-archive-card ${archive.id === window._selectedScheduleArchiveId ? 'selected' : ''}">
             <div>
-              <h3>${archive.name || '课表存档'}</h3>
+              <h3>${escapeHtml(archive.name || '课表存档')}</h3>
               <p>储存时间：${formatArchiveDateTime(archive.saved_at)}</p>
               <p>${archive.assignments_count || 0} 条学生课时 · ${archive.meetings_count || 0} 个课程时段${archive.solve_duration_ms != null ? ` · 排课用时 ${(archive.solve_duration_ms / 1000).toFixed(1)} 秒` : ''}</p>
+              ${archive.quality_exception_approval ? `<p class="validation-result warning">质量例外：${escapeHtml(archive.quality_exception_approval.approved_by)} 于 ${escapeHtml(formatArchiveDateTime(archive.quality_exception_approval.approved_at))} 批准；${escapeHtml(archive.quality_exception_approval.reason)}</p>` : ''}
             </div>
-            <button class="btn btn-primary" type="button" data-open-archive="${archive.id}">查看课表</button>
+            <button class="btn btn-primary" type="button" data-open-archive="${safeDataAttribute(archive.id)}">查看课表</button>
           </article>
         `).join('')}
       </div>
@@ -9735,6 +9771,38 @@ window.saveSchedulingPolicy = async function() {
     showToast('排课策略已保存', 'success');
   } catch (error) {
     document.getElementById('policy-save-status').textContent = `保存失败：${error.message}`;
+  }
+};
+
+window.analyzeQualityLowerBounds = async function() {
+  const button = document.getElementById('policy-analyze-bounds');
+  const output = document.getElementById('policy-lower-bound-result');
+  button.disabled = true;
+  output.className = 'settings-test-result testing';
+  output.textContent = '正在分别最小化 AP 学生空堂日和上午空节；两个目标互不交换，最长约 120 秒…';
+  try {
+    const result = await api('/schedule-quality-lower-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ max_time_seconds: 120 }),
+    });
+    const gap = result.ap_student_gap_days;
+    const morning = result.ap_morning_empty_student_periods;
+    const label = item => item.proven
+      ? `${item.lower_bound}（已证明数学下界，${item.status}）`
+      : `${item.best_known ?? '未得到'}（仅为最好已知值，${item.status}）`;
+    output.className = 'settings-test-result success';
+    output.innerHTML = `
+      <strong>质量下界分析完成</strong>
+      <p>AP 学生空堂日：${escapeHtml(label(gap))}</p>
+      <p>AP 上午空节学生节次：${escapeHtml(label(morning))}</p>
+      <p>${escapeHtml(result.interpretation)}</p>
+      <p>用时 ${(Number(result.solve_duration_ms || 0) / 1000).toFixed(1)} 秒；结果已与当前课表版本一起记录。</p>
+    `;
+  } catch (error) {
+    output.className = 'settings-test-result error';
+    output.textContent = `分析失败：${error.message}`;
+  } finally {
+    button.disabled = false;
   }
 };
 

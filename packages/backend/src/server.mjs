@@ -52,6 +52,10 @@ import {
   resolveManualPlan,
 } from './manual-plan.mjs';
 import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from './schedule-archive.mjs';
+import {
+  approveScheduleQualityException,
+  qualityExceptionReview,
+} from './quality-exception.mjs';
 import { synchronizeClassMemberships } from './state-integrity.mjs';
 import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
 import {
@@ -696,7 +700,7 @@ function applyImportedRows(state, type, rows) {
 // helper keeps the problem model and compiled rule targets in sync with those
 // saved refinements, which is essential when a section's teacher or students
 // are changed from the administration UI.
-function problemForSchedule(state, schedule) {
+export function problemForSchedule(state, schedule) {
   const base = buildSchedulingProblem(state, schedule.rules || state.constraints || []);
   const overrides = new Map((schedule.sections || []).map(section => [section.id, section]));
   const sections = base.sections.map(section => {
@@ -1738,7 +1742,54 @@ app.get('/api/schedule-archives', (_req, res) => reply(res, () => {
     .sort((left, right) => String(right.saved_at).localeCompare(String(left.saved_at)));
 }));
 
-app.post('/api/schedule-archives', (_req, res) => reply(res, () => {
+app.get('/api/schedule-quality-review', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  if (!state.schedule || state.solve_status !== 'valid') {
+    throw new Error('当前没有通过硬约束校验的完整课表');
+  }
+  const validation = validateSchedule(problemForSchedule(state, state.schedule), state.schedule);
+  const schedule = withScheduleQualityStatus(state.schedule, validation);
+  return qualityExceptionReview(schedule);
+}));
+
+app.post('/api/schedule-quality-lower-bounds', (req, res) => reply(res, async () => {
+  const state = repository.read();
+  const expectedRevision = repository.revision(state);
+  if (!state.schedule || state.solve_status !== 'valid') {
+    throw new Error('当前没有可用于下界分析的有效课表');
+  }
+  if (state.schedule.policy_relaxed === true || (state.schedule.deferred_rule_ids || []).length) {
+    throw new Error('当前课表使用了经审批降级的硬规则，不能作为结构性质量下界分析基准');
+  }
+  const requested = Number(req.body?.max_time_seconds || 120);
+  const maxTimeSeconds = Math.min(600, Math.max(10, Number.isFinite(requested) ? requested : 120));
+  const problem = problemForSchedule(state, state.schedule);
+  const analysis = await runSolverJob({
+    solver: 'quality-lower-bounds',
+    problem,
+    options: {
+      maxTimeSeconds,
+      freezeMembership: true,
+      lockedMeetings: state.schedule.locks || [],
+      hintMeetings: state.schedule.meetings || [],
+      hintSections: state.schedule.sections || [],
+      randomSeed: Number.isInteger(req.body?.random_seed) ? req.body.random_seed : 20260812,
+      numSearchWorkers: Math.min(8, Math.max(1, Number(req.body?.num_search_workers || 4))),
+    },
+  }, { timeoutMs: maxTimeSeconds * 1_000 + 15_000 });
+  const recorded = {
+    ...analysis,
+    analyzed_at: new Date().toISOString(),
+    schedule_version: state.schedule.version,
+  };
+  repository.write({
+    ...state,
+    schedule: { ...state.schedule, quality_lower_bound_analysis: recorded },
+  }, { expectedRevision });
+  return recorded;
+}));
+
+app.post('/api/schedule-archives', (req, res) => reply(res, () => {
   const state = repository.read();
   if (!state.schedule || state.solve_status !== 'valid') {
     throw new Error('当前没有通过校验的完整课表；请完成 AI 排课后再储存');
@@ -1747,11 +1798,18 @@ app.post('/api/schedule-archives', (_req, res) => reply(res, () => {
   if (!validation.ok) {
     throw new Error(`当前课表未通过硬约束校验：${validation.hard_violations[0]?.message || '未知错误'}`);
   }
-  const schedule = withScheduleQualityStatus(state.schedule, validation);
-  if (schedule.publication_status !== 'ready') {
+  let schedule = withScheduleQualityStatus(state.schedule, validation);
+  if (schedule.publication_status !== 'ready' && req.body?.quality_exception) {
+    schedule = approveScheduleQualityException(schedule, req.body.quality_exception);
+  }
+  if (!['ready', 'ready_with_quality_exception'].includes(schedule.publication_status)) {
     const reason = schedule.quality_gate.issues[0]?.message
       || '课表使用了经审批降级的硬规则';
-    throw new Error(`当前课表仍需人工复核，不能存为正式课表：${reason}`);
+    const review = qualityExceptionReview(schedule);
+    const guidance = review.allowed
+      ? `。如学校决定接受当前最优结果，可使用管理员“${review.confirmation_phrase}”流程并记录原因后归档`
+      : '';
+    throw new Error(`当前课表仍需人工复核，不能直接存为正式课表：${reason}${guidance}`);
   }
   const savedAt = new Date().toISOString();
   const archives = state.schedule_archives || [];
@@ -1759,8 +1817,13 @@ app.post('/api/schedule-archives', (_req, res) => reply(res, () => {
     id: nextScheduleArchiveId(archives, savedAt),
     savedAt,
   });
-  repository.write({ ...state, schedule_archives: [archive, ...archives] });
-  return { message: '课表已储存到过往课表', archive: archiveSummary(archive) };
+  repository.write({ ...state, schedule, schedule_archives: [archive, ...archives] });
+  return {
+    message: schedule.publication_status === 'ready_with_quality_exception'
+      ? '课表已按管理员质量例外审批归档'
+      : '课表已储存到过往课表',
+    archive: archiveSummary(archive),
+  };
 }));
 
 app.get('/api/schedule-archives/:archiveId', (req, res) => reply(res, () => {

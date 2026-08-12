@@ -3,6 +3,16 @@ import test from 'node:test';
 import { solveSchedule } from '../src/cpsat-solver.mjs';
 import { validateSchedule } from '../src/schedule-validator.mjs';
 
+test('rejects an unknown objective mode instead of silently using another objective', async () => {
+  await assert.rejects(
+    solveSchedule({ slots: [], rooms: [], rules: [], sections: [] }, {
+      objectiveMode: 'unknown-quality-metric',
+      useConstructiveSeed: false,
+    }),
+    /objectiveMode/,
+  );
+});
+
 const slots = Array.from({ length: 10 }, (_, index) => ({ id: `D1P${index + 1}`, day: 1, period: index + 1 }));
 
 test('solves section time and student membership without assigning rooms', async () => {

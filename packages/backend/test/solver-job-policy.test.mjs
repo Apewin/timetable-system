@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSolverJob } from '../src/solver-job-policy.mjs';
 
-test('uses constructive LNS for quick completion and preserves a second AI-priority candidate', () => {
+test('uses resilient global optimization by default and preserves a second AI-priority candidate', () => {
   const problem = { rules: [] };
   const strategy = { priority_section_ids: ['SEC_A'] };
   const job = createSolverJob(problem, {
@@ -15,7 +15,7 @@ test('uses constructive LNS for quick completion and preserves a second AI-prior
     priorHint: { meetings: [], sections: [] },
   });
 
-  assert.equal(job.solver, 'constructive-lns');
+  assert.equal(job.solver, 'resilient-optimize');
   assert.equal(job.options.candidateCount, 2);
   assert.equal(job.options.maxTimeSeconds, 60);
 });

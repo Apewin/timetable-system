@@ -7,6 +7,12 @@ const {
   VariableSelectionStrategy, DomainReductionStrategy,
 } = require('@ortools-node/cp-sat');
 
+const OBJECTIVE_MODES = new Set([
+  'lexicographic',
+  'ap_student_gap_days',
+  'ap_morning_empty_student_periods',
+]);
+
 function sum(values) {
   if (!values.length) throw new Error('模型中出现空变量集合');
   // Keep the expression tree flat.  Chaining `.add()` creates a recursive
@@ -475,6 +481,8 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
             penaltyTerms.push({
               variable: dayHasGap,
               weight: hardWeight * multiplicity,
+              rule_id: rule.id,
+              metric_weight: multiplicity,
               maxValue: 1,
             });
             // The published quality metric intentionally counts one violation
@@ -747,6 +755,10 @@ function applyRules(model, problem, sections, occurrencesBySection, selectedBySt
  * grade-specific branch: all policy enters through compiled rule objects.
  */
 export async function solveSchedule(problem, options = {}) {
+  const objectiveMode = options.objectiveMode || 'lexicographic';
+  if (!OBJECTIVE_MODES.has(objectiveMode)) {
+    throw new Error(`不支持的 objectiveMode: ${objectiveMode}`);
+  }
   const preflight = workloadInfeasibility(problem);
   if (preflight) return { ok: false, sections: [], meetings: [], assignments: [], ...preflight };
   const hasMembershipLocks = (problem.sections || []).some(section => (section.locked_student_ids || []).length);
@@ -1398,152 +1410,174 @@ export async function solveSchedule(problem, options = {}) {
     .every(Number.isSafeInteger)) {
     throw new Error('排课软目标权重超出安全整数范围，请降低自定义权重');
   }
-  const objectiveTerms = [
-    ...apBlockFirstPeriodTerms.map(({ variable, weight }) =>
-      variable.mul(BigInt(weight) * BigInt(apBlockFirstPeriodScale))),
-    ...apBlockMorningTerms.map(({ variable, weight }) =>
-      variable.mul(BigInt(weight) * BigInt(apBlockBandScale))),
-    ...morningFillTerms.map(({ variable, weight }) =>
-      variable.mul(BigInt(weight) * BigInt(morningScale))),
-    ...penaltyTerms.map(({ variable, weight }) =>
-      variable.mul(BigInt(weight) * BigInt(primaryScale))),
-    ...firstPeriodTieBreakTerms.map(({ variable, weight }) =>
-      variable.mul(BigInt(weight))),
-  ];
+  const objectiveTerms = objectiveMode === 'ap_student_gap_days'
+    ? penaltyTerms
+      .filter(term => term.rule_id === 'ap_block_students_compact_daily_schedule')
+      .map(({ variable, metric_weight: weight }) => variable.mul(BigInt(weight)))
+    : objectiveMode === 'ap_morning_empty_student_periods'
+      ? morningFillTerms.map(({ variable, weight }) => variable.mul(BigInt(weight)))
+      : [
+        ...apBlockFirstPeriodTerms.map(({ variable, weight }) =>
+          variable.mul(BigInt(weight) * BigInt(apBlockFirstPeriodScale))),
+        ...apBlockMorningTerms.map(({ variable, weight }) =>
+          variable.mul(BigInt(weight) * BigInt(apBlockBandScale))),
+        ...morningFillTerms.map(({ variable, weight }) =>
+          variable.mul(BigInt(weight) * BigInt(morningScale))),
+        ...penaltyTerms.map(({ variable, weight }) =>
+          variable.mul(BigInt(weight) * BigInt(primaryScale))),
+        ...firstPeriodTieBreakTerms.map(({ variable, weight }) =>
+          variable.mul(BigInt(weight))),
+      ];
   if (objectiveTerms.length) model.minimize(sum(objectiveTerms));
 
   const solveBudgetSeconds = Math.max(0.01, Number(options.maxTimeSeconds || 120));
   const deadline = performance.now() + solveBudgetSeconds * 1000;
-    const solver = new CpSolver();
-    solver.parameters.maxTimeInSeconds = Math.max(0.01, (deadline - performance.now()) / 1000);
-    const hasHints = (options.hintMeetings || []).length > 0 || hintMembershipCount > 0;
-    const useRepairHintSearch = hasHints && options.repairHints !== false;
-    solver.parameters.numSearchWorkers = useRepairHintSearch
-      ? (options.numSearchWorkers || 1)
-      : (options.numSearchWorkers || 8);
-    if (useRepairHintSearch) {
-      solver.parameters.searchBranching = 6; // HINT_SEARCH
-      solver.parameters.repairHint = true;
-      solver.parameters.hintConflictLimit = 100000;
-    } else if (options.fixedSearch === true) {
-      solver.parameters.searchBranching = 1; // FIXED_SEARCH
-    }
-    // A student's 50 weekly lessons form a permutation of 50 slots.  Keeping
-    // that as a native AllDifferent is dramatically smaller than expanding each
-    // student into 50×50 Boolean assignment literals during presolve.
-    solver.parameters.expandAlldiffConstraints = false;
-    if (Number.isInteger(options.randomSeed)) {
-      solver.parameters.randomSeed = options.randomSeed;
-      solver.parameters.randomizeSearch = true;
-    }
-    if (options.logSearch) { solver.parameters.logSearchProgress = true; solver.parameters.logToStdout = true; }
-    const remainingMs = Math.max(10, deadline - performance.now());
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), remainingMs);
-    let status;
-    try {
-      status = await solver.solve(model, { signal: controller.signal });
-    } finally {
-      clearTimeout(timeout);
-    }
-    const ok = status === CpSolverStatus.FEASIBLE || status === CpSolverStatus.OPTIMAL;
-    if (!ok) {
-      const statusName = CpSolverStatus[status] || String(status);
-      const infeasibleAssumptions = status === CpSolverStatus.INFEASIBLE
-        ? solver.sufficientAssumptionsForInfeasibility()
-          .map(index => assumptionByLiteralIndex.get(index))
-          .filter(Boolean)
-        : [];
-      return {
-        ok: false,
-        status: statusName,
-        sections: [],
-        meetings: [],
-        assignments: [],
-        infeasible_assumption_meetings: infeasibleAssumptions
-          .filter(item => item.kind !== 'assignment'),
-        infeasible_assumption_assignments: infeasibleAssumptions
-          .filter(item => item.kind === 'assignment')
-          .map(({ kind: _kind, ...item }) => item),
-      };
-    }
-    const groupedAssignment = (options.assignmentGroups || []).length > 0;
-    const allocated = sections.map(section => ({
-      ...section,
-      student_ids: ((!freezeMembership || groupedAssignment) && candidateSet.has(section))
-        ? []
-        : [...section.student_ids],
-    }));
-    const allocatedById = byId(allocated);
-    if (!freezeMembership) for (const cohort of cohorts) for (const courseId of cohort.course_ids) {
-      const parallel = choicesByStudentCourse.get(`${cohort.id}@${courseId}`) || [];
-      const selected = parallel.find(section => solver.booleanValue(membership.get(`${cohort.id}@${section.id}`)));
-      if (!selected) throw new Error(`cohort ${cohort.id} 的 ${courseId} 未得到 section 分配`);
-      allocatedById.get(selected.id).student_ids.push(...cohort.student_ids);
-    }
-    if (groupedAssignment) for (const [groupIndex, group] of options.assignmentGroups.entries()) {
-      const groupId = group.id || `GROUP_${groupIndex + 1}`;
-      for (const course of group.courses || []) {
-        const sectionId = (course.candidate_section_ids || []).find(candidateId =>
-          solver.booleanValue(assignmentMembership.get(`${groupId}@${candidateId}`)));
-        if (!sectionId) throw new Error(`动态分班组 ${groupId} 的 ${course.course_id} 未得到 section 分配`);
-        allocatedById.get(sectionId).student_ids.push(...(course.student_ids || group.student_ids || []));
-      }
-    }
-    const meetings = occurrences.map(occurrence => ({
-      section_id: occurrence.section.id,
-      slot_id: problem.slots[Number(solver.value(occurrence.time))].id,
-      room_id: null,
-    }));
-    const apBlockFirstPeriodCounts = (problem.rules || [])
-      .filter(rule => rule.type === 'target_occurrences_in_slots'
-        && rule.params?.objective_tier === 'ap_block_first_period_pattern')
-      .flatMap(rule => (rule.section_target_ids || rule.target_ids || []).map(sectionId => {
-        const targetSlots = new Set(rule.params.slots || []);
-        const actual = meetings.filter(meeting => meeting.section_id === sectionId
-          && targetSlots.has(meeting.slot_id)).length;
-        return { actual, target: rule.params.target };
-      }));
-    const assignments = meetings.flatMap(meeting => {
-      const section = allocatedById.get(meeting.section_id);
-      return section.student_ids.map(studentId => ({
-        task_id: `${section.id}:${studentId}:${meeting.slot_id}`,
-        section_id: section.id, student_id: studentId, slot_id: meeting.slot_id,
-        room_id: null, teacher_id: section.teacher_id, course_id: section.course_id,
-        class_id: section.class_id || section.id, class_type: section.class_type,
-      }));
-    });
+  const solver = new CpSolver();
+  solver.parameters.maxTimeInSeconds = Math.max(0.01, (deadline - performance.now()) / 1000);
+  const hasHints = (options.hintMeetings || []).length > 0 || hintMembershipCount > 0;
+  const useRepairHintSearch = hasHints && options.repairHints !== false;
+  solver.parameters.numSearchWorkers = useRepairHintSearch
+    ? (options.numSearchWorkers || 1)
+    : (options.numSearchWorkers || 8);
+  if (useRepairHintSearch) {
+    solver.parameters.searchBranching = 6; // HINT_SEARCH
+    solver.parameters.repairHint = true;
+    solver.parameters.hintConflictLimit = 100000;
+  } else if (options.fixedSearch === true) {
+    solver.parameters.searchBranching = 1; // FIXED_SEARCH
+  }
+  // A student's 50 weekly lessons form a permutation of 50 slots.  Keeping
+  // that as a native AllDifferent is dramatically smaller than expanding each
+  // student into 50×50 Boolean assignment literals during presolve.
+  solver.parameters.expandAlldiffConstraints = false;
+  if (Number.isInteger(options.randomSeed)) {
+    solver.parameters.randomSeed = options.randomSeed;
+    solver.parameters.randomizeSearch = true;
+  }
+  if (options.logSearch) { solver.parameters.logSearchProgress = true; solver.parameters.logToStdout = true; }
+  const remainingMs = Math.max(10, deadline - performance.now());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), remainingMs);
+  let status;
+  try {
+    status = await solver.solve(model, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+  const ok = status === CpSolverStatus.FEASIBLE || status === CpSolverStatus.OPTIMAL;
+  if (!ok) {
+    const statusName = CpSolverStatus[status] || String(status);
+    const infeasibleAssumptions = status === CpSolverStatus.INFEASIBLE
+      ? solver.sufficientAssumptionsForInfeasibility()
+        .map(index => assumptionByLiteralIndex.get(index))
+        .filter(Boolean)
+      : [];
     return {
-      ok: true,
-      status: CpSolverStatus[status] || String(status),
-      sections: allocated,
-      meetings,
-      assignments,
-      hint_meeting_count: (options.hintMeetings || []).length,
-      hint_membership_count: hintMembershipCount,
-      search_seed: Number.isInteger(options.randomSeed) ? options.randomSeed : null,
-      ap_block_afternoon_occurrences: apBlockMorningTerms.reduce((total, term) =>
-        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0),
-      ap_block_morning_term_count: apBlockMorningTerms.length,
-      // Semantic names for the P1-P6 preference. Keep the two legacy fields
-      // above so older saved schedules and clients remain readable.
-      ap_block_outside_preferred_band_occurrences: apBlockMorningTerms.reduce((total, term) =>
-        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0),
-      ap_block_preferred_band_term_count: apBlockMorningTerms.length,
-      ap_block_first_period_deviation: apBlockFirstPeriodCounts.reduce((total, item) =>
-        total + Math.abs(item.actual - item.target), 0),
-      ap_block_first_period_actual_count: apBlockFirstPeriodCounts.reduce((total, item) =>
-        total + item.actual, 0),
-      ap_block_first_period_target_count: apBlockFirstPeriodCounts.reduce((total, item) =>
-        total + item.target, 0),
-      ap_block_first_period_rule_count: apBlockFirstPeriodCounts.length,
-      morning_empty_student_periods: morningFillTerms.reduce((total, term) =>
-        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0),
-      morning_fill_term_count: morningFillTerms.length,
-      first_period_tie_break_terms: firstPeriodTieBreakTerms.length,
-      morning_objective_scale: morningScale,
-      ap_block_first_period_objective_scale: apBlockFirstPeriodScale,
-      ap_block_band_objective_scale: apBlockBandScale,
-      primary_objective_scale: primaryScale,
+      ok: false,
+      status: statusName,
+      sections: [],
+      meetings: [],
+      assignments: [],
+      infeasible_assumption_meetings: infeasibleAssumptions
+        .filter(item => item.kind !== 'assignment'),
+      infeasible_assumption_assignments: infeasibleAssumptions
+        .filter(item => item.kind === 'assignment')
+        .map(({ kind: _kind, ...item }) => item),
     };
+  }
+  const groupedAssignment = (options.assignmentGroups || []).length > 0;
+  const allocated = sections.map(section => ({
+    ...section,
+    student_ids: ((!freezeMembership || groupedAssignment) && candidateSet.has(section))
+      ? []
+      : [...section.student_ids],
+  }));
+  const allocatedById = byId(allocated);
+  if (!freezeMembership) for (const cohort of cohorts) for (const courseId of cohort.course_ids) {
+    const parallel = choicesByStudentCourse.get(`${cohort.id}@${courseId}`) || [];
+    const selected = parallel.find(section => solver.booleanValue(membership.get(`${cohort.id}@${section.id}`)));
+    if (!selected) throw new Error(`cohort ${cohort.id} 的 ${courseId} 未得到 section 分配`);
+    allocatedById.get(selected.id).student_ids.push(...cohort.student_ids);
+  }
+  if (groupedAssignment) for (const [groupIndex, group] of options.assignmentGroups.entries()) {
+    const groupId = group.id || `GROUP_${groupIndex + 1}`;
+    for (const course of group.courses || []) {
+      const sectionId = (course.candidate_section_ids || []).find(candidateId =>
+        solver.booleanValue(assignmentMembership.get(`${groupId}@${candidateId}`)));
+      if (!sectionId) throw new Error(`动态分班组 ${groupId} 的 ${course.course_id} 未得到 section 分配`);
+      allocatedById.get(sectionId).student_ids.push(...(course.student_ids || group.student_ids || []));
+    }
+  }
+  const meetings = occurrences.map(occurrence => ({
+    section_id: occurrence.section.id,
+    slot_id: problem.slots[Number(solver.value(occurrence.time))].id,
+    room_id: null,
+  }));
+  const apBlockFirstPeriodCounts = (problem.rules || [])
+    .filter(rule => rule.type === 'target_occurrences_in_slots'
+      && rule.params?.objective_tier === 'ap_block_first_period_pattern')
+    .flatMap(rule => (rule.section_target_ids || rule.target_ids || []).map(sectionId => {
+      const targetSlots = new Set(rule.params.slots || []);
+      const actual = meetings.filter(meeting => meeting.section_id === sectionId
+        && targetSlots.has(meeting.slot_id)).length;
+      return { actual, target: rule.params.target };
+    }));
+  const assignments = meetings.flatMap(meeting => {
+    const section = allocatedById.get(meeting.section_id);
+    return section.student_ids.map(studentId => ({
+      task_id: `${section.id}:${studentId}:${meeting.slot_id}`,
+      section_id: section.id, student_id: studentId, slot_id: meeting.slot_id,
+      room_id: null, teacher_id: section.teacher_id, course_id: section.course_id,
+      class_id: section.class_id || section.id, class_type: section.class_type,
+    }));
+  });
+  // A feasibility-only pass intentionally skips soft-rule variables. Reporting
+  // zero for those absent variables would falsely describe the draft as
+  // perfect and could make a later optimized result look worse. Null means
+  // "not measured" and is handled conservatively by candidate comparison.
+  const softMetricsModeled = options.optimizeSoft === true;
+  return {
+    ok: true,
+    status: CpSolverStatus[status] || String(status),
+    sections: allocated,
+    meetings,
+    assignments,
+    hint_meeting_count: (options.hintMeetings || []).length,
+    hint_membership_count: hintMembershipCount,
+    search_seed: Number.isInteger(options.randomSeed) ? options.randomSeed : null,
+    objective_mode: objectiveMode,
+    ap_block_afternoon_occurrences: softMetricsModeled
+      ? apBlockMorningTerms.reduce((total, term) =>
+        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0)
+      : null,
+    ap_block_morning_term_count: apBlockMorningTerms.length,
+    // Semantic names for the P1-P6 preference. Keep the two legacy fields
+    // above so older saved schedules and clients remain readable.
+    ap_block_outside_preferred_band_occurrences: softMetricsModeled
+      ? apBlockMorningTerms.reduce((total, term) =>
+        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0)
+      : null,
+    ap_block_preferred_band_term_count: apBlockMorningTerms.length,
+    ap_block_first_period_deviation: softMetricsModeled
+      ? apBlockFirstPeriodCounts.reduce((total, item) =>
+        total + Math.abs(item.actual - item.target), 0)
+      : null,
+    ap_block_first_period_actual_count: softMetricsModeled
+      ? apBlockFirstPeriodCounts.reduce((total, item) => total + item.actual, 0)
+      : null,
+    ap_block_first_period_target_count: softMetricsModeled
+      ? apBlockFirstPeriodCounts.reduce((total, item) => total + item.target, 0)
+      : null,
+    ap_block_first_period_rule_count: apBlockFirstPeriodCounts.length,
+    morning_empty_student_periods: softMetricsModeled
+      ? morningFillTerms.reduce((total, term) =>
+        total + (solver.booleanValue(term.variable) ? term.weight : 0), 0)
+      : null,
+    morning_fill_term_count: morningFillTerms.length,
+    first_period_tie_break_terms: firstPeriodTieBreakTerms.length,
+    morning_objective_scale: morningScale,
+    ap_block_first_period_objective_scale: apBlockFirstPeriodScale,
+    ap_block_band_objective_scale: apBlockBandScale,
+    primary_objective_scale: primaryScale,
+  };
 }

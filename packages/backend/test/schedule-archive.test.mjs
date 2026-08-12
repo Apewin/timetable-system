@@ -51,6 +51,8 @@ test('creates an immutable schedule snapshot with the display context', () => {
     assignments_count: 1,
     meetings_count: 1,
     manual_lock_count: 1,
+    publication_status: null,
+    quality_exception_approval: null,
     validation: { ok: true, hard_violations: [] },
   });
   state.courses[0].name = '数学';
@@ -67,4 +69,21 @@ test('builds an archived state that remains viewable after current data changes'
   assert.equal(archivedState.schedule.version, 4);
   assert.deepEqual(archivedState.schedule.assignments, state.schedule.assignments);
   assert.deepEqual(archivedState.assignments, state.schedule.assignments);
+});
+
+test('keeps a quality-exception approval visible in the archive audit summary', () => {
+  const approvedState = structuredClone(state);
+  approvedState.schedule.publication_status = 'ready_with_quality_exception';
+  approvedState.schedule.quality_exception_approval = {
+    approved_at: '2026-08-12T10:00:00.000Z',
+    approved_by: '教务管理员',
+    reason: '本学期采用当前结构下的最优课表。',
+  };
+  const archive = createScheduleArchive(approvedState, {
+    id: 'ARCHIVE_APPROVED', savedAt: '2026-08-12T10:00:00.000Z',
+  });
+
+  const summary = archiveSummary(archive);
+  assert.equal(summary.publication_status, 'ready_with_quality_exception');
+  assert.equal(summary.quality_exception_approval.approved_by, '教务管理员');
 });

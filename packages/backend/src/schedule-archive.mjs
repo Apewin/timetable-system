@@ -19,6 +19,10 @@ export function archiveSummary(archive) {
     assignments_count: archive.assignments_count ?? schedule.assignments?.length ?? 0,
     meetings_count: schedule.meetings?.length || 0,
     manual_lock_count: (schedule.locks || []).filter(lock => lock.origin === 'manual').length,
+    publication_status: schedule.publication_status || null,
+    quality_exception_approval: schedule.quality_exception_approval
+      ? copy(schedule.quality_exception_approval)
+      : null,
     validation: schedule.validation || null,
   };
 }

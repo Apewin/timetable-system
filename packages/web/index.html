@@ -871,8 +871,10 @@
               <div class="settings-actions">
                 <button class="btn btn-primary" type="button" onclick="saveSchedulingPolicy()">💾 保存排课策略</button>
                 <button class="btn btn-secondary" type="button" onclick="loadSchedulingPolicy()">🔄 恢复已保存值</button>
+                <button class="btn btn-secondary" type="button" id="policy-analyze-bounds" onclick="analyzeQualityLowerBounds()">📐 计算当前质量下界</button>
               </div>
               <p id="policy-save-status" class="form-hint"></p>
+              <div id="policy-lower-bound-result" class="settings-test-result"></div>
             </div>
 
             <div class="settings-section">

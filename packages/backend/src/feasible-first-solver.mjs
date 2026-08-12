@@ -29,7 +29,7 @@ function effectiveRules(problem, options) {
   return { rules, deferredIds };
 }
 
-function candidateQuality(originalValidation, effectiveValidation, deferredIds, solution) {
+export function candidateQuality(originalValidation, effectiveValidation, deferredIds, solution) {
   const deferred = new Set(deferredIds);
   const reviewItems = originalValidation.hard_violations
     .filter(item => deferred.has(item.rule_id));
@@ -62,7 +62,7 @@ function candidateQuality(originalValidation, effectiveValidation, deferredIds, 
   };
 }
 
-function compareQuality(left, right) {
+export function compareQuality(left, right) {
   return left.reviewItemCount - right.reviewItemCount
     || left.apBlockFirstPeriodDeviation - right.apBlockFirstPeriodDeviation
     || left.apBlockAfternoonOccurrences - right.apBlockAfternoonOccurrences
