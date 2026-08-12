@@ -59,7 +59,6 @@ function validateTypeParameters(rule) {
       break;
     case 'no_internal_gaps':
       if (rule.scope !== 'student') throw new Error(`规则 ${rule.id} 的 no_internal_gaps 只能作用于 student`);
-      if (!rule.hard) throw new Error(`规则 ${rule.id} 的 no_internal_gaps 必须是硬约束`);
       if (params.ignore_course_ids !== undefined
         && (!Array.isArray(params.ignore_course_ids)
           || !params.ignore_course_ids.length

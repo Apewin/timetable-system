@@ -12,6 +12,7 @@ import {
   manualTeacherIdsForClassItem,
   shouldCollapseAdminSections,
 } from './manual-course-scope.mjs';
+import { escapeHtml, safeDataAttribute } from './dom-safety.mjs';
 
 const API_BASE = '/api';
 
@@ -391,9 +392,6 @@ async function loadViewData(viewName) {
     case 'export':
       await loadExportPage();
       break;
-    case 'formal-timetable':
-      await loadFormalSolvePage();
-      break;
     case 'manual-timetable':
       await loadManualTimetable();
       break;
@@ -405,9 +403,6 @@ async function loadViewData(viewName) {
       break;
     case 'past-timetables':
       await loadPastTimetables();
-      break;
-    case 'temp-timetable':
-      await loadTempTimetablePage();
       break;
     case 'settings':
       await loadSettingsPage();
@@ -909,6 +904,7 @@ function renderManualPlanControls(message = '') {
   const confirmButton = document.getElementById('manual-confirm-plan');
   const unlockButton = document.getElementById('manual-unlock-plan');
   const solveButton = document.getElementById('manual-ai-solve');
+  const optimizeButton = document.getElementById('manual-ai-optimize');
   const saveButton = document.getElementById('manual-save-schedule');
   const clearButton = document.getElementById('manual-clear-class');
   if (confirmButton) {
@@ -917,6 +913,11 @@ function renderManualPlanControls(message = '') {
   }
   if (unlockButton) unlockButton.classList.toggle('hidden', !confirmed);
   if (solveButton) solveButton.disabled = !confirmed || window._manualAiRunning === true;
+  if (optimizeButton) {
+    optimizeButton.disabled = !confirmed
+      || window._manualScheduleAvailable !== true
+      || window._manualAiRunning === true;
+  }
   if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true || window._manualScheduleSaving === true;
   if (clearButton) clearButton.disabled = confirmed;
   const status = document.getElementById('manual-plan-status');
@@ -1176,7 +1177,7 @@ async function loadManualTimetable() {
   window._manualClassesById = new Map(classes.map(item => [item.id, item]));
   const hydratedFromBackend = hydrateManualDrafts(manualPlan);
   const previous = selector.value;
-  selector.innerHTML = selectableClasses.map(item => `<option value="${item.id}">${item.label}</option>`).join('');
+  selector.innerHTML = selectableClasses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('');
   if (selectableClasses.some(item => item.id === previous)) selector.value = previous;
   const refreshManualPoolItems = () => {
     // Course category depends on the currently selected class (for example,
@@ -1239,29 +1240,36 @@ async function loadManualTimetable() {
     renderManualPlanControls();
     showToast('必要条件已解除，可以继续修改草稿');
   };
-  document.getElementById('manual-ai-solve').onclick = async () => {
-    const button = document.getElementById('manual-ai-solve');
+  const runManualAiSolve = async ({ optimize = false } = {}) => {
+    const button = document.getElementById(optimize ? 'manual-ai-optimize' : 'manual-ai-solve');
     const startedAt = Date.now();
     window._manualAiRunning = true;
-    renderManualPlanControls('AI 排课阶段 1/2：DeepSeek 正在读取锁定课程和规则，生成安全的搜索优先级…');
+    renderManualPlanControls(optimize
+      ? '继续优化：正在以当前有效课表为提示，在不破坏金框和硬约束的前提下降低软约束代价…'
+      : '快速生成阶段 1/2：DeepSeek 正在读取锁定课程和规则，生成安全的搜索优先级…');
     const timer = setInterval(() => {
       const seconds = Math.round((Date.now() - startedAt) / 1000);
-      const stage = seconds < 45
+      const stage = optimize
+        ? '继续优化：独立求解进程正在保留当前可行课表并寻找更好排法'
+        : seconds < 45
         ? 'AI 排课阶段 1/2：DeepSeek 正在分析约束和课程优先级'
-        : 'AI 排课阶段 2/2：可行优先排课器正在保留金框课程、构造完整课表并择优';
+        : '快速生成阶段 2/2：构造器正在先完成整张课表，再按年级邻域择优';
       renderManualPlanControls(`${stage}（已用 ${seconds} 秒）…`);
     }, 1000);
     try {
       const result = await solveWithRequiredApproval({
         use_ai_strategy: true,
         feasible_first: true,
-        candidate_count: 1,
+        solver_strategy: optimize ? 'exact' : 'constructive_lns',
+        candidate_count: 2,
         max_time_seconds: 120,
-        instruction: '保留全部手动必要条件；优先处理跨年级教师和高约束课程，再补全其他课程。',
+        instruction: optimize
+          ? '保留全部手动必要条件和现有可行解；只在硬约束始终成立时改善课程分布与教师负担。'
+          : '保留全部手动必要条件；先快速构造完整可行课表，再优先处理跨年级教师和高约束课程。',
       }, '/manual-plan/ai-solve');
       const duration = ((result.solve_duration_ms || 0) / 1000).toFixed(1);
       if (!result.solved) {
-        renderManualPlanControls(`AI 补全未找到可行解：${result.reason || result.status}（求解 ${duration} 秒）。金框课程没有被破坏。`);
+        renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}未找到可行解：${result.reason || result.status}（求解 ${duration} 秒）。金框课程和原有效课表没有被破坏。`);
         return;
       }
       window._manualPlan.last_solve = {
@@ -1299,7 +1307,7 @@ async function loadManualTimetable() {
       const reviewWarning = reviewCount
         ? `；有 ${reviewCount} 项待人工复核`
         : '';
-      renderManualPlanControls(`AI 补全完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${blockMorningSummary}${reviewWarning}${qualityWarning}${policyWarning}${selectionWarning}${warning}`);
+      renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${blockMorningSummary}${reviewWarning}${qualityWarning}${policyWarning}${selectionWarning}${warning}`);
       const hasWarning = result.publication_status === 'review_required'
         || incompleteChoices.length
         || reviewCount;
@@ -1312,7 +1320,7 @@ async function loadManualTimetable() {
         await switchView('overview-timetable');
       }
     } catch (error) {
-      renderManualPlanControls(`AI 排课失败：${error.message}。金框必要条件仍然保留，可以修正数据后重试。`);
+      renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}失败：${error.message}。金框必要条件和原有效课表仍然保留，可以修正数据后重试。`);
     } finally {
       clearInterval(timer);
       window._manualAiRunning = false;
@@ -1321,6 +1329,8 @@ async function loadManualTimetable() {
       if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true;
     }
   };
+  document.getElementById('manual-ai-solve').onclick = () => runManualAiSolve();
+  document.getElementById('manual-ai-optimize').onclick = () => runManualAiSolve({ optimize: true });
   document.getElementById('manual-save-schedule').onclick = async () => {
     window._manualScheduleSaving = true;
     renderManualPlanControls('正在储存当前完整课表快照…');
@@ -1504,7 +1514,7 @@ async function loadTeacherAvailability() {
 
   const selector = document.getElementById('teacher-availability-select');
   selector.innerHTML = '<option value="">选择教师</option>'
-    + teachers.map(teacher => `<option value="${teacher.id}">${teacher.name} (${teacher.id})</option>`).join('');
+    + teachers.map(teacher => `<option value="${escapeHtml(teacher.id)}">${escapeHtml(teacher.name)} (${escapeHtml(teacher.id)})</option>`).join('');
   if (teachers.some(teacher => teacher.id === previousTeacherId)) selector.value = previousTeacherId;
   selector.onchange = () => {
     renderTeacherAvailabilityGrid();
@@ -1685,7 +1695,7 @@ async function openPastTimetable(archiveId) {
         </div>
         <label>查看班级
           <select id="past-timetable-class-select" class="select">
-            ${classes.map(item => `<option value="${item.id}" ${item.id === classId ? 'selected' : ''}>${item.class_type === 'teaching' ? '教学班' : '行政班'} · ${item.name || item.id}</option>`).join('')}
+            ${classes.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === classId ? 'selected' : ''}>${item.class_type === 'teaching' ? '教学班' : '行政班'} · ${escapeHtml(item.name || item.id)}</option>`).join('')}
           </select>
         </label>
       </div>
@@ -1930,12 +1940,12 @@ function renderTeachersList(data) {
         <tbody>
           ${data.map(t => `
             <tr>
-              <td>${t.id}</td>
-              <td>${t.name}</td>
+              <td>${escapeHtml(t.id)}</td>
+              <td>${escapeHtml(t.name)}</td>
               <td>${t.weekly_hours} 节</td>
               <td>
-                <button class="btn btn-primary btn-sm" onclick="editEntity('teachers', '${t.id}')">编辑</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('teachers', '${t.id}')">删除</button>
+                ${entityActionButton('teachers', t.id, 'edit', '编辑', 'btn-primary')}
+                ${entityActionButton('teachers', t.id, 'delete', '删除', 'btn-danger')}
               </td>
             </tr>
           `).join('')}
@@ -1943,6 +1953,7 @@ function renderTeachersList(data) {
       </table>
     </div>
   `;
+  wireEntityActions(content);
 }
 
 // 加载教室列表
@@ -1979,14 +1990,14 @@ function renderRoomsList(data) {
         <tbody>
           ${data.map(r => `
             <tr>
-              <td>${r.id}</td>
-              <td>${r.name}</td>
-              <td>${r.type}</td>
-              <td>${r.capacity}</td>
-              <td>${r.owner_class_id || '-'}</td>
+              <td>${escapeHtml(r.id)}</td>
+              <td>${escapeHtml(r.name)}</td>
+              <td>${escapeHtml(r.type)}</td>
+              <td>${escapeHtml(r.capacity)}</td>
+              <td>${escapeHtml(r.owner_class_id || '-')}</td>
               <td>
-                <button class="btn btn-primary btn-sm" onclick="editEntity('rooms', '${r.id}')">编辑</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('rooms', '${r.id}')">删除</button>
+                ${entityActionButton('rooms', r.id, 'edit', '编辑', 'btn-primary')}
+                ${entityActionButton('rooms', r.id, 'delete', '删除', 'btn-danger')}
               </td>
             </tr>
           `).join('')}
@@ -1994,6 +2005,7 @@ function renderRoomsList(data) {
       </table>
     </div>
   `;
+  wireEntityActions(content);
 }
 
 // 加载课程列表
@@ -2015,7 +2027,7 @@ async function loadCourses() {
     .filter(item => Number(item.grade) === 11)
     .sort((left, right) => left.id.localeCompare(right.id));
   classFilter.innerHTML = '<option value="">全部 Senior 2 教学班</option>'
-    + highTwoClasses.map(item => `<option value="${item.id}">${item.name}</option>`).join('');
+    + highTwoClasses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('');
   gradeFilter.onchange = () => {
     syncCourseClassFilter();
     applyCourseFilters();
@@ -2283,19 +2295,19 @@ function renderCoursesList(data, { grade = '', classId = '', total = data.length
         <tbody>
           ${data.map(c => `
             <tr>
-              <td>${c.id}</td>
-              <td>${c.name}</td>
-              <td>${courseGradeLabel(c)}</td>
-              ${grade === '11' ? `<td>${courseClassLabel(c)}</td>` : ''}
-              <td>${courseTypeLabel(c.type)}</td>
-              <td>${courseDeliveryLabel(c)}</td>
+              <td>${escapeHtml(c.id)}</td>
+              <td>${escapeHtml(c.name)}</td>
+              <td>${escapeHtml(courseGradeLabel(c))}</td>
+              ${grade === '11' ? `<td>${escapeHtml(courseClassLabel(c))}</td>` : ''}
+              <td>${escapeHtml(courseTypeLabel(c.type))}</td>
+              <td>${escapeHtml(courseDeliveryLabel(c))}</td>
               <td>${c.weekly_hours}</td>
-              <td>${c.required_room_type || '-'}</td>
+              <td>${escapeHtml(c.required_room_type || '-')}</td>
               <td>${c.prefer_morning ? '是' : '-'}</td>
               <td>${c.consecutive ? `${c.consecutive.min}-${c.consecutive.max}` : '-'}</td>
               <td>
-                <button class="btn btn-primary btn-sm" onclick="editEntity('courses', '${c.id}')">编辑</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('courses', '${c.id}')">删除</button>
+                ${entityActionButton('courses', c.id, 'edit', '编辑', 'btn-primary')}
+                ${entityActionButton('courses', c.id, 'delete', '删除', 'btn-danger')}
               </td>
             </tr>
           `).join('')}
@@ -2303,6 +2315,7 @@ function renderCoursesList(data, { grade = '', classId = '', total = data.length
       </table>
     </div>
   `;
+  wireEntityActions(content);
 }
 
 // 加载学生列表
@@ -2507,7 +2520,7 @@ function renderStudentsList(data, hasFilter = false) {
         ${Object.keys(apStats).length > 0 ? `
           <span style="font-size: 12px;">
             选课统计：
-            ${Object.entries(apStats).map(([name, count]) => `<strong>${name}</strong>(${count})`).join(' ')}
+            ${Object.entries(apStats).map(([name, count]) => `<strong>${escapeHtml(name)}</strong>(${count})`).join(' ')}
           </span>
         ` : ''}
       </div>
@@ -2528,15 +2541,15 @@ function renderStudentsList(data, hasFilter = false) {
         <tbody>
           ${data.map(s => `
             <tr>
-              <td>${s.id}</td>
-              <td>${s.name}</td>
-              <td>${s.english_name || '-'}</td>
+              <td>${escapeHtml(s.id)}</td>
+              <td>${escapeHtml(s.name)}</td>
+              <td>${escapeHtml(s.english_name || '-')}</td>
               <td>${s.grade}</td>
-              <td>${s.admin_class_id}</td>
-              <td>${s.teaching_class_id}</td>
+              <td>${escapeHtml(s.admin_class_id)}</td>
+              <td>${escapeHtml(s.teaching_class_id)}</td>
               <td>
                 ${s.ap_selections.length > 0
-                  ? `<div class="ap-tags">${s.ap_selections.map(ap => `<span class="ap-tag">${ap.name}</span>`).join('')}</div>`
+                  ? `<div class="ap-tags">${s.ap_selections.map(ap => `<span class="ap-tag">${escapeHtml(ap.name)}</span>`).join('')}</div>`
                   : '<span style="color: var(--gray-400);">无</span>'
                 }
               </td>
@@ -2551,16 +2564,16 @@ function renderStudentsList(data, hasFilter = false) {
                     : '<span style="color: var(--gray-400);">无</span>')
                   : (s.elective_choices_data
                     ? `<div class="ap-tags">
-                        ${s.elective_choices_data.group_a ? `<span class="ap-tag" style="background: #e3f2fd; color: #1565c0;">A:${s.elective_choices_data.group_a.name}</span>` : ''}
-                        ${s.elective_choices_data.group_b ? `<span class="ap-tag" style="background: #f3e5f5; color: #7b1fa2;">B:${s.elective_choices_data.group_b.name}</span>` : ''}
-                        ${s.elective_choices_data.group_c ? `<span class="ap-tag" style="background: #e8f5e9; color: #2e7d32;">C:${s.elective_choices_data.group_c.name}</span>` : ''}
+                        ${s.elective_choices_data.group_a ? `<span class="ap-tag" style="background: #e3f2fd; color: #1565c0;">A:${escapeHtml(s.elective_choices_data.group_a.name)}</span>` : ''}
+                        ${s.elective_choices_data.group_b ? `<span class="ap-tag" style="background: #f3e5f5; color: #7b1fa2;">B:${escapeHtml(s.elective_choices_data.group_b.name)}</span>` : ''}
+                        ${s.elective_choices_data.group_c ? `<span class="ap-tag" style="background: #e8f5e9; color: #2e7d32;">C:${escapeHtml(s.elective_choices_data.group_c.name)}</span>` : ''}
                       </div>`
                     : '<span style="color: var(--gray-400);">无</span>')
                 }
               </td>
               <td>
-                <button class="btn btn-primary btn-sm" onclick="editEntity('students', '${s.id}')">编辑</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('students', '${s.id}')">删除</button>
+                ${entityActionButton('students', s.id, 'edit', '编辑', 'btn-primary')}
+                ${entityActionButton('students', s.id, 'delete', '删除', 'btn-danger')}
               </td>
             </tr>
           `).join('')}
@@ -2568,6 +2581,7 @@ function renderStudentsList(data, hasFilter = false) {
       </table>
     </div>
   `;
+  wireEntityActions(content);
 }
 
 // 加载班级列表
@@ -2616,14 +2630,14 @@ function renderClassesList(adminClasses, teachingClasses) {
           <tbody>
             ${adminClasses.map(c => `
               <tr>
-                <td>${c.id}</td>
-                <td>${c.name}</td>
+                <td>${escapeHtml(c.id)}</td>
+                <td>${escapeHtml(c.name)}</td>
                 <td>${c.grade}</td>
-                <td>${c.fixed_room_id}</td>
-                <td>${c.student_ids.length}</td>
+                <td>${escapeHtml(c.fixed_room_id || '-')}</td>
+                <td>${c.student_ids?.length || 0}</td>
                 <td>
-                  <button class="btn btn-primary btn-sm" onclick="editEntity('admin_classes', '${c.id}')">编辑</button>
-                  <button class="btn btn-danger btn-sm" onclick="deleteEntity('admin_classes', '${c.id}')">删除</button>
+                  ${entityActionButton('admin_classes', c.id, 'edit', '编辑', 'btn-primary')}
+                  ${entityActionButton('admin_classes', c.id, 'delete', '删除', 'btn-danger')}
                 </td>
               </tr>
             `).join('')}
@@ -2648,14 +2662,14 @@ function renderClassesList(adminClasses, teachingClasses) {
           <tbody>
             ${teachingClasses.map(c => `
               <tr>
-                <td>${c.id}</td>
-                <td>${c.name}</td>
+                <td>${escapeHtml(c.id)}</td>
+                <td>${escapeHtml(c.name)}</td>
                 <td>${c.grade}</td>
-                <td>${c.fixed_room_id}</td>
-                <td>${c.student_ids.length}</td>
+                <td>${escapeHtml(c.fixed_room_id || '-')}</td>
+                <td>${c.student_ids?.length || 0}</td>
                 <td>
-                  <button class="btn btn-primary btn-sm" onclick="editEntity('teaching_classes', '${c.id}')">编辑</button>
-                  <button class="btn btn-danger btn-sm" onclick="deleteEntity('teaching_classes', '${c.id}')">删除</button>
+                  ${entityActionButton('teaching_classes', c.id, 'edit', '编辑', 'btn-primary')}
+                  ${entityActionButton('teaching_classes', c.id, 'delete', '删除', 'btn-danger')}
                 </td>
               </tr>
             `).join('')}
@@ -2664,6 +2678,7 @@ function renderClassesList(adminClasses, teachingClasses) {
       </div>
     `}
   `;
+  wireEntityActions(content);
 }
 
 // 加载教师分工列表
@@ -2688,7 +2703,8 @@ async function loadAssignments() {
            item.teacher_name.toLowerCase().includes(keyword) ||
            item.course_id.toLowerCase().includes(keyword) ||
            item.course_name.toLowerCase().includes(keyword) ||
-           item.class_id.toLowerCase().includes(keyword);
+           (item.class_ids || [item.class_id]).filter(Boolean)
+             .some(classId => classId.toLowerCase().includes(keyword));
   });
 }
 
@@ -2715,14 +2731,14 @@ function renderAssignmentsList(data) {
         <tbody>
           ${data.map(a => `
             <tr>
-              <td>${a.id}</td>
-              <td>${a.teacher_name}</td>
-              <td>${a.course_name}</td>
-              <td>${a.class_id}</td>
+              <td>${escapeHtml(a.id)}</td>
+              <td>${escapeHtml(a.teacher_name)}</td>
+              <td>${escapeHtml(a.course_name)}</td>
+              <td>${escapeHtml((a.class_ids || [a.class_id]).filter(Boolean).join('、') || '-')}</td>
               <td>${a.class_type === 'admin' ? '行政班' : '教学班'}</td>
               <td>${a.weekly_hours}</td>
               <td>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('teaching_assignments', '${a.id}')">删除</button>
+                ${entityActionButton('teaching_assignments', a.id, 'delete', '删除', 'btn-danger')}
               </td>
             </tr>
           `).join('')}
@@ -2730,6 +2746,7 @@ function renderAssignmentsList(data) {
       </table>
     </div>
   `;
+  wireEntityActions(content);
 }
 
 // 加载AP选课列表（以课程为主，包括选修课和AP类型的必修课）
@@ -3051,7 +3068,7 @@ window.addStudentToCourse = async function(courseId) {
           <label>选择学生</label>
           <select name="student_id" class="select" required>
             <option value="">选择学生</option>
-            ${availableStudents.map(s => `<option value="${s.id}">${s.name} (${s.id}) - ${seniorGradeLabel(s.grade)}</option>`).join('')}
+            ${availableStudents.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.id)}) - ${escapeHtml(seniorGradeLabel(s.grade))}</option>`).join('')}
           </select>
         </div>
         <div class="form-actions">
@@ -3728,7 +3745,7 @@ window.moveStudentToSection = function(sourceSectionId, studentId) {
       <div class="form-group">
         <label>目标平行班</label>
         <select name="target_section_id" class="select">
-          ${targets.map(section => `<option value="${section.id}">${section.id}（${section.student_ids.length} 人）</option>`).join('')}
+          ${targets.map(section => `<option value="${escapeHtml(section.id)}">${escapeHtml(section.id)}（${section.student_ids.length} 人）</option>`).join('')}
         </select>
       </div>
       <div class="form-actions">
@@ -3903,15 +3920,15 @@ function renderConstraintsList(data) {
         <tbody>
           ${data.map(c => `
             <tr>
-              <td>${c.id}</td>
-              <td>${c.type}</td>
-              <td>${c.scope}</td>
-              <td>${c.target_id || '-'}</td>
+              <td>${escapeHtml(c.id)}</td>
+              <td>${escapeHtml(c.type)}</td>
+              <td>${escapeHtml(c.scope)}</td>
+              <td>${escapeHtml(c.target_id || '-')}</td>
               <td>${c.hard ? '硬' : (c.requires_approval_to_relax ? '软（需批准）' : '软')}</td>
               <td>${c.weight || '-'}</td>
               <td>
-                <button class="btn btn-secondary btn-sm" onclick="openConstraintDialog(window._constraintsData.find(item => item.id === '${c.id}'))">编辑</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteEntity('constraints', '${c.id}')">删除</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-constraint-edit-id="${escapeHtml(c.id)}">编辑</button>
+                ${entityActionButton('constraints', c.id, 'delete', '删除', 'btn-danger')}
               </td>
             </tr>
           `).join('')}
@@ -3919,6 +3936,12 @@ function renderConstraintsList(data) {
       </table>
     </div>
   `;
+  wireEntityActions(content);
+  content.querySelectorAll('[data-constraint-edit-id]').forEach(button => {
+    button.addEventListener('click', () => window.openConstraintDialog(
+      window._constraintsData.find(item => item.id === button.dataset.constraintEditId),
+    ));
+  });
 }
 
 // 加载学生选择框
@@ -3927,7 +3950,7 @@ async function loadStudentSelect() {
   window._studentsData = data; // 缓存数据供搜索使用
   const select = document.getElementById('select-student');
   select.innerHTML = '<option value="">选择学生</option>' +
-    data.map(s => `<option value="${s.id}">${s.id} - ${s.name}${s.english_name ? ` (${s.english_name})` : ''}</option>`).join('');
+    data.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.id)} - ${escapeHtml(s.name)}${s.english_name ? ` (${escapeHtml(s.english_name)})` : ''}</option>`).join('');
 
   // 初始化搜索
   initSearchFilter(
@@ -3939,40 +3962,32 @@ async function loadStudentSelect() {
   );
 }
 
-function apGroupOptionLabel(section, courses, teachers) {
+function apGroupOptionLabel(section, courses = new Map(), teachers = new Map()) {
   const course = courses.get(section.course_id);
   const teacher = teachers.get(section.teacher_id);
   const grades = (section.grades || []).map(seniorGradeLabel).join('、') || '未设置年级';
-  const courseName = course?.name || section.course_id;
-  const teacherName = teacher?.name || section.teacher_id || '待定教师';
+  const courseName = section.course_name || course?.name || section.course_id;
+  const teacherName = section.teacher_name || teacher?.name || section.teacher_id || '待定教师';
   const sectionNumber = section.id.split('_').pop();
-  return `${courseName} · Section ${sectionNumber} | ${grades} | ${teacherName} | ${section.student_ids?.length || 0} 人`;
+  return `${courseName} · Section ${sectionNumber} | ${grades} | ${teacherName} | ${section.student_count ?? section.student_ids?.length ?? 0} 人`;
 }
 
 // AP 分流组仅基于当前已排出的 section，确保列表与课表中的实际分班一致。
 async function loadApGroupSelect() {
-  const state = await api('/state');
-  const courses = new Map((state.courses || []).map(course => [course.id, course]));
-  const teachers = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
-  const groups = (state.schedule?.sections || [])
-    .filter(section => section.class_type === 'ap')
-    .sort((left, right) => apGroupOptionLabel(left, courses, teachers)
-      .localeCompare(apGroupOptionLabel(right, courses, teachers), 'zh-CN'));
+  const groups = await api('/ap-groups');
 
   window._apGroupSections = groups;
-  window._apGroupCourses = courses;
-  window._apGroupTeachers = teachers;
 
   const select = document.getElementById('select-ap-group');
   select.innerHTML = '<option value="">选择 AP 分流组</option>' +
-    groups.map(section => `<option value="${section.id}">${apGroupOptionLabel(section, courses, teachers)}</option>`).join('');
+    groups.map(section => `<option value="${escapeHtml(section.id)}">${escapeHtml(apGroupOptionLabel(section))}</option>`).join('');
 
   initSearchFilter(
     'search-ap-group',
     'select-ap-group',
     groups,
-    (section) => `${section.id} ${apGroupOptionLabel(section, courses, teachers)} ${section.course_id} ${section.teacher_id || ''}`,
-    (section) => apGroupOptionLabel(section, courses, teachers),
+    (section) => `${section.id} ${apGroupOptionLabel(section)} ${section.course_id} ${section.teacher_id || ''}`,
+    (section) => apGroupOptionLabel(section),
   );
 
   const content = document.getElementById('ap-group-timetable-content');
@@ -3982,35 +3997,27 @@ async function loadApGroupSelect() {
 }
 
 async function renderApGroupTimetable(sectionId) {
-  const [state, data] = await Promise.all([
-    api('/state'),
-    api(`/timetable/section/${encodeURIComponent(sectionId)}`),
-  ]);
-  const section = (state.schedule?.sections || []).find(item => item.id === sectionId);
+  const detail = await api(`/ap-groups/${encodeURIComponent(sectionId)}`);
+  const section = detail.section;
   const container = document.getElementById('ap-group-timetable-content');
-  if (!section || section.class_type !== 'ap') {
+  if (!section) {
     container.innerHTML = '<div class="empty-state"><p>未找到该 AP 分流组，请刷新后重新选择。</p></div>';
     return;
   }
 
-  const courses = new Map((state.courses || []).map(course => [course.id, course]));
-  const teachers = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
-  const students = new Map((state.students || []).map(student => [student.id, student]));
-  const courseName = courses.get(section.course_id)?.name || section.course_id;
-  const teacherName = teachers.get(section.teacher_id)?.name || section.teacher_id || '待定教师';
+  const courseName = section.course_name || section.course_id;
+  const teacherName = section.teacher_name || section.teacher_id || '待定教师';
   const grades = (section.grades || []).map(seniorGradeLabel).join('、') || '未设置年级';
   const sectionNumber = section.id.split('_').pop();
 
   renderDetailedTimetable(
     'ap-group-timetable-content',
-    data,
+    detail.timetable,
     `${courseName} · Section ${sectionNumber}`,
-    `AP 分流组 | ${grades} | 教师：${teacherName} | ${section.student_ids?.length || 0} 人`,
+    `AP 分流组 | ${grades} | 教师：${teacherName} | ${section.student_count || 0} 人`,
   );
 
-  const roster = (section.student_ids || [])
-    .map(id => students.get(id) || { id, name: id })
-    .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id), 'zh-CN'));
+  const roster = detail.students || [];
   container.insertAdjacentHTML('beforeend', `
     <div class="ap-group-roster">
       <h3>分流组学生名单（${roster.length} 人）</h3>
@@ -4019,12 +4026,12 @@ async function renderApGroupTimetable(sectionId) {
           <table>
             <thead><tr><th>Student ID</th><th>中文姓名</th><th>英文姓名</th><th>年级</th><th>行政班</th><th>教学班</th></tr></thead>
             <tbody>${roster.map(student => `<tr>
-              <td>${student.id}</td>
-              <td>${student.name || '-'}</td>
-              <td>${student.english_name || '-'}</td>
-              <td>${seniorGradeLabel(student.grade)}</td>
-              <td>${student.admin_class_id || '-'}</td>
-              <td>${student.teaching_class_id || '-'}</td>
+              <td>${escapeHtml(student.id)}</td>
+              <td>${escapeHtml(student.name || '-')}</td>
+              <td>${escapeHtml(student.english_name || '-')}</td>
+              <td>${escapeHtml(seniorGradeLabel(student.grade))}</td>
+              <td>${escapeHtml(student.admin_class_id || '-')}</td>
+              <td>${escapeHtml(student.teaching_class_id || '-')}</td>
             </tr>`).join('')}</tbody>
           </table>
         </div>
@@ -4039,7 +4046,7 @@ async function loadTeacherSelect() {
   window._teachersData = data; // 缓存数据供搜索使用
   const select = document.getElementById('select-teacher');
   select.innerHTML = '<option value="">选择教师</option>' +
-    data.map(t => `<option value="${t.id}">${t.id} - ${t.name}</option>`).join('');
+    data.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.id)} - ${escapeHtml(t.name)}</option>`).join('');
 
   // 初始化搜索
   initSearchFilter('search-teacher', 'select-teacher', data, (item) => `${item.id} ${item.name}`);
@@ -4055,7 +4062,7 @@ async function loadClassSelect() {
 
   const select = document.getElementById('select-class');
   select.innerHTML = '<option value="">选择教学班</option>' +
-    teachingClasses.map(c => `<option value="${c.id}">${c.id} - ${c.name}</option>`).join('');
+    teachingClasses.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.id)} - ${escapeHtml(c.name)}</option>`).join('');
 
   // 初始化搜索
   initSearchFilter('search-class', 'select-class', allClasses, (item) => `${item.id} ${item.name}`);
@@ -4067,7 +4074,7 @@ async function loadRoomSelect() {
   window._roomsData = data; // 缓存数据供搜索使用
   const select = document.getElementById('select-room');
   select.innerHTML = '<option value="">选择教室</option>' +
-    data.map(r => `<option value="${r.id}">${r.id} - ${r.name}</option>`).join('');
+    data.map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.id)} - ${escapeHtml(r.name)}</option>`).join('');
 
   // 初始化搜索
   initSearchFilter('search-room', 'select-room', data, (item) => `${item.id} ${item.name}`);
@@ -4090,7 +4097,7 @@ function initSearchFilter(searchId, selectId, data, getSearchText, getOptionLabe
     if (!keyword) {
       // 如果搜索框为空，显示所有选项
       select.innerHTML = '<option value="">请选择</option>' +
-        data.map(item => `<option value="${item.id}">${getOptionLabel(item)}</option>`).join('');
+        data.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(getOptionLabel(item))}</option>`).join('');
       return;
     }
 
@@ -4102,7 +4109,7 @@ function initSearchFilter(searchId, selectId, data, getSearchText, getOptionLabe
 
     // 更新下拉框选项
     select.innerHTML = '<option value="">选择匹配项</option>' +
-      filtered.map(item => `<option value="${item.id}">${getOptionLabel(item)}</option>`).join('');
+      filtered.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(getOptionLabel(item))}</option>`).join('');
 
     // 如果只有一个匹配项，自动选中
     if (filtered.length === 1) {
@@ -4196,11 +4203,21 @@ function renderTimetable(containerId, data) {
   container.innerHTML = html;
 }
 
-// 渲染详细课表视图
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, character => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
-  })[character]);
+function entityActionButton(entity, id, action, label, styleClass) {
+  return `<button class="btn ${styleClass} btn-sm" type="button"
+    data-entity-action="${escapeHtml(action)}"
+    data-entity="${escapeHtml(entity)}"
+    data-entity-id="${safeDataAttribute(id)}">${escapeHtml(label)}</button>`;
+}
+
+function wireEntityActions(container) {
+  container.querySelectorAll('[data-entity-action]').forEach(button => {
+    button.addEventListener('click', () => {
+      const { entityAction: action, entity, entityId: id } = button.dataset;
+      if (action === 'edit') window.editEntity(entity, id);
+      if (action === 'delete') window.deleteEntity(entity, id);
+    });
+  });
 }
 
 function positionScheduleOverlays(container) {
@@ -4254,8 +4271,8 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
     <div class="timetable-detail${compact ? ' timetable-detail-compact' : ''}">
       ${compact ? '' : `
         <div class="timetable-header">
-          <h3>${title}</h3>
-          <p>${subtitle}</p>
+          <h3>${escapeHtml(title)}</h3>
+          <p>${escapeHtml(subtitle)}</p>
           ${data.stale ? '<div class="validation-result warning">⚠️ 当前输入已修改：以下为上一版历史课表。请重新排课后再据此调整。</div>' : ''}
           ${teacherDragEnabled ? `
             <div class="teacher-drag-guide">
@@ -4316,9 +4333,9 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
                 <div class="admin-split-lanes">
                   ${slot.split_groups.map(group => `
                     <div class="admin-split-lane">
-                      <div class="admin-split-class">${group.class_label || group.class_id || '行政班'}</div>
-                      <div class="admin-split-course">${group.course}</div>
-                      <div class="admin-split-meta">👨‍🏫 ${group.teacher} · ${group.students} 人</div>
+                      <div class="admin-split-class">${escapeHtml(group.class_label || group.class_id || '行政班')}</div>
+                      <div class="admin-split-course">${escapeHtml(group.course)}</div>
+                      <div class="admin-split-meta">👨‍🏫 ${escapeHtml(group.teacher)} · ${escapeHtml(group.students)} 人</div>
                     </div>
                   `).join('')}
                 </div>
@@ -4340,13 +4357,13 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
             ` : `
               <div class="slot-cell has-class category-${category} split-course-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
                    data-slot-id="${slotId}">
-                <div class="course-name">🧩 ${getCourseName(slot)}</div>
+                <div class="course-name">🧩 ${escapeHtml(getCourseName(slot))}</div>
                 <div class="split-course-hint">按个人课表前往对应 Section</div>
                 <div class="split-course-list">
                   ${slot.split_groups.map(group => `
                     <div class="split-course-item">
-                      <span>${group.course} · ${group.section_label || group.section_id}</span>
-                      <span class="split-course-count">${group.students} 人</span>
+                      <span>${escapeHtml(group.course)} · ${escapeHtml(group.section_label || group.section_id)}</span>
+                      <span class="split-course-count">${escapeHtml(group.students)} 人</span>
                     </div>
                   `).join('')}
                 </div>
@@ -4371,21 +4388,21 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
               <div class="admin-courses">
                 ${Object.entries(slot.admin_courses).map(([classId, course]) => `
                   <div class="admin-course-item">
-                    <span class="class-label">${classId}:</span>
-                    <span class="course-name">${course.course}</span>
+                    <span class="class-label">${escapeHtml(classId)}:</span>
+                    <span class="course-name">${escapeHtml(course.course)}</span>
                   </div>
                 `).join('')}
               </div>
               ${slot.teaching_course ? `
                 <div class="teaching-course">
-                  <span class="course-name">${slot.teaching_course.course}</span>
-                  <span class="teacher-name">👨‍🏫 ${slot.teaching_course.teacher}</span>
+                  <span class="course-name">${escapeHtml(slot.teaching_course.course)}</span>
+                  <span class="teacher-name">👨‍🏫 ${escapeHtml(slot.teaching_course.teacher)}</span>
                 </div>
               ` : ''}
               ${slot.elective_course ? `
                 <div class="elective-course">
-                  <span class="course-name">${slot.elective_course.course}</span>
-                  <span class="teacher-name">👨‍🏫 ${slot.elective_course.teacher}</span>
+                  <span class="course-name">${escapeHtml(slot.elective_course.course)}</span>
+                  <span class="teacher-name">👨‍🏫 ${escapeHtml(slot.elective_course.teacher)}</span>
                 </div>
               ` : ''}
             </div>
@@ -4395,16 +4412,16 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
           html += `
             <div class="slot-cell has-class category-${category}${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
                  draggable="${options.teacherDrag ? teacherDragEnabled : true}"
-                 data-task-id="${slot.task_id || ''}"
+                 data-task-id="${safeDataAttribute(slot.task_id || '')}"
                  data-slot-id="${slotId}">
               <div class="course-name">
-                ${getCourseName(slot)}
+                ${escapeHtml(getCourseName(slot))}
                 ${slot.course_type === 'ap' ? '<span class="course-badge ap">AP</span>' : ''}
               </div>
-              ${slot.section_label ? `<div class="timetable-section-label">📍 ${slot.section_label}</div>` : ''}
-              ${data.view_type === 'teacher' && slot.class_label ? `<div class="timetable-class-label">🏫 ${slot.class_label}</div>` : ''}
-              ${compact ? '' : `<div class="teacher-name">👨‍🏫 ${getTeacherName(slot)}</div>`}
-              ${compact ? '' : `<div class="room-name">🚪 ${getRoomName(slot)}</div>`}
+              ${slot.section_label ? `<div class="timetable-section-label">📍 ${escapeHtml(slot.section_label)}</div>` : ''}
+              ${data.view_type === 'teacher' && slot.class_label ? `<div class="timetable-class-label">🏫 ${escapeHtml(slot.class_label)}</div>` : ''}
+              ${compact ? '' : `<div class="teacher-name">👨‍🏫 ${escapeHtml(getTeacherName(slot))}</div>`}
+              ${compact ? '' : `<div class="room-name">🚪 ${escapeHtml(getRoomName(slot))}</div>`}
             </div>
           `;
         }
@@ -4488,10 +4505,10 @@ async function loadOverviewTimetable() {
              data-overview-type="${viewType}"
              data-overview-id="${encodeURIComponent(id)}"
              data-overview-name="${encodeURIComponent(name || '')}"
-             aria-label="查看${name}的完整课表">
+             aria-label="查看${safeDataAttribute(name)}的完整课表">
           <div class="overview-card-header">
-            <h4>${name}</h4>
-            <span class="badge">${id}</span>
+            <h4>${escapeHtml(name)}</h4>
+            <span class="badge">${escapeHtml(id)}</span>
           </div>
           <div class="overview-card-body">
             ${renderMiniTimetable(data)}
@@ -4539,7 +4556,7 @@ function renderMiniTimetable(data) {
       const slot = row[i];
       if (slot) {
         const category = timetableCourseCategory(slot);
-        html += `<td class="slot-filled category-${category}" title="${timetableCourseCategoryLabel(category)}">${getCourseName(slot)}</td>`;
+        html += `<td class="slot-filled category-${category}" title="${escapeHtml(timetableCourseCategoryLabel(category))}">${escapeHtml(getCourseName(slot))}</td>`;
       } else {
         html += `<td class="slot-empty">-</td>`;
       }
@@ -4908,12 +4925,24 @@ window.editEntity = async function(entity, id) {
 
 // 删除实体
 window.deleteEntity = async function(entity, id) {
-  if (!confirm(`确定要删除 ${id} 吗？`)) {
-    return;
-  }
   try {
-    await api(`/${entity}/${id}`, { method: 'DELETE' });
-    showToast('删除成功');
+    const encodedEntity = encodeURIComponent(entity);
+    const encodedId = encodeURIComponent(id);
+    const dependencies = await api(`/entity-dependencies/${encodedEntity}/${encodedId}`);
+    let cascade = false;
+    if (dependencies.length) {
+      const summary = dependencies
+        .map(item => `${item.label} ${item.count} 项`)
+        .join('、');
+      cascade = confirm(
+        `${id} 仍被以下数据引用：${summary}。\n\n继续删除会同步清理这些引用，并使当前课表失效。确定级联删除吗？`,
+      );
+      if (!cascade) return;
+    } else if (!confirm(`确定要删除 ${id} 吗？`)) {
+      return;
+    }
+    await api(`/${encodedEntity}/${encodedId}${cascade ? '?cascade=true' : ''}`, { method: 'DELETE' });
+    showToast(cascade ? '已删除并清理相关引用' : '删除成功');
     await loadViewData(getCurrentView());
   } catch (error) {
     showToast(error.message || '删除失败', 'error');
@@ -5675,8 +5704,6 @@ const ADMIN_SHELL_VIEW_META = {
   export: { title: '导出课表', section: '系统工具' },
   settings: { title: '系统设置', section: '系统工具' },
   status: { title: '系统状态', section: '系统工具' },
-  'formal-timetable': { title: '正式课表', section: '排课工作台' },
-  'temp-timetable': { title: '临时课表', section: '排课工作台' },
 };
 
 const AI_ASSISTANT_VIEW_LABELS = Object.fromEntries(
@@ -7077,12 +7104,7 @@ window.confirmApSelectionImport = async function() {
 let pendingStudentImports = [];
 
 function escapeImportHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+  return escapeHtml(value);
 }
 
 function initStudentImportHandlers() {
@@ -9470,7 +9492,7 @@ window.printTempTimetable = function() {
 async function loadSettingsPage() {
   try {
     // 加载当前设置
-    await loadSettings();
+    await Promise.all([loadSettings(), window.loadSchedulingPolicy()]);
 
     // 加载系统信息
     const [status, tasks] = await Promise.all([
@@ -9489,12 +9511,7 @@ async function loadSettingsPage() {
 }
 
 function graduationEscapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  return escapeHtml(value);
 }
 
 function graduationCourseName(courseId, coursesById) {
@@ -9677,6 +9694,49 @@ async function loadSettings() {
     console.error('加载设置失败:', error);
   }
 }
+
+window.loadSchedulingPolicy = async function() {
+  try {
+    const policy = await api('/scheduling-policy');
+    document.getElementById('policy-ap-periods').value = policy.ap_block.preferred_periods.join(',');
+    document.getElementById('policy-ap-first-target').value = policy.ap_block.first_period_target;
+    document.getElementById('policy-ap-band-weight').value = policy.ap_block.preferred_band_weight;
+    document.getElementById('policy-ap-first-weight').value = policy.ap_block.first_period_weight;
+    document.getElementById('policy-ap-compact-weight').value = policy.ap_block.student_compactness_weight;
+    document.getElementById('policy-max-gap-days').value = policy.quality_limits.max_ap_student_gap_days;
+    document.getElementById('policy-max-morning-empty').value = policy.quality_limits.max_ap_morning_empty_student_periods;
+    const status = document.getElementById('policy-save-status');
+    if (status) status.textContent = '当前显示的是后端实际生效值。';
+  } catch (error) {
+    const status = document.getElementById('policy-save-status');
+    if (status) status.textContent = `读取失败：${error.message}`;
+  }
+};
+
+window.saveSchedulingPolicy = async function() {
+  const periods = document.getElementById('policy-ap-periods').value
+    .split(/[,，\s]+/).filter(Boolean).map(Number);
+  const policy = {
+    ap_block: {
+      preferred_periods: periods,
+      first_period_target: Number(document.getElementById('policy-ap-first-target').value),
+      preferred_band_weight: Number(document.getElementById('policy-ap-band-weight').value),
+      first_period_weight: Number(document.getElementById('policy-ap-first-weight').value),
+      student_compactness_weight: Number(document.getElementById('policy-ap-compact-weight').value),
+    },
+    quality_limits: {
+      max_ap_student_gap_days: Number(document.getElementById('policy-max-gap-days').value),
+      max_ap_morning_empty_student_periods: Number(document.getElementById('policy-max-morning-empty').value),
+    },
+  };
+  try {
+    await api('/scheduling-policy', { method: 'PUT', body: JSON.stringify(policy) });
+    document.getElementById('policy-save-status').textContent = '已保存；下一次排课按新策略执行，现有课表已标记为需要重排。';
+    showToast('排课策略已保存', 'success');
+  } catch (error) {
+    document.getElementById('policy-save-status').textContent = `保存失败：${error.message}`;
+  }
+};
 
 // 保存设置
 window.saveSettings = async function() {

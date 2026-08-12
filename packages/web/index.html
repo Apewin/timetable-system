@@ -205,7 +205,8 @@
               <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班级</button>
               <button id="manual-unlock-plan" class="btn btn-secondary hidden" type="button">解除必要条件</button>
               <button id="manual-confirm-plan" class="btn btn-warning" type="button">🔒 确认为必要条件</button>
-              <button id="manual-ai-solve" class="btn btn-primary" type="button" disabled>✨ AI 补全排课</button>
+              <button id="manual-ai-solve" class="btn btn-primary" type="button" disabled>⚡ 快速生成</button>
+              <button id="manual-ai-optimize" class="btn btn-secondary" type="button" disabled>✨ 继续优化</button>
               <button id="manual-save-schedule" class="btn btn-success" type="button" disabled>💾 储存课表</button>
             </div>
           </div>
@@ -834,6 +835,44 @@
                 <button class="btn btn-secondary" onclick="loadSettings()">🔄 重新加载</button>
               </div>
               <div id="settings-test-result" class="settings-test-result"></div>
+            </div>
+
+            <div class="settings-section">
+              <h3>🧩 排课策略</h3>
+              <p class="settings-hint">这些是可调整的软偏好和发布门槛，不会取代教师冲突、学生冲突、课时与金框等硬约束。</p>
+              <div class="form-group">
+                <label for="policy-ap-periods">AP Block 优先节次</label>
+                <input id="policy-ap-periods" class="input" value="1,2,3,4,5,6" placeholder="例如：1,2,3,4,5,6">
+              </div>
+              <div class="form-group">
+                <label for="policy-ap-first-target">每个 Block 每周第一节目标次数</label>
+                <input id="policy-ap-first-target" class="input" type="number" min="1" max="5" value="1">
+              </div>
+              <div class="form-group">
+                <label for="policy-ap-band-weight">优先节次权重</label>
+                <input id="policy-ap-band-weight" class="input" type="number" min="1" value="2000">
+              </div>
+              <div class="form-group">
+                <label for="policy-ap-first-weight">第一节目标权重</label>
+                <input id="policy-ap-first-weight" class="input" type="number" min="1" value="5000">
+              </div>
+              <div class="form-group">
+                <label for="policy-ap-compact-weight">学生当天连续性权重</label>
+                <input id="policy-ap-compact-weight" class="input" type="number" min="1" value="1000">
+              </div>
+              <div class="form-group">
+                <label for="policy-max-gap-days">发布门槛：AP 学生空堂学生日上限</label>
+                <input id="policy-max-gap-days" class="input" type="number" min="0" value="0">
+              </div>
+              <div class="form-group">
+                <label for="policy-max-morning-empty">发布门槛：AP 上午空节学生节次上限</label>
+                <input id="policy-max-morning-empty" class="input" type="number" min="0" value="0">
+              </div>
+              <div class="settings-actions">
+                <button class="btn btn-primary" type="button" onclick="saveSchedulingPolicy()">💾 保存排课策略</button>
+                <button class="btn btn-secondary" type="button" onclick="loadSchedulingPolicy()">🔄 恢复已保存值</button>
+              </div>
+              <p id="policy-save-status" class="form-hint"></p>
             </div>
 
             <div class="settings-section">

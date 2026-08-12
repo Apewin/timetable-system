@@ -15,7 +15,7 @@ test('treats afternoon-only AP gaps as diagnostic when mornings are full', () =>
       day: 1,
       missing_periods: [6],
     }],
-  }, { apMorningEmptyStudentPeriods: 0 });
+  }, { maxApStudentGapDays: 1, apMorningEmptyStudentPeriods: 0 });
 
   assert.equal(quality.passed, true);
   assert.deepEqual(quality.issues, []);
@@ -37,9 +37,13 @@ test('requires review when AP morning empty student-periods exceed the default l
     ap_first_period_gap_days: 1,
     ap_morning_empty_student_periods: 2,
   });
-  assert.deepEqual(quality.limits, { max_ap_morning_empty_student_periods: 0 });
+  assert.deepEqual(quality.limits, {
+    max_ap_morning_empty_student_periods: 0,
+    max_ap_student_gap_days: 0,
+  });
   assert.equal(quality.passed, false);
-  assert.equal(quality.issues[0].code, 'AP_MORNING_EMPTY_STUDENT_PERIODS_EXCEEDED');
+  assert.ok(quality.issues.some(item => item.code === 'AP_MORNING_EMPTY_STUDENT_PERIODS_EXCEEDED'));
+  assert.ok(quality.issues.some(item => item.code === 'AP_STUDENT_GAP_DAYS_EXCEEDED'));
 });
 
 test('accepts an explicitly configured AP student-gap quality limit', () => {

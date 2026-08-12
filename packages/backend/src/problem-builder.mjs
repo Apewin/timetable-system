@@ -1,5 +1,7 @@
 import { compileRules } from './rule-compiler.mjs';
 import { buildSections } from './section-builder.mjs';
+import { validateRules } from './rule-schema.mjs';
+import { schedulingPolicyForState } from './scheduling-policy.mjs';
 
 function synchronizedSelectionBlockRules(state, sections) {
   return (state.selection_blocks || [])
@@ -101,7 +103,7 @@ function apBlockRules(sections) {
  * parallel sections.  Manual locks, teacher availability, and all configured
  * hard rules can still move a Block outside that band when necessary.
  */
-function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
+function apBlockCompactnessRules(sections, ignoredCourseIds = [], policy) {
   const groups = new Map();
   const studentIds = new Set();
   for (const section of sections) {
@@ -116,8 +118,9 @@ function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
   // P1 remains in the preferred band because the separate count rule asks for
   // one P1 meeting. Combined, the two rules mean one P1 per Block and P2-P6
   // for the remaining occurrences. Both stay below locks and hard rules.
+  const blockPolicy = policy.ap_block;
   const compactSlots = Array.from({ length: 5 }, (_, dayIndex) =>
-    Array.from({ length: 6 }, (_, periodIndex) => `D${dayIndex + 1}P${periodIndex + 1}`),
+    blockPolicy.preferred_periods.map(period => `D${dayIndex + 1}P${period}`),
   ).flat();
   const firstPeriodSlots = Array.from(
     { length: 5 },
@@ -133,8 +136,8 @@ function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
     const blockName = representative.ap_block_name || blockId;
     rules.push({
       id: `ap_block_${blockId}_compact_band`,
-      name: `AP ${blockName} 尽量安排在第 1 至第 6 节`,
-      type: 'preferred_slots', hard: false, weight: 2_000, scope: 'section',
+      name: `AP ${blockName} 尽量安排在第 ${blockPolicy.preferred_periods.join('、')} 节`,
+      type: 'preferred_slots', hard: false, weight: blockPolicy.preferred_band_weight, scope: 'section',
       target_ids: [representative.id], section_target_ids: [representative.id],
       params: { slots: compactSlots }, unmatched: false,
       generated_by: 'ap_block_compactness',
@@ -142,11 +145,11 @@ function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
     rules.push({
       id: `ap_block_${blockId}_one_first_period`,
       name: `AP ${blockName} 每周尽量只排一次第一节`,
-      type: 'target_occurrences_in_slots', hard: false, weight: 5_000, scope: 'section',
+      type: 'target_occurrences_in_slots', hard: false, weight: blockPolicy.first_period_weight, scope: 'section',
       target_ids: [representative.id], section_target_ids: [representative.id],
       params: {
         slots: firstPeriodSlots,
-        target: 1,
+        target: blockPolicy.first_period_target,
         objective_tier: 'ap_block_first_period_pattern',
       },
       unmatched: false,
@@ -156,11 +159,11 @@ function apBlockCompactnessRules(sections, ignoredCourseIds = []) {
   if (studentIds.size) rules.push({
     id: 'ap_block_students_compact_daily_schedule',
     name: 'AP Block 学生当天课程尽量连续',
-    type: 'no_internal_gaps', hard: false, weight: 1000, scope: 'student',
+    type: 'no_internal_gaps', hard: false, weight: blockPolicy.student_compactness_weight, scope: 'student',
     target_ids: [...studentIds].sort(), section_target_ids: [],
     params: {
-      ignore_course_ids: [...ignoredCourseIds].sort(),
-      preferred_morning_periods: 5,
+      ...([...ignoredCourseIds].length ? { ignore_course_ids: [...ignoredCourseIds].sort() } : {}),
+      preferred_morning_periods: blockPolicy.student_preferred_morning_periods,
     }, unmatched: false,
     generated_by: 'ap_block_compactness',
   });
@@ -223,18 +226,21 @@ export function buildSchedulingProblem(state, rules = state.constraints || []) {
   for (const section of sections) for (const studentId of section.student_ids) {
     studentHours.set(studentId, (studentHours.get(studentId) || 0) + section.weekly_hours);
   }
+  const policy = schedulingPolicyForState(state);
   const compiledRules = compileRules(state, rules.filter(rule => rule.scope !== 'room'), { sections });
+  const problemRules = [
+    ...compiledRules,
+    ...synchronizedSelectionBlockRules(state, sections),
+    ...synchronizedAssignmentRules(sections),
+    ...apBlockRules(sections),
+    ...apBlockCompactnessRules(sections, manualFillerCourseIds, policy),
+  ];
+  validateRules(problemRules);
   return {
     slots: Array.from({ length: 50 }, (_, index) => ({ id: `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`, day: Math.floor(index / 10) + 1, period: index % 10 + 1 })),
     sections,
     rooms: [],
-    rules: [
-      ...compiledRules,
-      ...synchronizedSelectionBlockRules(state, sections),
-      ...synchronizedAssignmentRules(sections),
-      ...apBlockRules(sections),
-      ...apBlockCompactnessRules(sections, manualFillerCourseIds),
-    ],
+    rules: problemRules,
     diagnostics: {
       sections: sections.length,
       meetings: sections.reduce((total, section) => total + section.weekly_hours, 0),

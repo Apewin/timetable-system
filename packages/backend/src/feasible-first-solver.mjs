@@ -110,6 +110,7 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
       ? { ...effectiveProblem, rules: feasibilityRules }
       : effectiveProblem;
     const aiPriorityCount = index === 0 ? 0 : aiPriorityRules.length;
+    const constructiveAttempt = options.constructiveFirst === true && index === 0;
     options.onProgress?.({
       stage: 'feasible-first-candidate',
       candidate: index + 1,
@@ -119,13 +120,13 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
     });
     const solution = await solveSchedule(attemptProblem, {
       maxTimeSeconds: attemptSeconds,
-      optimizeSoft: true,
+      optimizeSoft: !constructiveAttempt,
       freezeMembership: options.freezeMembership === true,
       lockedMeetings: options.lockedMeetings || [],
-      useConstructiveSeed: false,
+      useConstructiveSeed: constructiveAttempt,
       hintMeetings: bestSoFar?.solution.meetings || options.hintMeetings || [],
       hintSections: bestSoFar?.solution.sections || options.hintSections || [],
-      repairHints: Boolean(bestSoFar),
+      repairHints: Boolean(bestSoFar) && aiPriorityCount === 0,
       randomSeed: seed,
       numSearchWorkers: options.numSearchWorkers || 8,
     });
@@ -133,6 +134,7 @@ export async function solveFeasibleFirstSchedule(problem, options = {}) {
       candidate: index + 1,
       seed,
       status: solution.status,
+      constructive: constructiveAttempt,
       ai_priority_count: aiPriorityCount,
       time_limit_seconds: attemptSeconds,
     });

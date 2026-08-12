@@ -10,8 +10,8 @@
     "start": "pnpm --filter @timetable/backend start",
     "tt": "node packages/cli/src/cli.mjs",
     "test": "pnpm --filter @timetable/backend test && pnpm --filter @timetable/web test && pnpm --filter @timetable/cli test",
-    "lint": "eslint packages/backend packages/cli packages/web/app.js packages/web/vite.config.js packages/web/manual-course-scope.mjs packages/web/test",
-    "check": "pnpm --filter @timetable/backend check && pnpm --filter @timetable/cli check && pnpm lint && pnpm test && pnpm build"
+    "lint": "eslint packages/backend packages/cli packages/web/app.js packages/web/vite.config.js packages/web/manual-course-scope.mjs packages/web/dom-safety.mjs packages/web/test",
+    "check": "pnpm --filter @timetable/backend check && pnpm --filter @timetable/cli check && pnpm lint && pnpm test && pnpm --filter @timetable/backend test:integration && pnpm build"
   },
   "engines": {
     "node": ">=18.0.0"

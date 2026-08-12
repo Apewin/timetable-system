@@ -1,7 +1,26 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { compactPersistedState, hydrateDerivedScheduleState } from './schedule-projection.mjs';
+
+function freezeDeep(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) freezeDeep(child, seen);
+  return Object.freeze(value);
+}
 
 export class StateRepository {
-  constructor(file) { this.file = file; }
+  constructor(file) {
+    this.file = file;
+    this.cached = null;
+    this.cachedFingerprint = null;
+  }
 
   revision(state) {
     const value = Number(state?.meta?.revision);
@@ -10,7 +29,13 @@ export class StateRepository {
 
   read() {
     if (!existsSync(this.file)) throw new Error(`状态文件不存在: ${this.file}`);
-    return JSON.parse(readFileSync(this.file, 'utf8'));
+    const stat = statSync(this.file, { bigint: true });
+    const fingerprint = `${stat.size}:${stat.mtimeNs}`;
+    if (this.cached && fingerprint === this.cachedFingerprint) return this.cached;
+    const parsed = JSON.parse(readFileSync(this.file, 'utf8'));
+    this.cached = freezeDeep(hydrateDerivedScheduleState(parsed));
+    this.cachedFingerprint = fingerprint;
+    return this.cached;
   }
 
   write(state, { expectedRevision } = {}) {
@@ -23,15 +48,22 @@ export class StateRepository {
       error.current_revision = currentRevision;
       throw error;
     }
-    const next = structuredClone(state);
+    const next = compactPersistedState(state);
     next.meta = {
       ...next.meta,
       revision: currentRevision + 1,
       updated_at: new Date().toISOString(),
     };
-    const temporary = `${this.file}.next`;
-    writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    renameSync(temporary, this.file);
-    return next;
+    const temporary = `${this.file}.${process.pid}.${Date.now()}.next`;
+    try {
+      writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      renameSync(temporary, this.file);
+    } catch (error) {
+      if (existsSync(temporary)) unlinkSync(temporary);
+      throw error;
+    }
+    this.cached = null;
+    this.cachedFingerprint = null;
+    return this.read();
   }
 }

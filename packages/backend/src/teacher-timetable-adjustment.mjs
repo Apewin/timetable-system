@@ -1,25 +1,8 @@
 import { validateSchedule } from './schedule-validator.mjs';
+import { expandScheduleAssignments } from './schedule-projection.mjs';
 
 function indexById(items = []) {
   return new Map(items.map(item => [item.id, item]));
-}
-
-function expandedAssignments(sections, meetings) {
-  const bySection = indexById(sections);
-  return meetings.flatMap(meeting => {
-    const section = bySection.get(meeting.section_id);
-    return (section?.student_ids || []).map(studentId => ({
-      task_id: `${section.id}:${studentId}:${meeting.slot_id}`,
-      section_id: section.id,
-      student_id: studentId,
-      slot_id: meeting.slot_id,
-      room_id: null,
-      teacher_id: section.teacher_id,
-      course_id: section.course_id,
-      class_id: section.class_id || section.id,
-      class_type: section.class_type,
-    }));
-  });
 }
 
 function synchronizedSectionClosure(problem, sectionId) {
@@ -109,7 +92,7 @@ function scheduleAfterMoves(schedule, moves, displacedSelfStudyIds) {
   return {
     ...schedule,
     meetings,
-    assignments: expandedAssignments(schedule.sections || [], meetings),
+    assignments: expandScheduleAssignments(schedule.sections || [], meetings),
     overlays: (schedule.overlays || []).filter(overlay => !displaced.has(overlay.id)),
   };
 }

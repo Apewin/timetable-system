@@ -14,10 +14,11 @@ function nonNegativeInteger(value, fallback, name) {
 }
 
 export function evaluateScheduleQuality(validation, options = {}) {
-  const hasApStudentGapLimit = options.maxApStudentGapDays !== undefined;
-  const maxApStudentGapDays = hasApStudentGapLimit
-    ? nonNegativeInteger(options.maxApStudentGapDays, 0, 'maxApStudentGapDays')
-    : null;
+  const maxApStudentGapDays = nonNegativeInteger(
+    options.maxApStudentGapDays,
+    0,
+    'maxApStudentGapDays',
+  );
   const maxApMorningEmptyStudentPeriods = nonNegativeInteger(
     options.maxApMorningEmptyStudentPeriods,
     0,
@@ -30,7 +31,7 @@ export function evaluateScheduleQuality(validation, options = {}) {
     .filter(item => (item.missing_periods || []).includes(1))
     .length;
   const issues = [];
-  if (hasApStudentGapLimit && apStudentGapDays > maxApStudentGapDays) {
+  if (apStudentGapDays > maxApStudentGapDays) {
     issues.push({
       code: 'AP_STUDENT_GAP_DAYS_EXCEEDED',
       message: `AP 学生空堂为 ${apStudentGapDays} 个学生日，超过发布上限 ${maxApStudentGapDays}`,
@@ -90,8 +91,8 @@ export function evaluateScheduleQuality(validation, options = {}) {
   }
   const limits = {
     max_ap_morning_empty_student_periods: maxApMorningEmptyStudentPeriods,
+    max_ap_student_gap_days: maxApStudentGapDays,
   };
-  if (hasApStudentGapLimit) limits.max_ap_student_gap_days = maxApStudentGapDays;
   return {
     passed: issues.length === 0,
     metrics,

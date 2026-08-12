@@ -26,8 +26,8 @@ test('rejects a daily-gap rule outside student scope', () => {
   }]), /student/);
 });
 
-test('rejects a soft daily-gap rule', () => {
-  assert.throws(() => validateRules([{
+test('accepts a soft daily-gap preference', () => {
+  assert.doesNotThrow(() => validateRules([{
     id: 'soft-student-daily-prefix',
     type: 'no_internal_gaps',
     hard: false,
@@ -35,7 +35,7 @@ test('rejects a soft daily-gap rule', () => {
     scope: 'student',
     target_ids: ['S1'],
     params: {},
-  }]), /必须是硬约束/);
+  }]));
 });
 
 test('rejects a malformed ignored-course list for a daily-gap rule', () => {

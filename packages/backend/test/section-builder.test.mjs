@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
 import {
   buildSections,
   normalizeCourseGradeRange,
@@ -233,25 +232,4 @@ test('persists selected-section teacher and student transfer overrides into a re
   assert.ok(!first.student_ids.includes('S1'));
   assert.deepEqual(second.locked_student_ids, ['S1']);
   assert.ok(second.student_ids.includes('S1'));
-});
-
-test('builds the actual school data without room-derived sections or capacity splits', t => {
-  const school = JSON.parse(readFileSync(new URL('../../../timetable.json', import.meta.url), 'utf8'));
-  const missingRequiredChoices = (school.selection_blocks || [])
-    .filter(block => block.required)
-    .some(block => (school.students || [])
-      .filter(student => (block.grades || []).includes(student.grade))
-      .some(student => !student.elective_choices?.[block.choice_key]));
-  if (missingRequiredChoices) {
-    t.skip('真实高三 A/B/C 选课尚未导入，完整学校数据断言暂不适用');
-    return;
-  }
-  const sections = buildSections(school);
-  const hours = new Map(school.students.map(student => [student.id, 0]));
-  for (const section of sections) for (const studentId of section.student_ids) {
-    hours.set(studentId, hours.get(studentId) + section.weekly_hours);
-  }
-  assert.equal(sections.length, 133);
-  assert.equal(sections.reduce((total, section) => total + section.weekly_hours, 0), 417);
-  assert.deepEqual([...hours].filter(([, weeklyHours]) => weeklyHours !== 50), []);
 });

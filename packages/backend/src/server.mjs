@@ -5,11 +5,15 @@ import { fileURLToPath } from 'node:url';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { StateRepository } from './state-repository.mjs';
+import { expandScheduleAssignments as expandedAssignments } from './schedule-projection.mjs';
+import { apGroupDetail, listApGroups } from './ap-group-projection.mjs';
+import { normalizeSchedulingPolicy, schedulingPolicyForState } from './scheduling-policy.mjs';
 import { validateRules } from './rule-schema.mjs';
 import { buildSchedulingProblem } from './problem-builder.mjs';
 import { compileRules } from './rule-compiler.mjs';
-import { solveSchedule } from './cpsat-solver.mjs';
-import { deferableHardRules, solveFeasibleFirstSchedule } from './feasible-first-solver.mjs';
+import { deferableHardRules } from './feasible-first-solver.mjs';
+import { runSolverJob } from './solver-job-runner.mjs';
+import { createSolverJob } from './solver-job-policy.mjs';
 import { validateSchedule } from './schedule-validator.mjs';
 import { priorTimetableHintForState } from './schedule-hints.mjs';
 import {
@@ -50,6 +54,11 @@ import {
 import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from './schedule-archive.mjs';
 import { synchronizeClassMemberships } from './state-integrity.mjs';
 import { synchronizeCourseDeliveryAssignments } from './course-delivery.mjs';
+import {
+  deleteEntityFromState,
+  entityDependencies,
+  validateEntityInput,
+} from './entity-state.mjs';
 import { applyTeacherAssignmentSwap } from './assistant-actions.mjs';
 import {
   executeAssistantCliRead,
@@ -79,6 +88,8 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   next();
 });
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
@@ -297,19 +308,6 @@ function presentationSections(state) {
       } : { id: studentId, name: null };
     }),
   }));
-}
-
-function expandedAssignments(sections, meetings) {
-  const bySection = new Map(sections.map(section => [section.id, section]));
-  return meetings.flatMap(meeting => {
-    const section = bySection.get(meeting.section_id);
-    return (section?.student_ids || []).map(studentId => ({
-      task_id: `${section.id}:${studentId}:${meeting.slot_id}`,
-      section_id: section.id, student_id: studentId, slot_id: meeting.slot_id, room_id: meeting.room_id,
-      teacher_id: section.teacher_id, course_id: section.course_id,
-      class_id: section.class_id || section.id, class_type: section.class_type,
-    }));
-  });
 }
 
 function slotLabel(slotId) {
@@ -774,10 +772,18 @@ async function saveOrReplanSectionEdit(state, nextSections, sectionOverrides, { 
   const preparedState = { ...state, section_overrides: sectionOverrides };
   const rules = state.schedule.rules || state.constraints || [];
   const problem = buildSchedulingProblem(preparedState, rules);
-  const solution = await solveSchedule(problem, {
-    maxTimeSeconds: 120,
-    optimizeSoft: true,
-    lockedMeetings: state.schedule.locks || [],
+  const solution = await runSolverJob({
+    solver: 'exact',
+    problem,
+    options: {
+      maxTimeSeconds: 120,
+      optimizeSoft: true,
+      repairHints: false,
+      lockedMeetings: state.schedule.locks || [],
+      hintMeetings: state.schedule.meetings || [],
+      hintSections: state.schedule.sections || [],
+      numSearchWorkers: 4,
+    },
   });
   if (!solution.ok) throw new Error(`重新排课失败：${solution.reason || solution.status}`);
   const validation = validateSchedule(problem, { ...solution, locks: state.schedule.locks || [] });
@@ -825,6 +831,22 @@ app.get('/api/status', (_req, res) => reply(res, () => {
 }));
 
 app.get('/api/state', (_req, res) => reply(res, () => repository.read()));
+app.get('/api/scheduling-policy', (_req, res) => reply(res, () =>
+  schedulingPolicyForState(repository.read())));
+app.put('/api/scheduling-policy', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const policy = normalizeSchedulingPolicy(req.body || {});
+  repository.write(changedState(state, 'scheduling_policy', policy));
+  return policy;
+}));
+app.get('/api/ap-groups', (_req, res) => reply(res, () => listApGroups(repository.read())));
+app.get('/api/ap-groups/:id', (req, res) => reply(res, () => {
+  const state = repository.read();
+  return {
+    ...apGroupDetail(state, req.params.id),
+    timetable: timetableGrid(state, 'section', req.params.id),
+  };
+}));
 app.get('/api/rules', (_req, res) => reply(res, () => repository.read().constraints || []));
 
 app.put('/api/rules', (req, res) => reply(res, () => {
@@ -1079,35 +1101,32 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     enforceApprovalGates(relaxApprovedRules(problem, approvedRuleIds)),
     strategy,
   );
-  const requestedSeconds = Number(body.max_time_seconds ?? (body.timeout ? Number(body.timeout) / 1000 : 120));
-  const maxTimeSeconds = Math.min(
-    600,
-    Math.max(5, Number.isFinite(requestedSeconds) ? requestedSeconds : 120),
-  );
-  const requestedCandidateCount = Number(body.candidate_count ?? 1);
-  const candidateCount = Number.isFinite(requestedCandidateCount)
-    ? Math.min(5, Math.max(1, Math.floor(requestedCandidateCount)))
-    : 1;
   const priorHint = priorTimetableHintForState(state, problem);
   const solveStartedAt = performance.now();
   const feasibleFirst = body.feasible_first !== false;
-  const solution = feasibleFirst
-    ? await solveFeasibleFirstSchedule(guardedProblem, {
-      maxTimeSeconds,
-      candidateCount,
-      randomSeed: Number.isInteger(body.random_seed) ? body.random_seed : 20260803,
-      freezeMembership: body.lock_section_rosters === true,
-      lockedMeetings,
-      hintMeetings: priorHint.meetings,
-      hintSections: priorHint.sections,
-      deferredRuleIds: approvedHardRuleIds,
-    })
-    : await solveSchedule(guardedProblem, {
-      maxTimeSeconds,
-      optimizeSoft: body.optimize_soft !== false,
-      freezeMembership: body.lock_section_rosters === true,
-      lockedMeetings,
+  const solverJob = createSolverJob(guardedProblem, body, {
+    strategy,
+    lockedMeetings,
+    priorHint,
+    approvedHardRuleIds,
+  });
+  let solution;
+  try {
+    solution = await runSolverJob(solverJob, {
+      timeoutMs: solverJob.options.maxTimeSeconds * 1_000 + 15_000,
     });
+  } catch (error) {
+    return {
+      solved: false,
+      status: error.code || 'SOLVER_WORKER_ERROR',
+      reason: `${error.message}。后端仍在运行，现有课表和金框必要条件均未改变。`,
+      solve_duration_ms: Math.round(performance.now() - solveStartedAt),
+      manual_lock_count: lockedMeetings.filter(lock => lock.origin === 'manual').length,
+      ai_strategy: strategy,
+      ai_warnings: strategyWarnings,
+      prior_timetable_hint: { enabled: priorHint.enabled, reason: priorHint.reason },
+    };
+  }
   const solveDurationMs = Math.round(performance.now() - solveStartedAt);
   const diagnosticFields = {
     solve_duration_ms: solveDurationMs,
@@ -1152,10 +1171,14 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   const validation = validateSchedule(validationProblem, { ...solution, locks: lockedMeetings });
   if (!validation.ok) throw new Error(`求解器结果未通过独立校验: ${validation.hard_violations[0]?.message || '未知错误'}`);
   const deferredRuleIds = new Set(solution.deferred_rule_ids || []);
-  const qualityLimits = body.quality_limits || {};
-  if (typeof qualityLimits !== 'object' || Array.isArray(qualityLimits)) {
+  const requestedQualityLimits = body.quality_limits || {};
+  if (typeof requestedQualityLimits !== 'object' || Array.isArray(requestedQualityLimits)) {
     throw new Error('quality_limits 必须是对象');
   }
+  const qualityLimits = {
+    ...schedulingPolicyForState(state).quality_limits,
+    ...requestedQualityLimits,
+  };
   const savedRules = deferredRuleIds.size
     ? rules.map(rule => deferredRuleIds.has(rule.id)
       ? {
@@ -2184,6 +2207,7 @@ app.post('/api/:entity', (req, res) => reply(res, () => {
   if (!editableEntities.has(entity)) throw new Error(`不支持写入实体: ${entity}`);
   const item = req.body;
   if (!item?.id || typeof item.id !== 'string') throw new Error('新实体必须有字符串 id');
+  validateEntityInput(entity, item);
   const state = repository.read();
   const current = state[entity] || [];
   if (current.some(existing => existing.id === item.id)) throw new Error(`ID 已存在: ${item.id}`);
@@ -2199,6 +2223,7 @@ app.put('/api/:entity/:id', (req, res) => reply(res, () => {
   const index = current.findIndex(item => item.id === req.params.id);
   if (index < 0) throw new Error(`实体不存在: ${req.params.id}`);
   const updated = { ...current[index], ...req.body, id: current[index].id };
+  validateEntityInput(entity, updated);
   const items = [...current]; items[index] = updated;
   if (entity === 'courses') {
     const normalized = normalizeCourseScope(updated);
@@ -2211,14 +2236,34 @@ app.put('/api/:entity/:id', (req, res) => reply(res, () => {
   return updated;
 }));
 
+app.get('/api/entity-dependencies/:entity/:id', (req, res) => reply(res, () => {
+  const entity = req.params.entity;
+  if (!editableEntities.has(entity)) throw new Error(`不支持读取实体依赖: ${entity}`);
+  const state = repository.read();
+  if (!(state[entity] || []).some(item => item.id === req.params.id)) {
+    throw new Error(`实体不存在: ${req.params.id}`);
+  }
+  return entityDependencies(state, entity, req.params.id);
+}));
+
 app.delete('/api/:entity/:id', (req, res) => reply(res, () => {
   const entity = req.params.entity;
   if (!editableEntities.has(entity)) throw new Error(`不支持写入实体: ${entity}`);
   const state = repository.read();
-  const current = state[entity] || [];
-  if (!current.some(item => item.id === req.params.id)) throw new Error(`实体不存在: ${req.params.id}`);
-  repository.write(changedState(state, entity, current.filter(item => item.id !== req.params.id)));
-  return { removed: req.params.id };
+  const deletion = deleteEntityFromState(state, entity, req.params.id, {
+    cascade: req.query.cascade === 'true',
+  });
+  repository.write(changedState(
+    state,
+    entity,
+    deletion.state[entity],
+    deletion.state,
+  ));
+  return {
+    removed: deletion.removed,
+    cascaded: deletion.dependencies.length > 0,
+    dependencies: deletion.dependencies,
+  };
 }));
 
 // Compatibility CRUD endpoint used by the current web UI. Solver and
