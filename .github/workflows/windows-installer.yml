@@ -36,7 +36,10 @@ jobs:
           corepack prepare pnpm@9.0.0 --activate
 
       - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
+        shell: pwsh
+        run: |
+          pnpm config set node-linker hoisted
+          pnpm install --frozen-lockfile
 
       - name: Set up Python
         uses: actions/setup-python@v5
