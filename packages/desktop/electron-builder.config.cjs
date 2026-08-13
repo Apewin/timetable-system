@@ -2,7 +2,8 @@ const { existsSync } = require('node:fs');
 const { resolve } = require('node:path');
 
 const projectRoot = resolve(__dirname, '..', '..');
-const solverExecutable = resolve(__dirname, 'solver-dist', 'timetable-solver.exe');
+const solverDistribution = resolve(__dirname, 'solver-dist', 'timetable-solver');
+const solverExecutable = resolve(solverDistribution, 'timetable-solver.exe');
 const extraResources = [
   {
     from: resolve(__dirname, 'seed-state.json'),
@@ -11,8 +12,8 @@ const extraResources = [
 ];
 if (existsSync(solverExecutable)) {
   extraResources.push({
-    from: solverExecutable,
-    to: 'solver/timetable-solver.exe',
+    from: solverDistribution,
+    to: 'solver',
   });
 }
 

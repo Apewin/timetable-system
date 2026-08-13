@@ -128,7 +128,7 @@ pnpm desktop:test
 pnpm desktop:dir
 ```
 
-`pnpm desktop:win` 只能在已生成 `packages/desktop/solver-dist/timetable-solver.exe` 的 Windows 构建环境中形成完整安装包；仓库的 Windows Actions 已自动完成这一过程。
+`pnpm desktop:win` 只能在已生成 `packages/desktop/solver-dist/timetable-solver/timetable-solver.exe` 及其依赖目录的 Windows 构建环境中形成完整安装包；仓库的 Windows Actions 已自动完成这一过程。
 
 也可以分别启动：
 
