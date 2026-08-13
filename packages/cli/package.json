@@ -10,6 +10,6 @@
   },
   "scripts": {
     "check": "node --check src/cli.mjs && node --check src/command-planner.mjs && node --check src/api-manifest.mjs && node --check src/http-client.mjs && node --check src/export-output.mjs",
-    "test": "node --test test/**/*.test.mjs"
+    "test": "node ../../scripts/run-node-tests.mjs test"
   }
 }

@@ -8,7 +8,7 @@
     "dev": "vite",
     "start": "concurrently --kill-others-on-fail \"pnpm --dir ../backend start\" \"vite\"",
     "build": "vite build",
-    "test": "node --test test/**/*.test.mjs",
+    "test": "node ../../scripts/run-node-tests.mjs test",
     "preview": "vite preview"
   },
   "devDependencies": {

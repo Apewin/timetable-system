@@ -56,8 +56,10 @@ jobs:
         shell: pwsh
         run: |
           pnpm check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:TIMETABLE_DESKTOP_NETWORK_TEST = '1'
           node --test packages/desktop/test/server-smoke.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build NSIS installer
         run: pnpm desktop:win

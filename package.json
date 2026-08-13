@@ -10,13 +10,13 @@
     "build": "pnpm --filter @timetable/web build",
     "dev": "pnpm --filter @timetable/web start",
     "start": "pnpm --filter @timetable/backend start",
-    "desktop:test": "node --test packages/desktop/test/**/*.test.mjs",
+    "desktop:test": "node scripts/run-node-tests.mjs packages/desktop/test",
     "desktop:dir": "pnpm build && electron-builder --config packages/desktop/electron-builder.config.cjs --dir",
     "desktop:win": "pnpm build && electron-builder --config packages/desktop/electron-builder.config.cjs --win nsis --x64 --publish never",
     "tt": "node packages/cli/src/cli.mjs",
     "test": "pnpm --filter @timetable/backend test && pnpm --filter @timetable/web test && pnpm --filter @timetable/cli test && pnpm desktop:test",
     "lint": "eslint packages/backend packages/cli packages/desktop/*.mjs packages/desktop/test packages/web/app.js packages/web/vite.config.js packages/web/manual-course-scope.mjs packages/web/dom-safety.mjs packages/web/quality-analysis-view.mjs packages/web/test",
-    "check": "pnpm --filter @timetable/backend check && pnpm --filter @timetable/cli check && node --check packages/desktop/main.mjs && node --check packages/desktop/runtime.mjs && pnpm lint && pnpm test && pnpm --filter @timetable/backend test:integration && pnpm build"
+    "check": "pnpm --filter @timetable/backend check && pnpm --filter @timetable/cli check && node --check packages/desktop/main.mjs && node --check packages/desktop/runtime.mjs && node --check scripts/run-node-tests.mjs && pnpm lint && pnpm test && pnpm --filter @timetable/backend test:integration && pnpm build"
   },
   "engines": {
     "node": ">=18.0.0"
