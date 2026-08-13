@@ -77,6 +77,7 @@ Excel / 页面操作 ─> packages/web ─┐
 | `packages/backend` | 当前唯一网页后端、数据导入、规则编译、排课求解、校验、AI 接口 |
 | `packages/cli` | 面向管理员和大模型的机器可读 API 适配器，不包含独立求解逻辑 |
 | `packages/web` | 当前网页界面、前端测试和 Vite 构建配置 |
+| `packages/desktop` | Electron 桌面入口、空白首次启动状态、Windows OR-Tools sidecar 与安装器配置 |
 | `packages/backend/assets` | 商用导出所需的默认班级、教师 Excel 模板 |
 | `timetable.json` | 本地运行时状态文件，包含学校数据，不纳入 Git |
 | `backups/`、`outputs/` | 本地备份和导出结果，均不纳入 Git |
@@ -111,6 +112,23 @@ pnpm dev
 
 - `packages/backend/src/server.mjs`：端口 `3001`
 - Vite：端口 `3000`，并把 `/api` 代理到后端
+
+### Windows 桌面安装包
+
+Windows 测试版使用 Electron 封装同一套前端和 Node 后端，并把官方 Python OR-Tools 9.15 打包为独立求解器进程。JavaScript 仍负责建立完全相同的 CP-SAT 模型、约束、目标函数和结果校验；Windows 只替换原生求解器的执行载体，不会使用另一套排课算法。
+
+在 GitHub 仓库的 **Actions → Windows installer → Run workflow** 运行构建。成功后，从该次任务的 Artifacts 下载 `AP-Timetable-Windows-x64`，解压后运行其中的 `AP-Timetable-0.1.0-x64-Setup.exe`。该安装包面向 64 位 Windows 10/11，用户无需另装 Node.js、Python 或 OR-Tools。
+
+安装包不会嵌入或上传本机的 `timetable.json`，首次启动会创建空白学校数据。Windows 数据保存在 `%APPDATA%\AP排课系统\timetable.json`；可以通过应用菜单“文件 → 打开数据目录”查看。若需要用现有学校数据测试，应先退出应用，再把已有 `timetable.json` 复制到该目录并保留备份。卸载应用不会被设计为自动删除这份业务数据。
+
+本地开发检查：
+
+```bash
+pnpm desktop:test
+pnpm desktop:dir
+```
+
+`pnpm desktop:win` 只能在已生成 `packages/desktop/solver-dist/timetable-solver.exe` 的 Windows 构建环境中形成完整安装包；仓库的 Windows Actions 已自动完成这一过程。
 
 也可以分别启动：
 

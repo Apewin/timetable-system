@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runSolverJob } from '../src/solver-job-runner.mjs';
+import { runSolverJob, solverWorkerForkOptions } from '../src/solver-job-runner.mjs';
+
+test('runs a forked solver worker in Node mode inside packaged Electron', () => {
+  const options = solverWorkerForkOptions({
+    electronVersion: '43.4.0',
+    environment: { TIMETABLE_SOLVER_SIDECAR: 'C:\\solver\\timetable-solver.exe' },
+  });
+
+  assert.equal(options.env.ELECTRON_RUN_AS_NODE, '1');
+  assert.equal(options.env.TIMETABLE_SOLVER_SIDECAR, 'C:\\solver\\timetable-solver.exe');
+  assert.equal(options.serialization, 'advanced');
+});
 
 test('reports a native solver worker exit without terminating the backend process', async () => {
   const workerUrl = new URL('./fixtures/solver-exit-worker.mjs', import.meta.url);

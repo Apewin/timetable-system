@@ -1,0 +1,60 @@
+{
+  "version": "0.1.0",
+  "meta": {
+    "school": "新学校",
+    "revision": 0
+  },
+  "config": {
+    "time_model": {
+      "days": 5,
+      "periods_per_day": 10,
+      "lunch_break_after_period": 5
+    },
+    "walk_blocks": []
+  },
+  "teachers": [],
+  "rooms": [],
+  "courses": [],
+  "students": [],
+  "admin_classes": [],
+  "teaching_classes": [],
+  "teaching_assignments": [],
+  "ap_selections": [],
+  "constraints": [],
+  "ap_sections": [],
+  "teaching_tasks": [],
+  "assignments": [],
+  "locks": [],
+  "courseHoursByGrade": {},
+  "elective_sections": [],
+  "last_solve": null,
+  "schedule": {
+    "version": 0,
+    "sections": [],
+    "meetings": [],
+    "assignments": [],
+    "locks": []
+  },
+  "solve_status": null,
+  "section_plan": [],
+  "selection_blocks": [],
+  "manual_plan": {
+    "version": 0,
+    "draft_revision": 0,
+    "status": "draft",
+    "placements": [],
+    "locks": [],
+    "issues": []
+  },
+  "graduation_archives": [],
+  "section_overrides": [],
+  "ap_block_config": {
+    "enabled": false,
+    "blocks": [],
+    "course_block_ids": {},
+    "offering_block_ids": {}
+  },
+  "schedule_archives": [],
+  "ap_block_assignments": [],
+  "ap_block_assignment_import": null
+}

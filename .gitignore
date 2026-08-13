@@ -12,6 +12,10 @@ packages/web/.env.local
 dist/
 build/
 outputs/
+/release/
+/packages/desktop/solver-build/
+/packages/desktop/solver-dist/
+/*.spec
 
 # IDE
 .vscode/

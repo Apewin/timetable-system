@@ -30,6 +30,14 @@ export default [
     },
   },
   {
+    files: ['packages/desktop/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: globals.node,
+    },
+  },
+  {
     files: ['packages/web/app.js', 'packages/web/vite.config.js'],
     languageOptions: {
       ecmaVersion: 'latest',

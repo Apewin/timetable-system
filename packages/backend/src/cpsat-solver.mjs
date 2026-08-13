@@ -1,11 +1,8 @@
-import { createRequire } from 'node:module';
 import { constructInitialSchedule } from './initial-schedule.mjs';
-
-const require = createRequire(import.meta.url);
-const {
+import {
   CpModel, CpSolver, CpSolverStatus, LinearExpr,
   VariableSelectionStrategy, DomainReductionStrategy,
-} = require('@ortools-node/cp-sat');
+} from './cp-sat-runtime.mjs';
 
 const OBJECTIVE_MODES = new Set([
   'lexicographic',

@@ -1,0 +1,78 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/windows-installer]
+    paths:
+      - '.github/workflows/windows-installer.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'packages/backend/**'
+      - 'packages/cli/**'
+      - 'packages/desktop/**'
+      - 'packages/web/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable pnpm 9
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.0.0 --activate
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build official OR-Tools solver sidecar
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check ortools==9.15.6755 pyinstaller==6.22.0
+          python -m PyInstaller --noconfirm --clean --onefile --collect-all ortools --name timetable-solver --workpath packages/desktop/solver-build --distpath packages/desktop/solver-dist packages/desktop/solver_sidecar.py
+          $solver = (Resolve-Path 'packages/desktop/solver-dist/timetable-solver.exe').Path
+          "TIMETABLE_SOLVER_SIDECAR=$solver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TIMETABLE_TEST_SOLVER_EXECUTABLE=$solver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify solver and application
+        shell: pwsh
+        run: |
+          pnpm check
+          $env:TIMETABLE_DESKTOP_NETWORK_TEST = '1'
+          node --test packages/desktop/test/server-smoke.test.mjs
+
+      - name: Build NSIS installer
+        run: pnpm desktop:win
+
+      - name: Verify installer exists
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release -Filter '*-Setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer was not created' }
+          Get-FileHash $installer.FullName -Algorithm SHA256
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AP-Timetable-Windows-x64
+          path: release/*-Setup.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -10,6 +10,19 @@ function solverJobError(code, message, details = {}) {
   return error;
 }
 
+export function solverWorkerForkOptions({
+  electronVersion = process.versions.electron,
+  environment = process.env,
+} = {}) {
+  const env = { ...environment };
+  if (electronVersion) env.ELECTRON_RUN_AS_NODE = '1';
+  return {
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    serialization: 'advanced',
+    env,
+  };
+}
+
 /**
  * Runs native OR-Tools work behind a process seam.  A native assertion may
  * terminate the Adapter process, but the HTTP backend receives a normal
@@ -21,10 +34,7 @@ export function runSolverJob(job, {
   onProgress,
 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = fork(fileURLToPath(workerUrl), [], {
-      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
-      serialization: 'advanced',
-    });
+    const child = fork(fileURLToPath(workerUrl), [], solverWorkerForkOptions());
     let settled = false;
     let stderr = '';
     const finish = (action, value) => {
