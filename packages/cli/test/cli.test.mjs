@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import { runCli } from '../src/cli.mjs';
@@ -286,6 +287,7 @@ test('export generate writes both generated workbooks into the confirmed output 
   const directories = [];
   const writes = [];
   const output = [];
+  const outputDirectory = resolve('/work', 'exports');
   const exitCode = await runCli(['export', 'generate', '--output-dir', 'exports', '--apply'], {
     upload: async request => {
       assert.equal(request.path, '/export/templates/generate');
@@ -309,10 +311,10 @@ test('export generate writes both generated workbooks into the confirmed output 
   });
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(directories, [{ path: '/work/exports', options: { recursive: true } }]);
+  assert.deepEqual(directories, [{ path: outputDirectory, options: { recursive: true } }]);
   assert.deepEqual(writes, [
-    { path: '/work/exports/班级课表.xlsx', data: 'class' },
-    { path: '/work/exports/教师课表.xlsx', data: 'teacher' },
+    { path: join(outputDirectory, '班级课表.xlsx'), data: 'class' },
+    { path: join(outputDirectory, '教师课表.xlsx'), data: 'teacher' },
   ]);
   assert.deepEqual(JSON.parse(output.join('')).data.files.map(file => file.path), writes.map(file => file.path));
 });
