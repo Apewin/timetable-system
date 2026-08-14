@@ -6002,12 +6002,15 @@ async function executeAiAssistantAction(action, card, confirmButton) {
   const isTeacherSwap = action.type === 'swap_teaching_assignments';
   const isScheduleMove = action.type === 'move_schedule_meeting';
   const isCliOperation = action.type === 'cli_operation';
+  const isClearUnlocked = isCliOperation && action.operation === 'schedule.clear-unlocked';
   if (!isTeacherSwap && !isScheduleMove && !isCliOperation) return;
   const confirmation = isTeacherSwap
     ? '确认调换这两项课程的授课教师吗？当前课表会标记为待重排。'
     : isScheduleMove
       ? `确认将“${action.course_name}”从${action.from_label}调整到${action.to_label}吗？`
-      : `确认通过 CLI 执行“${action.title || action.operation}”吗？`;
+      : isClearUnlocked
+        ? '确认清除全部未锁定课时吗？系统会原位保留金框必要条件及其他已锁定课时。'
+        : `确认通过 CLI 执行“${action.title || action.operation}”吗？`;
   if (!confirm(confirmation)) return;
   confirmButton.disabled = true;
   setAiAssistantStatus(isTeacherSwap
@@ -6047,7 +6050,9 @@ async function executeAiAssistantAction(action, card, confirmButton) {
       ? '教师分工已更新。现有课表已标记为待重排，请重新确认必要条件后再运行 AI 排课。'
       : isScheduleMove
         ? '课程时段已调整并通过硬约束校验，当前课表已刷新。'
-        : `CLI 操作 ${action.operation} 已执行，页面数据已刷新。`);
+        : isClearUnlocked
+          ? (result.message || '未锁定课时已清除，所有金框和其他已锁定课时均已保留。')
+          : `CLI 操作 ${action.operation} 已执行，页面数据已刷新。`);
     setAiAssistantStatus('操作已完成，页面数据已刷新。');
     await loadViewData(getCurrentView());
     updateAiAssistantContext();

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assistantCliMutationProposal,
+  assistantCliTools,
   executeAssistantCliRead,
   executeAssistantCliWrite,
   executeConfirmedAssistantCliAction,
@@ -107,4 +109,62 @@ test('assistant CLI bridge never exposes graduation or generic deletion as model
     baseUrl: 'http://127.0.0.1:4321/api',
     request: async () => assert.fail('forbidden destructive operations must not reach the API'),
   }), /未获准/);
+});
+
+test('assistant offers a revision-bound clear-unlocked operation with an exact impact preview', () => {
+  assert.ok(assistantCliTools().some(tool =>
+    tool.operation === 'schedule.clear-unlocked' && tool.mode === 'confirm'));
+
+  const proposal = assistantCliMutationProposal({
+    operation: 'schedule.clear-unlocked', params: {}, body: null,
+  }, {
+    meta: { revision: 23 },
+    manual_plan: {
+      status: 'confirmed',
+      locks: [{ section_id: 'SEC_LOCKED', slot_id: 'D1P1', origin: 'manual' }],
+    },
+    schedule: {
+      sections: [],
+      locks: [{ section_id: 'SEC_LOCKED', slot_id: 'D1P1', origin: 'manual' }],
+      meetings: [
+        { section_id: 'SEC_LOCKED', slot_id: 'D1P1' },
+        { section_id: 'SEC_OPEN', slot_id: 'D1P2' },
+      ],
+    },
+  });
+
+  assert.equal(proposal.operation, 'schedule.clear-unlocked');
+  assert.equal(proposal.expected_revision, 23);
+  assert.deepEqual(proposal.body, { expected_revision: 23 });
+  assert.match(proposal.impacts.join('\n'), /保留 1 个已锁定课时/);
+  assert.match(proposal.impacts.join('\n'), /清除 1 个未锁定课时/);
+});
+
+test('clear-unlocked revision is locally managed even when a model misplaces it in path params', () => {
+  const tool = assistantCliTools().find(item => item.operation === 'schedule.clear-unlocked');
+  assert.deepEqual(tool.path_parameters, []);
+  assert.deepEqual(tool.body, { required: [], optional: [] });
+
+  const proposal = assistantCliMutationProposal({
+    operation: 'schedule.clear-unlocked',
+    params: { expected_revision: 999 },
+    body: null,
+  }, {
+    meta: { revision: 24 },
+    manual_plan: {
+      status: 'confirmed',
+      locks: [{ section_id: 'SEC_LOCKED', slot_id: 'D1P1', origin: 'manual' }],
+    },
+    schedule: {
+      sections: [],
+      locks: [{ section_id: 'SEC_LOCKED', slot_id: 'D1P1', origin: 'manual' }],
+      meetings: [
+        { section_id: 'SEC_LOCKED', slot_id: 'D1P1' },
+        { section_id: 'SEC_OPEN', slot_id: 'D1P2' },
+      ],
+    },
+  });
+
+  assert.deepEqual(proposal.params, {});
+  assert.deepEqual(proposal.body, { expected_revision: 24 });
 });

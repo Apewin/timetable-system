@@ -80,6 +80,29 @@ test('builds aggregate-only context for the page assistant', () => {
   assert.equal(JSON.stringify(snapshot).includes('202501'), false);
 });
 
+test('assistant context distinguishes scheduled, locked and unlocked timetable meetings', () => {
+  const snapshot = assistantContextSnapshot({
+    manual_plan: {
+      status: 'confirmed',
+      locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
+    },
+    schedule: {
+      sections: [],
+      assignments: Array.from({ length: 20 }, (_, index) => ({ task_id: `A${index}` })),
+      meetings: [
+        { section_id: 'SEC1', slot_id: 'D1P1' },
+        { section_id: 'SEC2', slot_id: 'D1P2' },
+      ],
+      locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
+    },
+  });
+
+  assert.equal(snapshot.system_summary.scheduled_meeting_count, 2);
+  assert.equal(snapshot.system_summary.locked_schedule_meeting_count, 1);
+  assert.equal(snapshot.system_summary.unlocked_schedule_meeting_count, 1);
+  assert.equal(snapshot.system_summary.scheduled_student_assignment_count, 20);
+});
+
 test('includes a selected teacher’s concrete timetable and locally safe move candidates without student identifiers', () => {
   const snapshot = assistantContextSnapshot({
     teachers: [{ id: 'T1', name: '甲老师' }, { id: 'T2', name: '乙老师' }],
@@ -221,6 +244,79 @@ test('page assistant turns a CLI mutation into a revision-bound confirmation act
   assert.equal(result.action.expected_revision, 17);
   assert.match(result.action.impacts[0], /确认/);
   assert.equal(result.cli_usage, undefined);
+});
+
+test('explicit clear-unlocked language produces the safe action without waiting for the model', async () => {
+  let fetchCalls = 0;
+  const fetchImpl = async () => {
+    fetchCalls += 1;
+    return ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({
+        response: '当前系统没有提供仅清空未锁定部分的直接命令。',
+        action: null,
+        cli_call: null,
+      }) } }] }),
+    });
+  };
+  const result = await askAiAssistant({
+    message: '仅清空未锁定部分',
+    context: { view: 'timetable-all' },
+    state: {
+      meta: { revision: 31 },
+      manual_plan: {
+        status: 'confirmed',
+        locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
+      },
+      schedule: {
+        sections: [],
+        locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
+        meetings: [
+          { section_id: 'SEC1', slot_id: 'D1P1' },
+          { section_id: 'SEC2', slot_id: 'D1P2' },
+        ],
+      },
+    },
+  }, {
+    fetchImpl,
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+
+  assert.equal(result.action.operation, 'schedule.clear-unlocked');
+  assert.equal(result.action.expected_revision, 31);
+  assert.match(result.response, /保留 1 个已锁定课时/);
+  assert.match(result.response, /清除 1 个未锁定课时/);
+  assert.equal(fetchCalls, 0);
+});
+
+test('keep-locked then clear-remainder language routes locally to the same safe action', async () => {
+  const result = await askAiAssistant({
+    message: '保留锁定课程，清空剩余课程',
+    context: { view: 'timetable-all' },
+    state: {
+      meta: { revision: 41 },
+      manual_plan: {
+        status: 'confirmed',
+        locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
+      },
+      schedule: {
+        sections: [],
+        locks: [{ section_id: 'SEC1', slot_id: 'D1P1', origin: 'manual' }],
+        meetings: [
+          { section_id: 'SEC1', slot_id: 'D1P1' },
+          { section_id: 'SEC2', slot_id: 'D1P2' },
+        ],
+      },
+    },
+  }, {
+    fetchImpl: async () => assert.fail('明确的安全业务动作不应交给模型解释'),
+    config: { apiKey: 'test-key', apiUrl: 'https://example.test/v1', model: 'test-model' },
+  });
+
+  assert.equal(result.action.operation, 'schedule.clear-unlocked');
+  assert.equal(result.action.expected_revision, 41);
+  assert.match(result.response, /保留 1 个已锁定课时/);
+  assert.match(result.response, /清除 1 个未锁定课时/);
 });
 
 test('accepts only a validated teacher-swap proposal from the model', async () => {

@@ -73,3 +73,36 @@ test('confirmed assistant CLI card executes the exact reviewed operation endpoin
   assert.match(statuses.at(-1), /完成/);
   assert.match(messages.at(-1).content, /CLI/);
 });
+
+test('clear-unlocked confirmation uses scheduling language and reports the exact result', async () => {
+  const confirmations = [];
+  const messages = [];
+  const executeSource = sourceBetween(
+    'async function executeAiAssistantAction',
+    '\nfunction renderAiAssistantActionProposal',
+  );
+  const execute = new Function(
+    'confirm', 'api', 'setAiAssistantStatus', 'loadViewData', 'getCurrentView',
+    'updateAiAssistantContext', 'renderAiAssistantMessage', 'appendAiAssistantActionLine',
+    'document', `${executeSource}; return executeAiAssistantAction;`,
+  )(
+    message => { confirmations.push(message); return true; },
+    async () => ({ message: '已保留 78 个锁定课时，并清除 327 个未锁定课时。' }),
+    () => {}, async () => {}, () => 'timetable-all', () => {},
+    (role, content) => messages.push({ role, content }),
+    () => {}, { createElement: () => ({ textContent: '' }) },
+  );
+  const card = { classList: { add() {} }, replaceChildren() {}, appendChild() {} };
+
+  await execute({
+    type: 'cli_operation',
+    operation: 'schedule.clear-unlocked',
+    params: {},
+    body: { expected_revision: 461 },
+    expected_revision: 461,
+  }, card, { disabled: false });
+
+  assert.match(confirmations[0], /清除.*未锁定/);
+  assert.match(confirmations[0], /保留.*金框/);
+  assert.equal(messages.at(-1).content, '已保留 78 个锁定课时，并清除 327 个未锁定课时。');
+});
