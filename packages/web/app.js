@@ -1892,6 +1892,37 @@ async function saveCurrentScheduleArchive() {
   }
 }
 
+async function deleteScheduleArchive(archiveId, button) {
+  if (!archiveId || !button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const preview = await api(`/schedule-archives/${encodeURIComponent(archiveId)}/delete-preview`);
+    const archive = preview.archive || {};
+    const confirmed = confirm(
+      `永久删除过往课表“${archive.name || archiveId}”吗？\n\n`
+      + `储存时间：${formatArchiveDateTime(archive.saved_at)}\n`
+      + '删除后无法恢复，但当前正在使用的课表不会变化。',
+    );
+    if (!confirmed) return;
+    const result = await api(`/schedule-archives/${encodeURIComponent(archiveId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        expected_revision: preview.revision,
+        confirmation: archive.id,
+      }),
+    });
+    if (window._selectedScheduleArchiveId === archiveId) {
+      window._selectedScheduleArchiveId = null;
+    }
+    showToast(result.message, 'success');
+    await loadPastTimetables();
+  } catch {
+    // api() already displays the backend's actionable safety error.
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
 async function loadPastTimetables() {
   const content = document.getElementById('past-timetables-content');
   if (!content) return;
@@ -1912,7 +1943,10 @@ async function loadPastTimetables() {
               <p>${archive.assignments_count || 0} 条学生课时 · ${archive.meetings_count || 0} 个课程时段${archive.solve_duration_ms != null ? ` · 排课用时 ${(archive.solve_duration_ms / 1000).toFixed(1)} 秒` : ''}</p>
               ${archive.quality_exception_approval ? `<p class="validation-result warning">质量例外：${escapeHtml(archive.quality_exception_approval.approved_by)} 于 ${escapeHtml(formatArchiveDateTime(archive.quality_exception_approval.approved_at))} 批准；${escapeHtml(archive.quality_exception_approval.reason)}</p>` : ''}
             </div>
-            <button class="btn btn-primary" type="button" data-open-archive="${safeDataAttribute(archive.id)}">查看课表</button>
+            <div class="schedule-archive-card-actions">
+              <button class="btn btn-primary" type="button" data-open-archive="${safeDataAttribute(archive.id)}">查看课表</button>
+              <button class="btn btn-danger" type="button" data-delete-archive="${safeDataAttribute(archive.id)}">删除存档</button>
+            </div>
           </article>
         `).join('')}
       </div>
@@ -1920,6 +1954,9 @@ async function loadPastTimetables() {
     `;
     content.querySelectorAll('[data-open-archive]').forEach(button => {
       button.addEventListener('click', () => openPastTimetable(button.dataset.openArchive));
+    });
+    content.querySelectorAll('[data-delete-archive]').forEach(button => {
+      button.addEventListener('click', () => deleteScheduleArchive(button.dataset.deleteArchive, button));
     });
     const selected = archives.find(archive => archive.id === window._selectedScheduleArchiveId);
     if (selected) await openPastTimetable(selected.id);

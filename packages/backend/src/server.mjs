@@ -1867,6 +1867,41 @@ app.post('/api/schedule-archives', (req, res) => reply(res, () => {
   };
 }));
 
+app.get('/api/schedule-archives/:archiveId/delete-preview', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const archives = state.schedule_archives || [];
+  const archive = archives.find(item => item.id === req.params.archiveId);
+  if (!archive) throw new Error('未找到该过往课表');
+  return {
+    archive: archiveSummary(archive),
+    revision: repository.revision(state),
+    remaining_count: Math.max(0, archives.length - 1),
+  };
+}));
+
+app.delete('/api/schedule-archives/:archiveId', (req, res) => reply(res, () => {
+  const archiveId = req.params.archiveId;
+  if (importText(req.body?.confirmation) !== archiveId) {
+    throw new Error('删除确认与所选过往课表不一致，请刷新页面后重试');
+  }
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('删除确认缺少有效的数据版本，请重新打开确认窗口');
+  }
+  const state = repository.read();
+  const archives = state.schedule_archives || [];
+  const archive = archives.find(item => item.id === archiveId);
+  if (!archive) throw new Error('未找到该过往课表');
+  const remaining = archives.filter(item => item.id !== archiveId);
+  const saved = repository.write({ ...state, schedule_archives: remaining }, { expectedRevision });
+  return {
+    message: `已删除过往课表“${archive.name || archive.id}”；当前课表没有变化`,
+    deleted_archive: archiveSummary(archive),
+    remaining_count: remaining.length,
+    revision: repository.revision(saved),
+  };
+}));
+
 app.get('/api/schedule-archives/:archiveId', (req, res) => reply(res, () => {
   const archive = (repository.read().schedule_archives || [])
     .find(item => item.id === req.params.archiveId);
