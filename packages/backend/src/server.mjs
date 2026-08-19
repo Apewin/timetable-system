@@ -6,7 +6,7 @@ import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { StateRepository } from './state-repository.mjs';
 import { expandScheduleAssignments as expandedAssignments } from './schedule-projection.mjs';
-import { clearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
+import { clearUnlockedSchedule, previewClearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
 import { apGroupDetail, listApGroups } from './ap-group-projection.mjs';
 import { normalizeSchedulingPolicy, schedulingPolicyForState } from './scheduling-policy.mjs';
 import { validateRules } from './rule-schema.mjs';
@@ -1316,6 +1316,14 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
 
 app.post('/api/solve', (req, res) => reply(res, async () =>
   solveAndPersist(repository.read(), req.body || {})));
+
+app.get('/api/schedule/clear-unlocked/preview', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  return {
+    ...previewClearUnlockedSchedule(state),
+    revision: repository.revision(state),
+  };
+}));
 
 app.post('/api/schedule/clear-unlocked', (req, res) => reply(res, () => {
   const expectedRevision = Number(req.body?.expected_revision);

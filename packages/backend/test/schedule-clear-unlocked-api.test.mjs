@@ -43,6 +43,21 @@ test('confirmed clear-unlocked API persists only locked timetable meetings', asy
   });
 
   const port = server.address().port;
+  const previewResponse = await fetch(`http://127.0.0.1:${port}/api/schedule/clear-unlocked/preview`);
+  const previewPayload = await previewResponse.json();
+
+  assert.equal(previewResponse.status, 200);
+  assert.equal(previewPayload.ok, true);
+  assert.deepEqual(previewPayload.data, {
+    total_meetings: 2,
+    retained_locked_meetings: 1,
+    cleared_unlocked_meetings: 1,
+    preserved_lock_count: 1,
+    orphaned_lock_count: 0,
+    revision: 9,
+  });
+  assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).schedule.meetings.length, 2);
+
   const response = await fetch(`http://127.0.0.1:${port}/api/assistant/actions/execute-cli-operation`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -13,6 +13,7 @@ import {
   shouldCollapseAdminSections,
 } from './manual-course-scope.mjs';
 import { escapeHtml, safeDataAttribute } from './dom-safety.mjs';
+import { manualSolvedCellsBySlot } from './manual-solved-timetable.mjs';
 import { qualityMetricSummary } from './quality-analysis-view.mjs';
 
 const API_BASE = '/api';
@@ -925,7 +926,9 @@ function renderManualPlanControls(message = '') {
   if (message) {
     status.textContent = message;
   } else if (confirmed) {
-    status.textContent = `已锁定：${plan.counts?.visual_placements || placementCount} 个手动格，展开为 ${plan.counts?.section_locks || plan.locks?.length || 0} 个 section 必要条件。AI 排课不会移动金框课程。`;
+    status.textContent = window._manualScheduleAvailable === true
+      ? `完整课表已生成并显示在下方：${plan.counts?.section_locks || plan.locks?.length || 0} 个金框必要条件保持锁定，其余课程标记为“AI 已排”。`
+      : `已锁定：${plan.counts?.visual_placements || placementCount} 个手动格，展开为 ${plan.counts?.section_locks || plan.locks?.length || 0} 个 section 必要条件。AI 排课不会移动金框课程。`;
   } else if (plan.status === 'stale') {
     status.textContent = plan.issues?.[0]?.message || '输入数据已变化，请重新校验并确认必要条件。';
   } else {
@@ -1029,10 +1032,111 @@ function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons =
     ${conflictReasons.length ? `<span class="manual-slot-conflict-mark" aria-label="${conflictTitle}" title="${conflictTitle}"></span>` : ''}`;
 }
 
+function shouldShowManualGeneratedTimetable() {
+  return window._manualScheduleAvailable === true && manualPlanIsConfirmed();
+}
+
+function manualGeneratedSlotMarkup(slot) {
+  const groups = Array.isArray(slot.split_groups) ? slot.split_groups : [];
+  const details = [slot.class_label, slot.section_label, slot.teacher, slot.room]
+    .filter(value => value && value !== '—');
+  const groupsMarkup = groups.length ? `
+    <span class="manual-generated-groups">
+      ${groups.map(group => {
+        const groupMeta = [group.class_label, group.section_label, group.teacher]
+          .filter(value => value && value !== '—')
+          .join(' · ');
+        return `<span class="manual-generated-group">${escapeHtml(group.course || group.section_id || '课程')}${groupMeta ? ` · ${escapeHtml(groupMeta)}` : ''}</span>`;
+      }).join('')}
+    </span>` : '';
+  const badge = slot.manual_lock_state === 'all'
+    ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">🔒</span>'
+    : slot.manual_lock_state === 'partial'
+      ? '<span class="manual-generated-badge partial" title="该分流时段中部分课程为必要条件">部分金框</span>'
+      : '<span class="manual-generated-badge" title="由 AI 补全的课程">AI 已排</span>';
+  return `
+    <div class="manual-slot-course manual-generated-course">
+      <span class="manual-generated-course-copy">
+        <span class="manual-generated-course-name">${escapeHtml(getCourseName(slot) || '课程')}</span>
+        ${groupsMarkup}
+        ${!groups.length && details.length ? `<span class="manual-generated-course-meta">${escapeHtml(details.join(' · '))}</span>` : ''}
+      </span>
+      ${badge}
+    </div>`;
+}
+
+function renderSolvedManualTimetableGrid(timetable) {
+  const grid = document.getElementById('manual-timetable-grid');
+  if (!grid) return;
+  const cells = manualSolvedCellsBySlot(timetable, window._manualPlan?.locks || []);
+  const days = ['周一', '周二', '周三', '周四', '周五'];
+  let html = '<div class="manual-grid-head">节次</div>'
+    + days.map(day => `<div class="manual-grid-head">${day}</div>`).join('');
+  for (let period = 1; period <= 10; period++) {
+    html += `<div class="manual-grid-period">第 ${period} 节</div>`;
+    for (let day = 1; day <= 5; day++) {
+      const slotId = manualSlotId(day, period);
+      const slot = cells.get(slotId);
+      if (!slot) {
+        html += '<div class="manual-slot"><span class="manual-slot-placeholder">空堂</span></div>';
+        continue;
+      }
+      const category = timetableCourseCategory(slot);
+      const lockClass = slot.manual_lock_state === 'all'
+        ? 'is-locked'
+        : slot.manual_lock_state === 'partial'
+          ? 'is-partially-locked'
+          : '';
+      html += `<div class="manual-slot manual-generated-slot has-course category-${category} ${lockClass}" data-slot-id="${safeDataAttribute(slotId)}" title="${safeDataAttribute(getCourseName(slot) || '课程')}">
+        ${manualGeneratedSlotMarkup(slot)}
+      </div>`;
+    }
+  }
+  grid.innerHTML = html;
+  renderManualPlanControls();
+}
+
+async function loadManualGeneratedTimetable(classId, { force = false } = {}) {
+  if (!classId || !shouldShowManualGeneratedTimetable()) return null;
+  const cache = window._manualGeneratedTimetables ||= new Map();
+  const pending = window._manualGeneratedTimetableRequests ||= new Map();
+  if (force) cache.delete(classId);
+  if (cache.has(classId)) return cache.get(classId);
+  if (pending.has(classId)) return pending.get(classId);
+  const request = api(`/timetable/class/${encodeURIComponent(classId)}`)
+    .then(timetable => {
+      cache.set(classId, timetable);
+      if (manualCurrentClassId() === classId && shouldShowManualGeneratedTimetable()) {
+        renderSolvedManualTimetableGrid(timetable);
+      }
+      return timetable;
+    })
+    .catch(error => {
+      if (manualCurrentClassId() === classId) {
+        const grid = document.getElementById('manual-timetable-grid');
+        if (grid) grid.innerHTML = `<div class="manual-generated-loading">无法读取完整课表：${escapeHtml(error.message)}</div>`;
+      }
+      return null;
+    })
+    .finally(() => pending.delete(classId));
+  pending.set(classId, request);
+  return request;
+}
+
 function renderManualTimetableGrid() {
   const grid = document.getElementById('manual-timetable-grid');
   const classId = manualCurrentClassId();
   if (!grid || !classId) return;
+  if (shouldShowManualGeneratedTimetable()) {
+    const timetable = window._manualGeneratedTimetables?.get(classId);
+    if (timetable) {
+      renderSolvedManualTimetableGrid(timetable);
+    } else {
+      grid.innerHTML = '<div class="manual-generated-loading">正在读取 AI 生成的完整课表…</div>';
+      void loadManualGeneratedTimetable(classId);
+    }
+    return;
+  }
   const drafts = readManualDrafts();
   const draft = drafts[classId] || {};
   const conflicts = manualConflictMap();
@@ -1163,6 +1267,12 @@ async function loadManualTimetable() {
   window._manualSections = manualPlan.catalog?.sections || [];
   window._manualPlan = manualPlan;
   window._manualScheduleAvailable = status.solve_status === 'valid';
+  window._manualHasSchedule = Number(status.counts?.assignments || 0) > 0;
+  window._manualGeneratedTimetables = new Map();
+  window._manualGeneratedTimetableRequests = new Map();
+  applyScheduleArchiveStatus(status);
+  const clearUnlockedButton = document.getElementById('manual-clear-unlocked-schedule');
+  if (clearUnlockedButton) clearUnlockedButton.disabled = !window._manualHasSchedule;
   const selector = document.getElementById('manual-class-select');
   const selectableClasses = teachingClasses
     .map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` }))
@@ -1221,6 +1331,9 @@ async function loadManualTimetable() {
       // timetable stale on the server, so it must not be saved as the result
       // of this new plan before AI completion runs again.
       window._manualScheduleAvailable = false;
+      window._manualGeneratedTimetables = new Map();
+      window._manualGeneratedTimetableRequests = new Map();
+      applyScheduleArchiveStatus({ solve_status: 'stale', review_required: false });
       hydrateManualDrafts(plan);
       renderManualCoursePool();
       renderManualTimetableGrid();
@@ -1276,6 +1389,16 @@ async function loadManualTimetable() {
         status: result.status,
       };
       window._manualScheduleAvailable = true;
+      window._manualHasSchedule = true;
+      window._manualGeneratedTimetables = new Map();
+      window._manualGeneratedTimetableRequests = new Map();
+      const clearUnlockedButton = document.getElementById('manual-clear-unlocked-schedule');
+      if (clearUnlockedButton) clearUnlockedButton.disabled = false;
+      applyScheduleArchiveStatus({
+        solve_status: 'valid',
+        review_required: result.publication_status === 'review_required',
+      });
+      await loadManualGeneratedTimetable(manualCurrentClassId(), { force: true });
       const warning = result.ai_warnings?.length ? `；${result.ai_warnings.join('；')}` : '';
       const incompleteChoices = result.incomplete_required_choices || [];
       const selectionWarning = incompleteChoices.length
@@ -1331,6 +1454,9 @@ async function loadManualTimetable() {
   renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
+  if (shouldShowManualGeneratedTimetable()) {
+    await loadManualGeneratedTimetable(manualCurrentClassId());
+  }
   if (!hydratedFromBackend && manualPlacementsFromDrafts().length) queueManualDraftSync();
 }
 
@@ -1615,6 +1741,52 @@ async function addScheduleEditorOverlay(template, startSlotId) {
   await renderScheduleEditorTimetable();
 }
 
+async function clearManualUnlockedSchedule() {
+  const button = document.getElementById('manual-clear-unlocked-schedule');
+  if (!button || window._manualClearUnlockedRunning === true) return;
+  window._manualClearUnlockedRunning = true;
+  button.disabled = true;
+  renderManualPlanControls('正在核对锁定课时和可清除课时…');
+  try {
+    const preview = await api('/schedule/clear-unlocked/preview');
+    if (!preview.cleared_unlocked_meetings) {
+      const message = `当前课表没有未锁定课时；${preview.retained_locked_meetings || 0} 个锁定课时保持不变。`;
+      renderManualPlanControls(message);
+      showToast(message, 'info');
+      return;
+    }
+    const confirmed = confirm(
+      `一键清除当前课表中的未锁定课程吗？\n\n`
+      + `将保留 ${preview.retained_locked_meetings} 个已锁定课时（金框必要条件和其他课表锁）。\n`
+      + `将清除 ${preview.cleared_unlocked_meetings} 个未锁定课时。\n\n`
+      + '课程、教师、学生、分班和选课数据不会改变；清除后可以重新运行 AI 补全。',
+    );
+    if (!confirmed) {
+      renderManualPlanControls('已取消清除；当前课表没有变化。');
+      return;
+    }
+    const result = await api('/schedule/clear-unlocked', {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_revision: preview.revision,
+        confirmed_by: '教务用户',
+      }),
+    });
+    window._manualScheduleAvailable = false;
+    window._manualGeneratedTimetables = new Map();
+    window._manualGeneratedTimetableRequests = new Map();
+    await loadManualTimetable();
+    renderManualPlanControls(result.message);
+    showToast(result.message, 'success');
+  } catch (error) {
+    renderManualPlanControls(`清除失败：${error.message}`);
+    showToast(`清除失败：${error.message}`, 'error');
+  } finally {
+    window._manualClearUnlockedRunning = false;
+    button.disabled = window._manualHasSchedule === false;
+  }
+}
+
 function formatArchiveDateTime(value) {
   if (!value || Number.isNaN(new Date(value).getTime())) return '未知时间';
   return new Intl.DateTimeFormat('zh-CN', {
@@ -1622,37 +1794,44 @@ function formatArchiveDateTime(value) {
   }).format(new Date(value));
 }
 
-function setOverviewArchiveStatus(message, tone = '') {
-  const status = document.getElementById('overview-archive-status');
-  if (!status) return;
-  status.textContent = message;
-  status.className = `overview-archive-status${tone ? ` ${tone}` : ''}`;
+function setScheduleArchiveStatus(message, tone = '') {
+  for (const [id, baseClass] of [
+    ['overview-archive-status', 'overview-archive-status'],
+    ['manual-archive-status', 'manual-archive-status'],
+  ]) {
+    const status = document.getElementById(id);
+    if (!status) continue;
+    status.textContent = message;
+    status.className = `${baseClass}${tone ? ` ${tone}` : ''}`;
+  }
 }
 
-function syncOverviewArchiveControls() {
-  const button = document.getElementById('overview-save-schedule');
-  if (!button) return;
-  button.disabled = window._overviewScheduleAvailable !== true
-    || window._scheduleArchiveSaving === true;
+function syncScheduleArchiveControls() {
+  for (const id of ['overview-save-schedule', 'manual-save-schedule']) {
+    const button = document.getElementById(id);
+    if (!button) continue;
+    button.disabled = window._scheduleArchiveAvailable !== true
+      || window._scheduleArchiveSaving === true;
+  }
 }
 
-function applyOverviewScheduleStatus(status) {
-  window._overviewScheduleAvailable = status?.solve_status === 'valid';
-  syncOverviewArchiveControls();
-  if (!window._overviewScheduleAvailable) {
-    setOverviewArchiveStatus('当前没有通过校验的完整课表，完成排课后才能保存。');
+function applyScheduleArchiveStatus(status) {
+  window._scheduleArchiveAvailable = status?.solve_status === 'valid';
+  syncScheduleArchiveControls();
+  if (!window._scheduleArchiveAvailable) {
+    setScheduleArchiveStatus('当前没有通过校验的完整课表，完成排课后才能保存。');
   } else if (status.review_required) {
-    setOverviewArchiveStatus('当前完整课表需要人工复核；保存时会进入质量例外审批。', 'warning');
+    setScheduleArchiveStatus('当前完整课表需要人工复核；保存时会进入质量例外审批。', 'warning');
   } else {
-    setOverviewArchiveStatus('当前完整课表已通过校验，可以保存为独立历史版本。', 'success');
+    setScheduleArchiveStatus('当前完整课表已通过校验，可以保存为独立历史版本。', 'success');
   }
 }
 
 async function saveCurrentScheduleArchive() {
-  if (window._overviewScheduleAvailable !== true || window._scheduleArchiveSaving === true) return;
+  if (window._scheduleArchiveAvailable !== true || window._scheduleArchiveSaving === true) return;
   window._scheduleArchiveSaving = true;
-  syncOverviewArchiveControls();
-  setOverviewArchiveStatus('正在校验并保存当前完整课表…');
+  syncScheduleArchiveControls();
+  setScheduleArchiveStatus('正在校验并保存当前完整课表…');
   try {
     const review = await api('/schedule-quality-review');
     let body = {};
@@ -1669,22 +1848,22 @@ async function saveCurrentScheduleArchive() {
         ? `\n\n已记录的单目标质量极限分析：\n- AP 空堂日：${qualityMetricSummary(bounds.ap_student_gap_days)}\n- 上午空节：${qualityMetricSummary(bounds.ap_morning_empty_student_periods)}\n- 分析范围：${bounds.analysis_scope?.note || '冻结当前分班，只优化一个指标'}`
         : '\n\n尚未运行单目标质量极限分析；建议先在“系统设置 → 排课策略”运行分析。';
       if (!confirm(`当前课表已通过全部硬约束，但质量门槛未通过：\n${issues}${boundSummary}\n\n建议先进行结构调整：\n${recommendations}\n\n如果学校本学期决定接受当前结果，可继续进入管理员质量例外审批。是否继续？`)) {
-        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
         return;
       }
       const reason = prompt('请输入批准质量例外的具体原因（至少 10 个字符，将永久记录在课表存档中）：');
       if (reason === null) {
-        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
         return;
       }
       const approvedBy = prompt('请输入审批人姓名或管理员账号：');
       if (approvedBy === null) {
-        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
         return;
       }
       const confirmation = prompt(`最后请输入“${review.confirmation_phrase}”完成确认：`);
       if (confirmation === null) {
-        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
         return;
       }
       body = {
@@ -1703,13 +1882,13 @@ async function saveCurrentScheduleArchive() {
     const exceptionNote = result.archive?.publication_status === 'ready_with_quality_exception'
       ? '，已记录管理员质量例外审批'
       : '';
-    setOverviewArchiveStatus(`当前完整课表已于 ${savedAt} 保存为独立快照${exceptionNote}。`, exceptionNote ? 'warning' : 'success');
+    setScheduleArchiveStatus(`当前完整课表已于 ${savedAt} 保存为独立快照${exceptionNote}。`, exceptionNote ? 'warning' : 'success');
     showToast(`课表已储存（${savedAt}）${exceptionNote}`, exceptionNote ? 'warning' : 'success');
   } catch (error) {
-    setOverviewArchiveStatus(`保存失败：${error.message}`, 'error');
+    setScheduleArchiveStatus(`保存失败：${error.message}`, 'error');
   } finally {
     window._scheduleArchiveSaving = false;
-    syncOverviewArchiveControls();
+    syncScheduleArchiveControls();
   }
 }
 
@@ -1720,7 +1899,7 @@ async function loadPastTimetables() {
   try {
     const archives = await api('/schedule-archives');
     if (!archives.length) {
-      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成 AI 排课后，在“总课表概览”点击“保存为过往课表”即可创建第一份记录。</p></div>';
+      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成 AI 排课后，在“排课表”或“总课表概览”点击“保存为过往课表”即可创建第一份记录。</p></div>';
       return;
     }
     content.innerHTML = `
@@ -4533,11 +4712,11 @@ async function loadOverviewTimetable() {
   const viewType = document.getElementById('select-view-type').value;
 
   try {
-    applyOverviewScheduleStatus(await api('/status'));
+    applyScheduleArchiveStatus(await api('/status'));
   } catch (error) {
-    window._overviewScheduleAvailable = false;
-    syncOverviewArchiveControls();
-    setOverviewArchiveStatus(`无法确认当前课表状态：${error.message}`, 'error');
+    window._scheduleArchiveAvailable = false;
+    syncScheduleArchiveControls();
+    setScheduleArchiveStatus(`无法确认当前课表状态：${error.message}`, 'error');
   }
 
   try {
@@ -6368,6 +6547,9 @@ function init() {
   document.getElementById('select-view-type').addEventListener('change', loadOverviewTimetable);
   document.getElementById('overview-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
   document.getElementById('overview-open-archives').addEventListener('click', () => switchView('past-timetables'));
+  document.getElementById('manual-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
+  document.getElementById('manual-open-archives').addEventListener('click', () => switchView('past-timetables'));
+  document.getElementById('manual-clear-unlocked-schedule').addEventListener('click', clearManualUnlockedSchedule);
 
   // 校验按钮
   document.getElementById('btn-validate-input').addEventListener('click', async () => {

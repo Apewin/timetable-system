@@ -17,6 +17,8 @@ function archiveControls({ review = { required: false } } = {}) {
   const elements = {
     'overview-save-schedule': { disabled: true },
     'overview-archive-status': { textContent: '', className: '' },
+    'manual-save-schedule': { disabled: true },
+    'manual-archive-status': { textContent: '', className: '' },
   };
   const requests = [];
   const toasts = [];
@@ -32,7 +34,7 @@ function archiveControls({ review = { required: false } } = {}) {
     'prompt',
     'qualityMetricSummary',
     'showToast',
-    `${archiveSource}; return { applyOverviewScheduleStatus, saveCurrentScheduleArchive };`,
+    `${archiveSource}; return { applyScheduleArchiveStatus, saveCurrentScheduleArchive };`,
   )(
     {},
     { getElementById: id => elements[id] || null },
@@ -57,7 +59,7 @@ function archiveControls({ review = { required: false } } = {}) {
   return { ...controls, elements, requests, toasts };
 }
 
-test('the archive action lives with the complete overview instead of the necessary-condition editor', () => {
+test('the complete-schedule archive action is available from both review surfaces', () => {
   const manualView = html.slice(
     html.indexOf('id="view-manual-timetable"'),
     html.indexOf('id="view-past-timetables"'),
@@ -67,33 +69,37 @@ test('the archive action lives with the complete overview instead of the necessa
     html.indexOf('id="view-status"'),
   );
 
-  assert.doesNotMatch(manualView, /id="manual-save-schedule"/);
-  assert.match(manualView, /只用于编辑 AI 排课必须保留的必要条件/);
+  assert.match(manualView, /class="manual-archive-panel"/);
+  assert.match(manualView, /id="manual-save-schedule"/);
+  assert.match(manualView, /保存当前完整课表/);
   assert.match(overviewView, /id="overview-save-schedule"/);
   assert.match(overviewView, /保存为过往课表/);
 });
 
-test('overview archive controls enable only for a valid complete timetable', () => {
-  const { applyOverviewScheduleStatus, elements } = archiveControls();
+test('archive controls enable only for a valid complete timetable', () => {
+  const { applyScheduleArchiveStatus, elements } = archiveControls();
 
-  applyOverviewScheduleStatus({ solve_status: 'valid', review_required: false });
+  applyScheduleArchiveStatus({ solve_status: 'valid', review_required: false });
   assert.equal(elements['overview-save-schedule'].disabled, false);
+  assert.equal(elements['manual-save-schedule'].disabled, false);
   assert.match(elements['overview-archive-status'].textContent, /可以保存/);
+  assert.match(elements['manual-archive-status'].textContent, /可以保存/);
 
-  applyOverviewScheduleStatus({ solve_status: 'stale', review_required: false });
+  applyScheduleArchiveStatus({ solve_status: 'stale', review_required: false });
   assert.equal(elements['overview-save-schedule'].disabled, true);
+  assert.equal(elements['manual-save-schedule'].disabled, true);
   assert.match(elements['overview-archive-status'].textContent, /完成排课后/);
 });
 
-test('saving from the overview archives the backend complete schedule', async () => {
+test('saving from either surface archives the backend complete schedule', async () => {
   const {
-    applyOverviewScheduleStatus,
+    applyScheduleArchiveStatus,
     saveCurrentScheduleArchive,
     elements,
     requests,
     toasts,
   } = archiveControls();
-  applyOverviewScheduleStatus({ solve_status: 'valid', review_required: false });
+  applyScheduleArchiveStatus({ solve_status: 'valid', review_required: false });
 
   await saveCurrentScheduleArchive();
 
@@ -104,6 +110,8 @@ test('saving from the overview archives the backend complete schedule', async ()
   assert.equal(requests[1].options.method, 'POST');
   assert.deepEqual(JSON.parse(requests[1].options.body), {});
   assert.equal(elements['overview-save-schedule'].disabled, false);
+  assert.equal(elements['manual-save-schedule'].disabled, false);
   assert.match(elements['overview-archive-status'].textContent, /保存为独立快照/);
+  assert.match(elements['manual-archive-status'].textContent, /保存为独立快照/);
   assert.match(toasts.at(-1).message, /课表已储存/);
 });

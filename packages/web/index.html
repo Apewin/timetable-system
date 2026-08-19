@@ -199,10 +199,10 @@
           <div class="manual-timetable-header">
             <div>
               <h2>🗓️ 排课表</h2>
-              <p>本页只用于编辑 AI 排课必须保留的必要条件，不展示 AI 补全后的完整结果。完整课表请到“总课表概览”审查并保存。</p>
+              <p>先拖入并锁定必须保留的课程，再运行 AI 排课。生成完成后，完整结果会回显在同一张课表中：金框课程保持锁定，其余课程标记为“AI 已排”。</p>
             </div>
             <div class="manual-timetable-actions">
-              <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班级</button>
+              <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班草稿</button>
               <button id="manual-unlock-plan" class="btn btn-secondary hidden" type="button">解除必要条件</button>
               <button id="manual-confirm-plan" class="btn btn-warning" type="button">🔒 确认为必要条件</button>
               <button id="manual-ai-solve" class="btn btn-primary" type="button" disabled>⚡ 快速生成</button>
@@ -210,6 +210,18 @@
             </div>
           </div>
           <div id="manual-plan-status" class="manual-plan-status" role="status"></div>
+          <section class="manual-archive-panel" aria-labelledby="manual-archive-title">
+            <div class="manual-archive-copy">
+              <h3 id="manual-archive-title">保存当前完整课表</h3>
+              <p>保存的是服务器上通过校验的完整课表，不是尚未补全的必要条件草稿。清除操作只删除未锁定课程并保留金框及其他锁定课时。</p>
+              <p id="manual-archive-status" class="manual-archive-status" role="status" aria-live="polite">正在检查当前课表…</p>
+            </div>
+            <div class="manual-archive-actions">
+              <button id="manual-clear-unlocked-schedule" class="btn btn-danger" type="button" disabled>清除未锁定课程</button>
+              <button id="manual-open-archives" class="btn btn-secondary" type="button">查看过往课表</button>
+              <button id="manual-save-schedule" class="btn btn-success" type="button" disabled>💾 保存为过往课表</button>
+            </div>
+          </section>
           <div class="manual-timetable-controls">
             <label for="manual-class-select">当前班级</label>
             <select id="manual-class-select" class="select"></select>
@@ -313,7 +325,7 @@
           <div class="past-timetables-header">
             <div>
               <h2>🕘 过往课表</h2>
-              <p>每次在“总课表概览”点击“保存为过往课表”，都会创建一份独立快照，保留当时的课程、班级、师生和排课结果。</p>
+              <p>每次在“排课表”或“总课表概览”点击“保存为过往课表”，都会创建一份独立快照，保留当时的课程、班级、师生和排课结果。</p>
             </div>
           </div>
           <div id="past-timetables-content"></div>
