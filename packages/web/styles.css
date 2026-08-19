@@ -4816,6 +4816,36 @@ kbd {
 .ai-assistant-messages { background: var(--shell-background); }
 .ai-assistant-note { border-color: var(--shell-border); background: var(--shell-accent); }
 
+:root[data-theme="dark"] .ai-assistant-message.assistant {
+  color: #dcfce7;
+  background: #052e16;
+  border: 1px solid #14532d;
+}
+
+:root[data-theme="dark"] .ai-assistant-message.user {
+  color: #dbeafe;
+  background: #172554;
+  border: 1px solid #1e3a8a;
+}
+
+:root[data-theme="dark"] .ai-assistant-message.error {
+  color: #fecaca;
+  background: #450a0a;
+  border: 1px solid #7f1d1d;
+}
+
+:root[data-theme="dark"] .ai-assistant-action {
+  color: #fde68a;
+  background: #422006;
+  border-color: #713f12;
+}
+
+:root[data-theme="dark"] .ai-assistant-action-complete {
+  color: #bbf7d0;
+  background: #052e16;
+  border-color: #14532d;
+}
+
 .app.sidebar-collapsed { grid-template-columns: 72px minmax(0, 1fr) auto; }
 .app.sidebar-collapsed .sidebar { padding-inline: 8px; }
 .app.sidebar-collapsed .sidebar-brand { justify-content: center; margin-inline: -8px; padding-inline: 0; }
