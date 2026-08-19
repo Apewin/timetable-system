@@ -199,7 +199,7 @@
           <div class="manual-timetable-header">
             <div>
               <h2>🗓️ 排课表</h2>
-              <p>先拖入需要人工确定的课程，再确认成为排课必要条件。确认后课程显示金色锁框，AI 只会补全剩余课程，不会移动这些课程。</p>
+              <p>本页只用于编辑 AI 排课必须保留的必要条件，不展示 AI 补全后的完整结果。完整课表请到“总课表概览”审查并保存。</p>
             </div>
             <div class="manual-timetable-actions">
               <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班级</button>
@@ -207,7 +207,6 @@
               <button id="manual-confirm-plan" class="btn btn-warning" type="button">🔒 确认为必要条件</button>
               <button id="manual-ai-solve" class="btn btn-primary" type="button" disabled>⚡ 快速生成</button>
               <button id="manual-ai-optimize" class="btn btn-secondary" type="button" disabled>✨ 继续优化</button>
-              <button id="manual-save-schedule" class="btn btn-success" type="button" disabled>💾 储存课表</button>
             </div>
           </div>
           <div id="manual-plan-status" class="manual-plan-status" role="status"></div>
@@ -314,7 +313,7 @@
           <div class="past-timetables-header">
             <div>
               <h2>🕘 过往课表</h2>
-              <p>每次点击“储存课表”都会保存一份独立快照，保留当时的课程、班级、师生和排课结果。</p>
+              <p>每次在“总课表概览”点击“保存为过往课表”，都会创建一份独立快照，保留当时的课程、班级、师生和排课结果。</p>
             </div>
           </div>
           <div id="past-timetables-content"></div>
@@ -516,7 +515,19 @@
         </div>
 
         <div id="view-overview-timetable" class="view">
-          <h2>📊 总课表概览</h2>
+          <div class="overview-timetable-header">
+            <div>
+              <h2>📊 总课表概览</h2>
+              <p>这里显示 AI 生成并保存在服务器上的当前完整课表。确认无误后，可将它保存为不再随后续调整变化的历史快照。</p>
+            </div>
+            <div class="overview-timetable-actions">
+              <div class="overview-timetable-buttons">
+                <button id="overview-open-archives" class="btn btn-secondary" type="button">查看过往课表</button>
+                <button id="overview-save-schedule" class="btn btn-success" type="button" disabled>💾 保存为过往课表</button>
+              </div>
+              <p id="overview-archive-status" class="overview-archive-status" role="status" aria-live="polite">正在检查当前课表…</p>
+            </div>
+          </div>
           <div class="timetable-controls">
             <div class="control-group">
               <label>选择年级：</label>

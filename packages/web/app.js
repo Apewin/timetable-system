@@ -906,7 +906,6 @@ function renderManualPlanControls(message = '') {
   const unlockButton = document.getElementById('manual-unlock-plan');
   const solveButton = document.getElementById('manual-ai-solve');
   const optimizeButton = document.getElementById('manual-ai-optimize');
-  const saveButton = document.getElementById('manual-save-schedule');
   const clearButton = document.getElementById('manual-clear-class');
   if (confirmButton) {
     confirmButton.disabled = confirmed || !placementCount;
@@ -919,7 +918,6 @@ function renderManualPlanControls(message = '') {
       || window._manualScheduleAvailable !== true
       || window._manualAiRunning === true;
   }
-  if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true || window._manualScheduleSaving === true;
   if (clearButton) clearButton.disabled = confirmed;
   const status = document.getElementById('manual-plan-status');
   if (!status) return;
@@ -1326,63 +1324,10 @@ async function loadManualTimetable() {
       clearInterval(timer);
       window._manualAiRunning = false;
       button.disabled = !manualPlanIsConfirmed();
-      const saveButton = document.getElementById('manual-save-schedule');
-      if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true;
     }
   };
   document.getElementById('manual-ai-solve').onclick = () => runManualAiSolve();
   document.getElementById('manual-ai-optimize').onclick = () => runManualAiSolve({ optimize: true });
-  document.getElementById('manual-save-schedule').onclick = async () => {
-    window._manualScheduleSaving = true;
-    renderManualPlanControls('正在储存当前完整课表快照…');
-    try {
-      const review = await api('/schedule-quality-review');
-      let body = {};
-      if (review.required) {
-        if (!review.allowed) throw new Error(review.blocked_reason || '当前课表不能通过质量例外审批归档');
-        const diagnosis = review.quality_gate?.diagnosis;
-        const recommendations = (diagnosis?.recommendations || [])
-          .filter(item => item.action !== 'approve_quality_exception')
-          .map((item, index) => `${index + 1}. ${item.label}：${item.reason}`)
-          .join('\n');
-        const issues = (review.quality_gate?.issues || []).map(item => item.message).join('\n');
-        const bounds = review.lower_bound_analysis;
-        const boundSummary = bounds
-          ? `\n\n已记录的单目标质量极限分析：\n- AP 空堂日：${qualityMetricSummary(bounds.ap_student_gap_days)}\n- 上午空节：${qualityMetricSummary(bounds.ap_morning_empty_student_periods)}\n- 分析范围：${bounds.analysis_scope?.note || '冻结当前分班，只优化一个指标'}`
-          : '\n\n尚未运行单目标质量极限分析；建议先在“系统设置 → 排课策略”运行分析。';
-        if (!confirm(`当前课表已通过全部硬约束，但质量门槛未通过：\n${issues}${boundSummary}\n\n建议先进行结构调整：\n${recommendations}\n\n如果学校本学期决定接受当前结果，可继续进入管理员质量例外审批。是否继续？`)) return;
-        const reason = prompt('请输入批准质量例外的具体原因（至少 10 个字符，将永久记录在课表存档中）：');
-        if (reason === null) return;
-        const approvedBy = prompt('请输入审批人姓名或管理员账号：');
-        if (approvedBy === null) return;
-        const confirmation = prompt(`最后请输入“${review.confirmation_phrase}”完成确认：`);
-        if (confirmation === null) return;
-        body = {
-          quality_exception: {
-            reason,
-            approved_by: approvedBy,
-            confirmation,
-          },
-        };
-      }
-      const result = await api('/schedule-archives', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      const savedAt = formatArchiveDateTime(result.archive?.saved_at);
-      const exceptionNote = result.archive?.publication_status === 'ready_with_quality_exception'
-        ? '，已记录管理员质量例外审批'
-        : '';
-      renderManualPlanControls(`课表已储存：${savedAt}${exceptionNote}。之后重排或修改数据不会影响这份记录。`);
-      showToast(`课表已储存（${savedAt}）${exceptionNote}`, exceptionNote ? 'warning' : 'success');
-    } catch (error) {
-      renderManualPlanControls(`储存失败：${error.message}`);
-    } finally {
-      window._manualScheduleSaving = false;
-      const saveButton = document.getElementById('manual-save-schedule');
-      if (saveButton) saveButton.disabled = window._manualScheduleAvailable !== true;
-    }
-  };
   renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
@@ -1677,6 +1622,97 @@ function formatArchiveDateTime(value) {
   }).format(new Date(value));
 }
 
+function setOverviewArchiveStatus(message, tone = '') {
+  const status = document.getElementById('overview-archive-status');
+  if (!status) return;
+  status.textContent = message;
+  status.className = `overview-archive-status${tone ? ` ${tone}` : ''}`;
+}
+
+function syncOverviewArchiveControls() {
+  const button = document.getElementById('overview-save-schedule');
+  if (!button) return;
+  button.disabled = window._overviewScheduleAvailable !== true
+    || window._scheduleArchiveSaving === true;
+}
+
+function applyOverviewScheduleStatus(status) {
+  window._overviewScheduleAvailable = status?.solve_status === 'valid';
+  syncOverviewArchiveControls();
+  if (!window._overviewScheduleAvailable) {
+    setOverviewArchiveStatus('当前没有通过校验的完整课表，完成排课后才能保存。');
+  } else if (status.review_required) {
+    setOverviewArchiveStatus('当前完整课表需要人工复核；保存时会进入质量例外审批。', 'warning');
+  } else {
+    setOverviewArchiveStatus('当前完整课表已通过校验，可以保存为独立历史版本。', 'success');
+  }
+}
+
+async function saveCurrentScheduleArchive() {
+  if (window._overviewScheduleAvailable !== true || window._scheduleArchiveSaving === true) return;
+  window._scheduleArchiveSaving = true;
+  syncOverviewArchiveControls();
+  setOverviewArchiveStatus('正在校验并保存当前完整课表…');
+  try {
+    const review = await api('/schedule-quality-review');
+    let body = {};
+    if (review.required) {
+      if (!review.allowed) throw new Error(review.blocked_reason || '当前课表不能通过质量例外审批归档');
+      const diagnosis = review.quality_gate?.diagnosis;
+      const recommendations = (diagnosis?.recommendations || [])
+        .filter(item => item.action !== 'approve_quality_exception')
+        .map((item, index) => `${index + 1}. ${item.label}：${item.reason}`)
+        .join('\n');
+      const issues = (review.quality_gate?.issues || []).map(item => item.message).join('\n');
+      const bounds = review.lower_bound_analysis;
+      const boundSummary = bounds
+        ? `\n\n已记录的单目标质量极限分析：\n- AP 空堂日：${qualityMetricSummary(bounds.ap_student_gap_days)}\n- 上午空节：${qualityMetricSummary(bounds.ap_morning_empty_student_periods)}\n- 分析范围：${bounds.analysis_scope?.note || '冻结当前分班，只优化一个指标'}`
+        : '\n\n尚未运行单目标质量极限分析；建议先在“系统设置 → 排课策略”运行分析。';
+      if (!confirm(`当前课表已通过全部硬约束，但质量门槛未通过：\n${issues}${boundSummary}\n\n建议先进行结构调整：\n${recommendations}\n\n如果学校本学期决定接受当前结果，可继续进入管理员质量例外审批。是否继续？`)) {
+        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        return;
+      }
+      const reason = prompt('请输入批准质量例外的具体原因（至少 10 个字符，将永久记录在课表存档中）：');
+      if (reason === null) {
+        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        return;
+      }
+      const approvedBy = prompt('请输入审批人姓名或管理员账号：');
+      if (approvedBy === null) {
+        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        return;
+      }
+      const confirmation = prompt(`最后请输入“${review.confirmation_phrase}”完成确认：`);
+      if (confirmation === null) {
+        setOverviewArchiveStatus('已取消保存；当前完整课表没有变化。');
+        return;
+      }
+      body = {
+        quality_exception: {
+          reason,
+          approved_by: approvedBy,
+          confirmation,
+        },
+      };
+    }
+    const result = await api('/schedule-archives', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    const savedAt = formatArchiveDateTime(result.archive?.saved_at);
+    const exceptionNote = result.archive?.publication_status === 'ready_with_quality_exception'
+      ? '，已记录管理员质量例外审批'
+      : '';
+    setOverviewArchiveStatus(`当前完整课表已于 ${savedAt} 保存为独立快照${exceptionNote}。`, exceptionNote ? 'warning' : 'success');
+    showToast(`课表已储存（${savedAt}）${exceptionNote}`, exceptionNote ? 'warning' : 'success');
+  } catch (error) {
+    setOverviewArchiveStatus(`保存失败：${error.message}`, 'error');
+  } finally {
+    window._scheduleArchiveSaving = false;
+    syncOverviewArchiveControls();
+  }
+}
+
 async function loadPastTimetables() {
   const content = document.getElementById('past-timetables-content');
   if (!content) return;
@@ -1684,7 +1720,7 @@ async function loadPastTimetables() {
   try {
     const archives = await api('/schedule-archives');
     if (!archives.length) {
-      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成 AI 排课后，在“排课表”页面点击“储存课表”即可创建第一份记录。</p></div>';
+      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成 AI 排课后，在“总课表概览”点击“保存为过往课表”即可创建第一份记录。</p></div>';
       return;
     }
     content.innerHTML = `
@@ -4497,6 +4533,14 @@ async function loadOverviewTimetable() {
   const viewType = document.getElementById('select-view-type').value;
 
   try {
+    applyOverviewScheduleStatus(await api('/status'));
+  } catch (error) {
+    window._overviewScheduleAvailable = false;
+    syncOverviewArchiveControls();
+    setOverviewArchiveStatus(`无法确认当前课表状态：${error.message}`, 'error');
+  }
+
+  try {
     // 获取班级或教师
     let items = [];
     if (viewType === 'class') {
@@ -6322,6 +6366,8 @@ function init() {
   // 总课表控制事件
   document.getElementById('select-grade').addEventListener('change', loadOverviewTimetable);
   document.getElementById('select-view-type').addEventListener('change', loadOverviewTimetable);
+  document.getElementById('overview-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
+  document.getElementById('overview-open-archives').addEventListener('click', () => switchView('past-timetables'));
 
   // 校验按钮
   document.getElementById('btn-validate-input').addEventListener('click', async () => {
