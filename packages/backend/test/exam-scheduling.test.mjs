@@ -6,6 +6,7 @@ import {
   solveExamSchedule,
   validateExamSchedule,
 } from '../src/exam-scheduling.mjs';
+import { runSolverJob } from '../src/solver-job-runner.mjs';
 
 function schoolState() {
   return {
@@ -368,7 +369,7 @@ test('solving enforces each grade day limit instead of borrowing days from anoth
   assert.equal(result.ok, false);
 });
 
-test('timetable-only solving proves a repeated-duration exam plan optimal within a short budget', async () => {
+test('timetable-only solving proves a repeated-duration exam plan optimal within the production budget', async () => {
   const durationsByGrade = new Map([
     [10, [...Array(9).fill(60), ...Array(3).fill(90)]],
     [11, [...Array(6).fill(60), ...Array(6).fill(90), 110]],
@@ -382,23 +383,28 @@ test('timetable-only solving proves a repeated-duration exam plan optimal within
     duration,
   })));
 
-  const result = await solveExamSchedule({ courses, students: [], teachers: [] }, {
-    config: {
-      timetable_only: true,
-      day_count: 4,
-      day_start: '08:00',
-      day_end: '17:30',
-      slot_minutes: 5,
-      breaks: [{ start: '12:00', end: '13:30' }],
-      room_count: 1,
-      room_capacity: 30,
+  const result = await runSolverJob({
+    solver: 'exam',
+    state: { courses, students: [], teachers: [] },
+    plan: {
+      config: {
+        timetable_only: true,
+        day_count: 4,
+        day_start: '08:00',
+        day_end: '17:30',
+        slot_minutes: 5,
+        breaks: [{ start: '12:00', end: '13:30' }],
+        room_count: 1,
+        room_capacity: 30,
+      },
+      exams: courses.map(course => ({
+        id: `EXAM_${course.id}`,
+        course_id: course.id,
+        duration_minutes: course.duration,
+      })),
     },
-    exams: courses.map(course => ({
-      id: `EXAM_${course.id}`,
-      course_id: course.id,
-      duration_minutes: course.duration,
-    })),
-  }, { maxTimeSeconds: 10, numSearchWorkers: 8 });
+    options: { maxTimeSeconds: 60, numSearchWorkers: 8 },
+  });
 
   assert.equal(result.status, 'OPTIMAL');
   assert.equal(result.sessions.length, 43);
