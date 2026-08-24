@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deleteEntityFromState, entityDependencies } from '../src/entity-state.mjs';
+import {
+  deleteEntityFromState,
+  entityDependencies,
+  validateEntityInput,
+} from '../src/entity-state.mjs';
 
 function state() {
   return {
@@ -55,4 +59,22 @@ test('cascades a confirmed course deletion without leaving stale references', ()
   assert.deepEqual(result.state.students[0].elective_choices, {});
   assert.deepEqual(result.state.selection_blocks[0].allowed_course_ids, ['AP_CHEM', 'AP_PHYS']);
   assert.equal(result.state.ap_block_config.course_block_ids.AP_BIO, undefined);
+});
+
+test('requires teacher workload upper limits to be non-negative integers', () => {
+  assert.doesNotThrow(() => validateEntityInput('teachers', {
+    id: 'T1', can_teach: [], max_per_week: 0, max_per_day: 0,
+  }));
+  assert.throws(
+    () => validateEntityInput('teachers', {
+      id: 'T1', can_teach: [], max_per_week: -1, max_per_day: 1,
+    }),
+    /每周上限.*非负整数/,
+  );
+  assert.throws(
+    () => validateEntityInput('teachers', {
+      id: 'T1', can_teach: [], max_per_week: 5, max_per_day: 1.5,
+    }),
+    /每天上限.*非负整数/,
+  );
 });

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   nextTeachingAssignmentId,
+  summarizeTeacherWorkloads,
   teachersQualifiedForCourse,
   summarizeTeachingTasks,
 } from '../teacher-assignment-view.mjs';
@@ -61,4 +62,26 @@ test('filters assignment teachers by the exact configured course id without subj
     teachersQualifiedForCourse(teachers, 'BIO').map(teacher => teacher.id),
     ['T_BIO'],
   );
+});
+
+test('reports assigned teacher hours separately from the weekly upper limit', () => {
+  const workloads = summarizeTeacherWorkloads(
+    [{ id: 'T1', name: '数学教师', max_per_week: 25 }],
+    [
+      { teacher_id: 'T1', weekly_hours: 5, class_ids: ['TC1', 'TC2'] },
+      {
+        teacher_id: 'T1', weekly_hours: 2, class_ids: ['AC1', 'AC2'],
+        staffing_mode: 'per_class',
+      },
+    ],
+  );
+
+  assert.deepEqual(workloads, [{
+    id: 'T1',
+    name: '数学教师',
+    max_per_week: 25,
+    assigned_weekly_hours: 10,
+    remaining_weekly_capacity: 15,
+    exceeds_weekly_limit: false,
+  }]);
 });

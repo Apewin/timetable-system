@@ -236,9 +236,18 @@ export function buildSchedulingProblem(state, rules = state.constraints || []) {
     ...apBlockCompactnessRules(sections, manualFillerCourseIds, policy),
   ];
   validateRules(problemRules);
+  const teacherLimits = (state.teachers || []).flatMap(teacher => {
+    const maxPerWeek = Number(teacher.max_per_week);
+    return Number.isInteger(maxPerWeek) && maxPerWeek >= 0 ? [{
+      teacher_id: teacher.id,
+      teacher_name: teacher.name || teacher.id,
+      max_per_week: maxPerWeek,
+    }] : [];
+  });
   return {
     slots: Array.from({ length: 50 }, (_, index) => ({ id: `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`, day: Math.floor(index / 10) + 1, period: index % 10 + 1 })),
     sections,
+    teacher_limits: teacherLimits,
     rooms: [],
     rules: problemRules,
     diagnostics: {

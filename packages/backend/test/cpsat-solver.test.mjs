@@ -1169,6 +1169,69 @@ test('explains a full-week student workload that contradicts a consecutive-lesso
   assert.match(solution.reason, /占满全部/);
 });
 
+test('rejects a teacher workload above the configured weekly upper limit', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{ teacher_id: 'T1', max_per_week: 1 }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, false);
+  assert.equal(solution.status, 'INFEASIBLE_BY_TEACHER_WEEKLY_LIMIT');
+  assert.match(solution.reason, /教师 T1.*2.*上限 1/);
+});
+
+test('does not fill a teacher workload up to the weekly upper limit', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{ teacher_id: 'T1', max_per_week: 5 }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, true, solution.reason || solution.status);
+  assert.equal(solution.meetings.length, 2);
+});
+
+test('independently validates a teacher weekly upper limit', () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{ teacher_id: 'T1', teacher_name: '数学教师', max_per_week: 1 }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+  const candidate = {
+    sections: problem.sections,
+    meetings: [
+      { section_id: 'MATH', slot_id: 'D1P1' },
+      { section_id: 'MATH', slot_id: 'D1P2' },
+    ],
+  };
+
+  const validation = validateSchedule(problem, candidate);
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.hard_violations[0]?.rule_id, 'kernel.teacher_max_per_week');
+  assert.match(validation.hard_violations[0]?.message || '', /数学教师.*2.*上限 1/);
+});
+
 test('optimizes a soft time preference after satisfying hard constraints', async () => {
   const problem = {
     slots,

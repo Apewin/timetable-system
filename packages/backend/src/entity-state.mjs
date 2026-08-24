@@ -40,8 +40,19 @@ export function validateEntityInput(entity, item) {
       throw new Error(`课程 ${item.id} 必须设置 Senior 1–3 适用年级`);
     }
   }
-  if (entity === 'teachers' && !Array.isArray(item.can_teach || [])) {
-    throw new Error(`教师 ${item.id} 的可授课程必须是数组`);
+  if (entity === 'teachers') {
+    if (!Array.isArray(item.can_teach || [])) {
+      throw new Error(`教师 ${item.id} 的可授课程必须是数组`);
+    }
+    for (const [field, label] of [
+      ['max_per_day', '每天上限'],
+      ['max_per_week', '每周上限'],
+    ]) {
+      if (item[field] === undefined || item[field] === null) continue;
+      if (!Number.isInteger(Number(item[field])) || Number(item[field]) < 0) {
+        throw new Error(`教师 ${item.id} 的${label}必须是非负整数`);
+      }
+    }
   }
   if (entity === 'students' && !GRADE_VALUES.has(Number(item.grade))) {
     throw new Error(`学生 ${item.id} 的年级必须是 Senior 1–3`);

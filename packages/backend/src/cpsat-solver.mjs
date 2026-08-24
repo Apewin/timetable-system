@@ -60,6 +60,25 @@ function byId(items) { return new Map(items.map(item => [item.id, item])); }
  * hard "no more than three consecutive lessons" rule cannot be satisfied.
  */
 function workloadInfeasibility(problem) {
+  const teacherHours = new Map();
+  for (const section of problem.sections || []) if (section.teacher_id) {
+    teacherHours.set(
+      section.teacher_id,
+      (teacherHours.get(section.teacher_id) || 0) + Number(section.weekly_hours || 0),
+    );
+  }
+  for (const limit of problem.teacher_limits || []) {
+    const maximum = Number(limit.max_per_week);
+    if (!Number.isInteger(maximum) || maximum < 0) continue;
+    const assigned = teacherHours.get(limit.teacher_id) || 0;
+    if (assigned > maximum) return {
+      status: 'INFEASIBLE_BY_TEACHER_WEEKLY_LIMIT',
+      reason: `教师 ${limit.teacher_name || limit.teacher_id} 已分配 ${assigned} 节/周，超过上限 ${maximum} 节/周；请调整教师分工或提高该教师的每周上限`,
+      teacher_id: limit.teacher_id,
+      assigned_weekly_hours: assigned,
+      max_per_week: maximum,
+    };
+  }
   const periodsPerDay = Math.max(...problem.slots.map(slot => slot.period));
   const totalSlots = problem.slots.length;
   const studentHours = new Map();

@@ -30,6 +30,7 @@ import {
 } from './workspace-mode.mjs';
 import {
   nextTeachingAssignmentId,
+  summarizeTeacherWorkloads,
   teachersQualifiedForCourse,
   summarizeTeachingTasks,
 } from './teacher-assignment-view.mjs';
@@ -940,6 +941,9 @@ window.exportExamPlan = async function() {
 };
 
 const MANUAL_TIMETABLE_STORAGE_KEY = 'timetable.manual-drafts.v1';
+const MANUAL_COURSE_PANEL_STORAGE_KEY = 'timetable.manual-course-panel-expanded.v1';
+const MANUAL_DRAFT_UNDO_LIMIT = 20;
+let manualDraftUndoStack = [];
 
 function readManualDrafts() {
   try { return JSON.parse(localStorage.getItem(MANUAL_TIMETABLE_STORAGE_KEY) || '{}'); }
@@ -948,6 +952,76 @@ function readManualDrafts() {
 
 function writeManualDrafts(drafts) {
   localStorage.setItem(MANUAL_TIMETABLE_STORAGE_KEY, JSON.stringify(drafts));
+}
+
+function manualSlotDisplayName(slotId) {
+  const match = /^D(\d+)P(\d+)$/.exec(slotId || '');
+  if (!match) return slotId || '目标时段';
+  const days = ['周一', '周二', '周三', '周四', '周五'];
+  return `${days[Number(match[1]) - 1] || `第 ${match[1]} 天`}第 ${match[2]} 节`;
+}
+
+function renderManualActionFeedback(message = '', { neutral = false, canUndo = true } = {}) {
+  const feedback = document.getElementById('manual-action-feedback');
+  const text = document.getElementById('manual-action-feedback-text');
+  const undoButton = document.getElementById('manual-undo-action');
+  if (!feedback || !text || !undoButton) return;
+  feedback.classList.toggle('hidden', !message);
+  feedback.classList.toggle('is-neutral', neutral);
+  text.textContent = message;
+  undoButton.hidden = !canUndo || !manualDraftUndoStack.length || manualPlanIsConfirmed();
+}
+
+function commitManualDraftChange(drafts, actionLabel) {
+  if (manualPlanIsConfirmed()) return false;
+  const previousSnapshot = localStorage.getItem(MANUAL_TIMETABLE_STORAGE_KEY) || '{}';
+  const nextSnapshot = JSON.stringify(drafts);
+  if (previousSnapshot === nextSnapshot) return false;
+  manualDraftUndoStack.push({ snapshot: previousSnapshot, actionLabel });
+  if (manualDraftUndoStack.length > MANUAL_DRAFT_UNDO_LIMIT) manualDraftUndoStack.shift();
+  localStorage.setItem(MANUAL_TIMETABLE_STORAGE_KEY, nextSnapshot);
+  renderManualCoursePool();
+  renderManualTimetableGrid();
+  renderManualPlanControls();
+  queueManualDraftSync();
+  renderManualActionFeedback(`${actionLabel}。`, { canUndo: true });
+  return true;
+}
+
+function undoManualDraftChange() {
+  if (manualPlanIsConfirmed()) return;
+  const previous = manualDraftUndoStack.pop();
+  if (!previous) return renderManualActionFeedback('没有可以撤销的排课操作。', { neutral: true, canUndo: false });
+  localStorage.setItem(MANUAL_TIMETABLE_STORAGE_KEY, previous.snapshot);
+  renderManualCoursePool();
+  renderManualTimetableGrid();
+  renderManualPlanControls();
+  queueManualDraftSync();
+  renderManualActionFeedback(`已撤销：${previous.actionLabel}。`, {
+    neutral: true,
+    canUndo: manualDraftUndoStack.length > 0,
+  });
+}
+
+function setManualCoursePanelExpanded(expanded, { persist = true } = {}) {
+  const view = document.getElementById('view-manual-timetable');
+  const button = document.getElementById('manual-course-panel-toggle');
+  const resolvedExpanded = Boolean(expanded);
+  view?.classList.toggle('course-panel-collapsed', !resolvedExpanded);
+  button?.setAttribute('aria-expanded', resolvedExpanded ? 'true' : 'false');
+  const label = button?.querySelector('span:last-child');
+  if (label) label.textContent = resolvedExpanded ? '隐藏课程池' : '显示课程池';
+  if (persist) localStorage.setItem(MANUAL_COURSE_PANEL_STORAGE_KEY, String(resolvedExpanded));
+}
+
+function setManualFocusMode(enabled) {
+  const app = document.querySelector('.app');
+  const button = document.getElementById('manual-focus-mode');
+  const resolvedEnabled = Boolean(enabled);
+  app?.classList.toggle('manual-focus-mode', resolvedEnabled);
+  button?.setAttribute('aria-pressed', resolvedEnabled ? 'true' : 'false');
+  const label = button?.querySelector('span:last-child');
+  if (label) label.textContent = resolvedEnabled ? '退出专注' : '专注课表';
 }
 
 function manualPlanIsConfirmed() {
@@ -1314,9 +1388,11 @@ function renderManualCoursePool() {
   const count = document.getElementById('manual-course-count');
   if (!pool) return;
   const keyword = (document.getElementById('manual-course-search')?.value || '').trim().toLowerCase();
+  const categoryFilter = document.getElementById('manual-course-category-filter')?.value || 'all';
+  const statusFilter = document.getElementById('manual-course-status-filter')?.value || 'all';
   const usageCounts = manualSectionUsageCounts();
   const sectionsById = new Map((window._manualSections || []).map(section => [section.id, section]));
-  const items = (window._manualPoolItems || [])
+  const availableItems = (window._manualPoolItems || [])
     .map(item => ({
       ...item,
       remaining_uses: manualPoolItemRemaining(item, sectionsById, usageCounts),
@@ -1340,25 +1416,75 @@ function renderManualCoursePool() {
         ? null
         : Math.max(0, item.total_hours - item.remaining_uses),
     }))
-    .filter(item => item.remaining_uses > 0)
+    .filter(item => item.remaining_uses > 0);
+  const items = availableItems
     .filter(item => !keyword
-      || `${item.name} ${item.group_name || ''} ${(item.course_ids || []).join(' ')}`.toLowerCase().includes(keyword));
-  count.textContent = `${items.length} 项`;
+      || `${item.name} ${item.group_name || ''} ${(item.course_ids || []).join(' ')}`.toLowerCase().includes(keyword))
+    .filter(item => categoryFilter === 'all' || item.category === categoryFilter)
+    .filter(item => statusFilter === 'all'
+      || (statusFilter === 'available' && item.current_class_remaining !== 0)
+      || (statusFilter === 'bundle' && item.kind === 'bundle')
+      || (statusFilter === 'unassigned' && item.teacher_unassigned));
+  if (count) count.textContent = items.length === availableItems.length
+    ? `${items.length} 项`
+    : `${items.length} / ${availableItems.length} 项`;
   const locked = manualPlanIsConfirmed();
   pool.innerHTML = items.map(item => {
     const category = item.category;
+    const disabled = locked || item.current_class_remaining === 0;
+    const total = Math.max(0, Number(item.total_hours) || 0);
+    const scheduled = Math.max(0, Number(item.scheduled_uses) || 0);
+    const percentage = total > 0 ? Math.min(100, Math.round((scheduled / total) * 100)) : 0;
+    const remainingLabel = item.remaining_uses === Infinity
+      ? '不限次数'
+      : item.current_class_remaining != null
+        ? `本班剩余 ${item.current_class_remaining} 节`
+        : `剩余 ${item.remaining_uses} 次`;
+    const technicalLabel = [...(item.course_ids || []), ...(item.section_ids || [])].join(' · ');
+    const badges = [
+      `<span class="manual-course-category-badge">${escapeHtml(manualCourseCategoryLabel(category))}</span>`,
+      item.kind === 'bundle' ? '<span class="manual-course-state-badge">同步分流</span>' : '',
+      item.deck_scope === 'grade_teaching' ? '<span class="manual-course-state-badge">年级共享</span>' : '',
+      item.teacher_unassigned ? '<span class="manual-course-state-badge is-warning">待配教师</span>' : '',
+      item.current_class_remaining === 0 ? '<span class="manual-course-state-badge">本班已排完</span>' : '',
+    ].filter(Boolean).join('');
+    const progressMarkup = item.remaining_uses === Infinity ? `
+      <div class="manual-course-progress">
+        <div class="manual-course-progress-copy"><span>可重复安排</span><strong>${remainingLabel}</strong></div>
+      </div>` : `
+      <div class="manual-course-progress">
+        <div class="manual-course-progress-copy"><span>已排 ${scheduled} / ${total} 节</span><strong>${remainingLabel}</strong></div>
+        <span class="manual-course-progress-track" aria-hidden="true"><i style="width:${percentage}%"></i></span>
+      </div>`;
+    const adminProgress = item.administrative_progress?.length
+      ? `<span class="manual-course-admin-progress">${item.administrative_progress.map(progress =>
+        `${escapeHtml(progress.className)}：${progress.remaining ? `剩 ${progress.remaining} 节` : '已排完'}`).join(' · ')}</span>`
+      : '';
     return `
-    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${locked || item.current_class_remaining === 0 ? 'is-disabled' : ''}" draggable="${locked || item.current_class_remaining === 0 ? 'false' : 'true'}" data-manual-item-id="${item.id}" data-manual-placement-scope="${item.placement_scope || 'class'}">
-      <div class="manual-course-name">${item.name}</div>
-      <div class="manual-course-meta"><span class="manual-course-category-badge">${manualCourseCategoryLabel(category)}</span>${item.kind === 'bundle' ? `${item.group_name} · 同时开设 · 每组` : item.deck_scope === 'grade_teaching' ? '年级教学班合计' : item.placement_scope === 'admin' && item.kind === 'course' ? '行政班（每班）' : item.section_ids?.[0] || item.course_ids[0]}${item.teacher_unassigned ? ' · 待配教师' : ''}${item.remaining_uses === Infinity ? ' · 可重复安排' : item.placement_scope === 'admin' && item.kind === 'course' ? ` · 每班每周 ${item.total_hours} 节` : ` · 每周 ${item.total_hours} 节 · 已排 ${item.scheduled_uses}/${item.total_hours} 节`}${item.current_class_remaining === 0 ? ' · 本班已排完' : item.current_class_remaining != null ? ` · 本班剩余 ${item.current_class_remaining} 节` : ''}<span class="manual-course-remaining">${item.remaining_uses === Infinity ? '不限次数' : `年级剩余 ${item.remaining_uses} 次`}</span>${item.administrative_progress?.length ? `<span class="manual-course-admin-progress">${item.administrative_progress.map(progress => `${progress.className}：${progress.remaining ? `剩 ${progress.remaining} 节` : '已排完'}`).join(' · ')}</span>` : ''}</div>
+    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${disabled ? 'is-disabled' : ''}" role="listitem" aria-disabled="${disabled ? 'true' : 'false'}" draggable="${disabled ? 'false' : 'true'}" data-manual-item-id="${safeDataAttribute(item.id)}" data-manual-placement-scope="${safeDataAttribute(item.placement_scope || 'class')}" title="${safeDataAttribute(technicalLabel)}">
+      <div class="manual-course-card-header">
+        <span class="manual-course-drag-handle" aria-hidden="true">⠿</span>
+        <div class="manual-course-name">${escapeHtml(item.name)}</div>
+      </div>
+      <div class="manual-course-card-badges">${badges}</div>
+      ${progressMarkup}
+      ${adminProgress}
     </div>
   `;
-  }).join('') || '<div class="empty-state"><p>没有匹配课程</p></div>';
+  }).join('') || '<div class="empty-state"><p>没有符合当前筛选条件的课程</p><small>可以清除搜索词或切换筛选条件</small></div>';
   if (locked) return;
   pool.querySelectorAll('.manual-course-card').forEach(card => {
     card.addEventListener('dragstart', event => {
       event.dataTransfer.effectAllowed = 'copy';
       event.dataTransfer.setData('application/x-manual-item', card.dataset.manualItemId);
+      event.dataTransfer.setData('text/plain', card.dataset.manualItemId);
+      card.classList.add('is-dragging');
+      document.getElementById('view-manual-timetable')?.classList.add('manual-drag-active');
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('is-dragging');
+      document.getElementById('view-manual-timetable')?.classList.remove('manual-drag-active');
+      document.querySelectorAll('.manual-drop-target.drag-over').forEach(target => target.classList.remove('drag-over'));
     });
   });
 }
@@ -1476,24 +1602,27 @@ function saveManualCourseToSlot(slotId, itemId, classId = manualCurrentClassId()
     return;
   }
   const drafts = readManualDrafts();
+  const replacedItem = manualStoredItem(drafts[classId]?.[slotId], classId);
   drafts[classId] = { ...(drafts[classId] || {}), [slotId]: itemId };
-  writeManualDrafts(drafts);
-  renderManualCoursePool();
-  renderManualTimetableGrid();
-  renderManualPlanControls();
-  queueManualDraftSync();
+  const target = manualSlotDisplayName(slotId);
+  commitManualDraftChange(
+    drafts,
+    replacedItem && replacedItem.id !== item.id
+      ? `已在${target}用“${item.name}”替换“${replacedItem.name}”`
+      : `已将“${item.name}”安排到${target}`,
+  );
 }
 
 function removeManualCourseFromSlot(slotId, classId = manualCurrentClassId()) {
   if (manualPlanIsConfirmed()) return;
   const drafts = readManualDrafts();
   if (!drafts[classId]?.[slotId]) return;
+  const item = manualStoredItem(drafts[classId][slotId], classId);
   delete drafts[classId][slotId];
-  writeManualDrafts(drafts);
-  renderManualCoursePool();
-  renderManualTimetableGrid();
-  renderManualPlanControls();
-  queueManualDraftSync();
+  commitManualDraftChange(
+    drafts,
+    `已从${manualSlotDisplayName(slotId)}移除“${item?.name || '课程'}”`,
+  );
 }
 
 function saveManualCourseToAdminClasses(slotId, itemId, adminClassIds) {
@@ -1502,11 +1631,14 @@ function saveManualCourseToAdminClasses(slotId, itemId, adminClassIds) {
   for (const adminClassId of adminClassIds) {
     drafts[adminClassId] = { ...(drafts[adminClassId] || {}), [slotId]: itemId };
   }
-  writeManualDrafts(drafts);
-  renderManualCoursePool();
-  renderManualTimetableGrid();
-  renderManualPlanControls();
-  queueManualDraftSync();
+  const item = manualStoredItem(itemId, adminClassIds[0]);
+  const targetNames = adminClassIds
+    .map(classId => window._manualClassesById?.get(classId)?.name || classId)
+    .join('、');
+  commitManualDraftChange(
+    drafts,
+    `已将“${item?.name || itemId}”安排到${targetNames}的${manualSlotDisplayName(slotId)}`,
+  );
 }
 
 function openManualAdminPlacementDialog(teachingClassId, slotId, itemId) {
@@ -1553,7 +1685,7 @@ function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons =
     <div class="manual-slot-course">
       <span>${manualPoolItemLabel(item)}</span>
       ${locked
-        ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">🔒</span>'
+        ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">锁</span>'
         : `<button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-id="${targetClassId}" aria-label="删除课程">×</button>`}
     </div>
     ${conflictReasons.length ? `<span class="manual-slot-conflict-mark" aria-label="${conflictTitle}" title="${conflictTitle}"></span>` : ''}`;
@@ -1577,7 +1709,7 @@ function manualGeneratedSlotMarkup(slot) {
       }).join('')}
     </span>` : '';
   const badge = slot.manual_lock_state === 'all'
-    ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">🔒</span>'
+    ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">锁</span>'
     : slot.manual_lock_state === 'partial'
       ? '<span class="manual-generated-badge partial" title="该分流时段中部分课程为必要条件">部分金框</span>'
       : '<span class="manual-generated-badge" title="由 AI 补全的课程">AI 已排</span>';
@@ -1718,7 +1850,7 @@ function renderManualTimetableGrid() {
             <div class="manual-slot-course">
               <span>${manualPoolItemLabel(mergedItem)}</span>
               ${mergedLocked
-                ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">🔒</span>'
+                ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">锁</span>'
                 : `<button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-ids="${adminEntries.map(entry => entry.classId).join(',')}" aria-label="删除两个行政班课程">×</button>`}
             </div>
             ${mergedConflicts.length ? `<span class="manual-slot-conflict-mark" aria-label="${mergedConflictTitle}" title="${mergedConflictTitle}"></span>` : ''}
@@ -1756,7 +1888,8 @@ function renderManualTimetableGrid() {
       event.preventDefault();
       target.classList.remove('drag-over');
       const itemId = event.dataTransfer.getData('application/x-manual-item')
-        || event.dataTransfer.getData('application/x-manual-course');
+        || event.dataTransfer.getData('application/x-manual-course')
+        || event.dataTransfer.getData('text/plain');
       const targetClass = window._manualClassesById?.get(target.dataset.targetClassId);
       const item = manualStoredItem(itemId, target.dataset.targetClassId);
       if (target.dataset.manualPlacementMode === 'teaching-or-admin'
@@ -1772,12 +1905,15 @@ function renderManualTimetableGrid() {
     button.addEventListener('click', () => {
       const targetIds = button.dataset.targetClassIds?.split(',') || [button.dataset.targetClassId];
       const drafts = readManualDrafts();
+      const removedNames = targetIds.filter(Boolean).map(targetId => {
+        const itemId = drafts[targetId]?.[button.dataset.slotId];
+        return manualStoredItem(itemId, targetId)?.name;
+      }).filter(Boolean);
       targetIds.filter(Boolean).forEach(targetId => delete drafts[targetId]?.[button.dataset.slotId]);
-      writeManualDrafts(drafts);
-      renderManualCoursePool();
-      renderManualTimetableGrid();
-      renderManualPlanControls();
-      queueManualDraftSync();
+      commitManualDraftChange(
+        drafts,
+        `已从${manualSlotDisplayName(button.dataset.slotId)}移除“${[...new Set(removedNames)].join('、') || '课程'}”`,
+      );
     });
   });
   renderManualPlanControls();
@@ -1797,6 +1933,13 @@ async function loadManualTimetable() {
   window._manualHasSchedule = Number(status.counts?.assignments || 0) > 0;
   window._manualGeneratedTimetables = new Map();
   window._manualGeneratedTimetableRequests = new Map();
+  manualDraftUndoStack = [];
+  renderManualActionFeedback('');
+  setManualFocusMode(false);
+  setManualCoursePanelExpanded(
+    localStorage.getItem(MANUAL_COURSE_PANEL_STORAGE_KEY) !== 'false',
+    { persist: false },
+  );
   applyScheduleArchiveStatus(status);
   const clearUnlockedButton = document.getElementById('manual-clear-unlocked-schedule');
   if (clearUnlockedButton) clearUnlockedButton.disabled = !window._manualHasSchedule;
@@ -1829,15 +1972,22 @@ async function loadManualTimetable() {
     renderManualTimetableGrid();
   };
   document.getElementById('manual-course-search').oninput = renderManualCoursePool;
+  document.getElementById('manual-course-category-filter').onchange = renderManualCoursePool;
+  document.getElementById('manual-course-status-filter').onchange = renderManualCoursePool;
+  document.getElementById('manual-course-panel-toggle').onclick = event => {
+    setManualCoursePanelExpanded(event.currentTarget.getAttribute('aria-expanded') !== 'true');
+  };
+  document.getElementById('manual-focus-mode').onclick = event => {
+    setManualFocusMode(event.currentTarget.getAttribute('aria-pressed') !== 'true');
+  };
+  document.getElementById('manual-undo-action').onclick = undoManualDraftChange;
   document.getElementById('manual-clear-class').onclick = () => {
     const classId = manualCurrentClassId();
     if (!classId || !confirm('清空当前班级的排课草稿吗？')) return;
     const drafts = readManualDrafts();
+    const className = window._manualClassesById?.get(classId)?.name || classId;
     delete drafts[classId];
-    writeManualDrafts(drafts);
-    renderManualTimetableGrid();
-    renderManualPlanControls();
-    queueManualDraftSync();
+    commitManualDraftChange(drafts, `已清空${className}的手动草稿`);
   };
   document.getElementById('manual-confirm-plan').onclick = async () => {
     try {
@@ -1860,6 +2010,11 @@ async function loadManualTimetable() {
       window._manualScheduleAvailable = false;
       window._manualGeneratedTimetables = new Map();
       window._manualGeneratedTimetableRequests = new Map();
+      manualDraftUndoStack = [];
+      renderManualActionFeedback('必要条件已经锁定；如需调整，请先解除必要条件。', {
+        neutral: true,
+        canUndo: false,
+      });
       applyScheduleArchiveStatus({ solve_status: 'stale', review_required: false });
       hydrateManualDrafts(plan);
       renderManualCoursePool();
@@ -2700,25 +2855,7 @@ async function loadTeachers() {
     api('/teachers'),
     api('/teaching_assignments')
   ]);
-
-  // 统计每个老师的周课时
-  const teacherHours = {};
-  assignments.forEach(a => {
-    if (a.teacher_id) {
-      if (!teacherHours[a.teacher_id]) {
-        teacherHours[a.teacher_id] = 0;
-      }
-      // 计算总课时：每周课时 * 班级数
-      const classCount = Array.isArray(a.class_ids) ? a.class_ids.length : 1;
-      teacherHours[a.teacher_id] += a.weekly_hours * classCount;
-    }
-  });
-
-  // 增强教师数据，添加周课时信息
-  const enhancedTeachers = teachers.map(t => ({
-    ...t,
-    weekly_hours: teacherHours[t.id] || 0
-  }));
+  const enhancedTeachers = summarizeTeacherWorkloads(teachers, assignments);
 
   window._teachersData = enhancedTeachers;
   renderTeachersList(enhancedTeachers);
@@ -2747,12 +2884,18 @@ function renderTeachersList(data) {
     return;
   }
 
-  // 统计总课时
-  const totalHours = data.reduce((sum, t) => sum + t.weekly_hours, 0);
+  const totalAssignedHours = data.reduce((sum, teacher) =>
+    sum + Number(teacher.assigned_weekly_hours || 0), 0);
+  const totalCapacity = data.reduce((sum, teacher) => {
+    const maximum = Number(teacher.max_per_week);
+    return sum + (Number.isInteger(maximum) && maximum >= 0 ? maximum : 0);
+  }, 0);
+  const overloadedTeachers = data.filter(teacher => teacher.exceeds_weekly_limit).length;
 
   content.innerHTML = `
     <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
-      共 ${data.length} 位教师，周课时总计 ${totalHours} 节
+      共 ${data.length} 位教师，已分配 ${totalAssignedHours} 节/周，每周上限合计 ${totalCapacity} 节
+      ${overloadedTeachers ? `；<span class="status-badge status-badge-warning">${overloadedTeachers} 人超限</span>` : ''}
     </div>
     <div class="table-container">
       <table>
@@ -2761,7 +2904,8 @@ function renderTeachersList(data) {
             <th>ID</th>
             <th>姓名</th>
             <th>考试分组</th>
-            <th>周课时</th>
+            <th>已分配周课时</th>
+            <th>每周上限</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -2771,7 +2915,8 @@ function renderTeachersList(data) {
               <td>${escapeHtml(t.id)}</td>
               <td>${escapeHtml(t.name)}</td>
               <td><span class="status-badge ${t.invigilation_eligible ? 'status-badge-success' : 'status-badge-warning'}">${escapeHtml(t.exam_staff_group_name || '安生教师')}</span>${t.invigilation_exemption_reason ? `<small>${escapeHtml(t.invigilation_exemption_reason)}</small>` : ''}</td>
-              <td>${t.weekly_hours} 节</td>
+              <td>${t.assigned_weekly_hours} 节</td>
+              <td>${Number.isInteger(Number(t.max_per_week)) ? `${Number(t.max_per_week)} 节` : '未设置'}${t.exceeds_weekly_limit ? ' <span class="status-badge status-badge-warning">已超限</span>' : ''}</td>
               <td>
                 ${entityActionButton('teachers', t.id, 'edit', '编辑', 'btn-primary')}
                 ${entityActionButton('teachers', t.id, 'delete', '删除', 'btn-danger')}
@@ -5606,11 +5751,12 @@ window.editEntity = async function(entity, id) {
             </div>
             <div class="form-group">
               <label>每天上限</label>
-              <input type="number" name="max_per_day" value="${item.max_per_day}">
+              <input type="number" name="max_per_day" min="0" step="1" value="${item.max_per_day ?? 6}">
             </div>
             <div class="form-group">
-              <label>每周上限</label>
-              <input type="number" name="max_per_week" value="${item.max_per_week}">
+              <label>周课时上限</label>
+              <input type="number" name="max_per_week" min="0" step="1" value="${item.max_per_week ?? 25}" required>
+              <small>这是上限，实际排课可以低于该数字；系统不会为了凑满而增加课程。</small>
             </div>
             <div class="form-actions">
               <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
@@ -6774,6 +6920,7 @@ function setMobileSidebarOpen(open) {
 
 function updateAdminShellContext(viewName = getCurrentView()) {
   const meta = ADMIN_SHELL_VIEW_META[viewName] || { title: '排课系统', section: '教务工作台' };
+  if (viewName !== 'manual-timetable') setManualFocusMode(false);
   setDashboardText('page-title', meta.title);
   setDashboardText('page-section', meta.section);
   document.title = `${meta.title} · 排课系统`;
@@ -7617,11 +7764,12 @@ function init() {
         </div>
         <div class="form-group">
           <label>每天上限</label>
-          <input type="number" name="max_per_day" value="8">
+          <input type="number" name="max_per_day" min="0" step="1" value="8">
         </div>
         <div class="form-group">
-          <label>每周上限</label>
-          <input type="number" name="max_per_week" value="30">
+          <label>周课时上限</label>
+          <input type="number" name="max_per_week" min="0" step="1" value="30" required>
+          <small>这是上限，实际排课可以低于该数字。</small>
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>

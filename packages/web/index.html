@@ -52,12 +52,17 @@
           <span aria-hidden="true">×</span>
         </button>
         <button id="sidebar-mode-switch" class="sidebar-brand" type="button" role="switch" aria-checked="false" aria-label="切换到智能排考试模式">
-          <span id="sidebar-brand-mark" class="sidebar-brand-mark" aria-hidden="true">排</span>
-          <span class="sidebar-brand-copy">
-            <strong id="sidebar-brand-title">智能排课</strong>
-            <span id="sidebar-brand-subtitle">Academic Scheduler</span>
+          <span class="sidebar-brand-identity">
+            <span id="sidebar-brand-mark" class="sidebar-brand-mark" aria-hidden="true">排</span>
+            <span class="sidebar-brand-copy">
+              <strong id="sidebar-brand-title">智能排课</strong>
+              <span id="sidebar-brand-subtitle">Academic Scheduler</span>
+            </span>
           </span>
-          <span class="sidebar-mode-track" aria-hidden="true"><span></span></span>
+          <span class="sidebar-mode-track" aria-hidden="true">
+            <span class="sidebar-mode-option sidebar-mode-option-schedule">排课</span>
+            <span class="sidebar-mode-option sidebar-mode-option-exam">排考试</span>
+          </span>
         </button>
         <div id="schedule-sidebar-navigation" class="sidebar-mode-navigation" data-workspace-navigation="schedule">
           <div class="nav-section nav-section-primary">
@@ -392,9 +397,22 @@
             </div>
           </section>
           <div class="manual-timetable-controls">
-            <label for="manual-class-select">当前班级</label>
-            <select id="manual-class-select" class="select"></select>
-            <input id="manual-course-search" class="input" placeholder="搜索课程名称或 ID">
+            <div class="manual-class-control">
+              <label for="manual-class-select">当前班级</label>
+              <select id="manual-class-select" class="select"></select>
+            </div>
+            <div class="manual-workspace-controls" aria-label="排课工作区显示选项">
+              <button id="manual-course-panel-toggle" class="btn btn-secondary manual-view-toggle" type="button" aria-expanded="true">
+                <span aria-hidden="true">▤</span><span>隐藏课程池</span>
+              </button>
+              <button id="manual-focus-mode" class="btn btn-secondary manual-view-toggle" type="button" aria-pressed="false">
+                <span aria-hidden="true">⛶</span><span>专注课表</span>
+              </button>
+            </div>
+          </div>
+          <div id="manual-action-feedback" class="manual-action-feedback hidden" role="status" aria-live="polite">
+            <span id="manual-action-feedback-text"></span>
+            <button id="manual-undo-action" type="button">撤销</button>
           </div>
           <div class="manual-timetable-layout">
             <section class="manual-grid-panel">
@@ -405,15 +423,46 @@
                 <h3>课程池</h3>
                 <span id="manual-course-count" class="manual-course-count">0 门</span>
               </div>
-              <p class="manual-course-hint">同步选课组会合并为一张卡片；拖入后表示组内课程在同一时段分流开设。把行政班课程拖入教学班格时，可选择具体行政班或两个行政班同上；同课会自动合并显示，并同步到同年级三个教学班草稿。已放入的卡片可点击 × 删除。</p>
-              <div class="manual-course-legend" aria-label="课程颜色分类">
-                <span class="manual-course-legend-item category-admin-required"><i></i>行政班必修</span>
-                <span class="manual-course-legend-item category-teaching-required"><i></i>教学班必修</span>
-                <span class="manual-course-legend-item category-ap"><i></i>AP 选修</span>
-                <span class="manual-course-legend-item category-elective"><i></i>非必修选修</span>
-                <span class="manual-course-legend-item category-other"><i></i>其他</span>
+              <div class="manual-course-filters">
+                <label class="manual-course-search" for="manual-course-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input id="manual-course-search" class="input" placeholder="搜索课程名称" autocomplete="off">
+                </label>
+                <div class="manual-course-filter-row">
+                  <label for="manual-course-category-filter">
+                    <span>类别</span>
+                    <select id="manual-course-category-filter" class="select">
+                      <option value="all">全部类别</option>
+                      <option value="admin-required">行政班必修</option>
+                      <option value="teaching-required">教学班必修</option>
+                      <option value="ap">AP 选修</option>
+                      <option value="elective">非必修选修</option>
+                      <option value="other">其他</option>
+                    </select>
+                  </label>
+                  <label for="manual-course-status-filter">
+                    <span>状态</span>
+                    <select id="manual-course-status-filter" class="select">
+                      <option value="all">全部待排</option>
+                      <option value="available">本班可排</option>
+                      <option value="bundle">分流课程</option>
+                      <option value="unassigned">待配教师</option>
+                    </select>
+                  </label>
+                </div>
               </div>
-              <div id="manual-course-pool" class="manual-course-pool"></div>
+              <details class="manual-course-help">
+                <summary>拖放说明与颜色</summary>
+                <p class="manual-course-hint">同步选课组会合并为一张卡片；拖入后表示组内课程在同一时段分流开设。行政班课程拖入教学班格时，可选择具体行政班或两个行政班同上。已放入的卡片可点击 × 删除。</p>
+                <div class="manual-course-legend" aria-label="课程颜色分类">
+                  <span class="manual-course-legend-item category-admin-required"><i></i>行政班必修</span>
+                  <span class="manual-course-legend-item category-teaching-required"><i></i>教学班必修</span>
+                  <span class="manual-course-legend-item category-ap"><i></i>AP 选修</span>
+                  <span class="manual-course-legend-item category-elective"><i></i>非必修选修</span>
+                  <span class="manual-course-legend-item category-other"><i></i>其他</span>
+                </div>
+              </details>
+              <div id="manual-course-pool" class="manual-course-pool" role="list"></div>
             </aside>
           </div>
         </div>

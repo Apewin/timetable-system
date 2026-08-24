@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildSchedulingProblem } from '../src/problem-builder.mjs';
+import { solveSchedule } from '../src/cpsat-solver.mjs';
 
 test('rejects a stale class roster that references an unknown student', () => {
   const state = {
@@ -23,6 +24,29 @@ test('rejects a stale class roster that references an unknown student', () => {
     () => buildSchedulingProblem(state),
     /section .*引用了不存在的学生 MISSING_STUDENT/,
   );
+});
+
+test('carries a teacher weekly upper limit from management data into scheduling', async () => {
+  const problem = buildSchedulingProblem({
+    teachers: [{ id: 'T1', name: '数学教师', can_teach: ['MATH'], max_per_week: 1 }],
+    rooms: [],
+    courses: [{ id: 'MATH', type: 'required', grade: 11, weekly_hours: 2 }],
+    students: [],
+    admin_classes: [],
+    teaching_classes: [{ id: 'TC1', grade: 11, student_ids: [] }],
+    teaching_assignments: [{
+      id: 'A1', class_type: 'teaching', class_ids: ['TC1'], course_id: 'MATH',
+      teacher_id: 'T1', weekly_hours: 2,
+    }],
+    selection_blocks: [],
+    constraints: [],
+  });
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, false);
+  assert.equal(solution.status, 'INFEASIBLE_BY_TEACHER_WEEKLY_LIMIT');
+  assert.equal(solution.teacher_id, 'T1');
 });
 
 test('turns a synchronized multi-class activity into a hard same-slot rule', () => {
