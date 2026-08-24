@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "start": "concurrently --kill-others-on-fail \"pnpm --dir ../backend start\" \"vite\"",
+    "start": "concurrently --kill-others-on-fail \"pnpm --dir ../backend dev\" \"vite\"",
     "build": "vite build",
     "test": "node --test test/**/*.test.mjs",
     "preview": "vite preview"

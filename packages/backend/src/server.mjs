@@ -86,6 +86,14 @@ import {
   graduationArchiveSummary,
   graduationPreview,
 } from './graduation.mjs';
+import {
+  examStaffProfileForTeacher,
+  examPlanForEditing,
+  normalizeExamPlan,
+  validateExamSchedule,
+} from './exam-scheduling.mjs';
+import { parseExamDurationBuffer } from './exam-duration-import.mjs';
+import { exportExamScheduleWorkbook } from './exam-export.mjs';
 
 const app = express();
 app.disable('x-powered-by');
@@ -835,6 +843,113 @@ app.get('/api/status', (_req, res) => reply(res, () => {
   };
 }));
 
+function examPlanData(state) {
+  const editable = examPlanForEditing(state, state.exam_plan || { config: {}, exams: [] });
+  let schedule = state.exam_schedule || null;
+  let solveStatus = state.exam_solve_status || 'not_run';
+  if (schedule && solveStatus === 'valid') {
+    if (editable.issues.length) {
+      solveStatus = 'stale';
+    } else {
+      const validation = validateExamSchedule(state, editable.plan, schedule);
+      schedule = { ...schedule, plan: editable.plan, validation };
+      if (!validation.ok) solveStatus = 'stale';
+    }
+  }
+  return {
+    plan: editable.plan,
+    plan_issues: editable.issues,
+    schedule,
+    solve_status: solveStatus,
+    revision: repository.revision(state),
+    courses: (state.courses || []).map(course => ({
+      id: course.id,
+      name: course.name || course.id,
+      type: course.type || '',
+      grade: course.grade,
+      subject_id: course.subject_id || course.subject || course.id,
+    })),
+  };
+}
+
+app.get('/api/exams', (_req, res) => reply(res, () => examPlanData(repository.read())));
+
+app.post('/api/exams/import-durations', upload.single('file'), (req, res) => reply(res, () => {
+  if (!req.file) throw new Error('请选择考试时长统计表');
+  const filename = decodedUploadFilename(req.file.originalname);
+  if (!/\.(?:xlsx|xls)$/i.test(filename)) throw new Error('考试时长统计表只支持 .xlsx 或 .xls 文件');
+  return parseExamDurationBuffer(req.file.buffer, repository.read(), filename);
+}));
+
+app.put('/api/exams', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('保存考试计划必须携带有效的数据版本');
+  }
+  const state = repository.read();
+  const plan = normalizeExamPlan(state, req.body?.plan);
+  const saved = repository.write({
+    ...state,
+    exam_plan: plan,
+    exam_schedule: null,
+    exam_solve_status: 'not_run',
+  }, { expectedRevision });
+  return examPlanData(saved);
+}));
+
+app.post('/api/exams/solve', (req, res) => reply(res, async () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('生成考试安排必须携带有效的数据版本');
+  }
+  const state = repository.read();
+  if (!state.exam_plan) throw new Error('请先保存考试计划');
+  const requestedMaxTime = Number(req.body?.max_time_seconds);
+  const maxTimeSeconds = Number.isFinite(requestedMaxTime)
+    ? Math.min(120, Math.max(0.1, requestedMaxTime))
+    : 20;
+  const result = await runSolverJob({
+    solver: 'exam',
+    state,
+    plan: state.exam_plan,
+    options: { maxTimeSeconds },
+  });
+  if (!result.ok) throw new Error(result.reason || `排考失败: ${result.status}`);
+  const validation = validateExamSchedule(state, result.plan, result);
+  if (!validation.ok) throw new Error(`排考结果未通过独立校验：${validation.violations[0]?.message || '未知错误'}`);
+  const schedule = {
+    ...result,
+    generated_at: new Date().toISOString(),
+    validation,
+  };
+  const saved = repository.write({
+    ...state,
+    exam_plan: result.plan,
+    exam_schedule: schedule,
+    exam_solve_status: 'valid',
+  }, { expectedRevision });
+  return { schedule, revision: repository.revision(saved) };
+}));
+
+app.get('/api/exams/export', async (_req, res) => {
+  try {
+    const state = repository.read();
+    const current = examPlanData(state);
+    if (current.solve_status !== 'valid' || !current.schedule?.validation?.ok) {
+      throw new Error('请先生成并校验有效的考试安排');
+    }
+    const buffer = await exportExamScheduleWorkbook({ state, schedule: current.schedule });
+    const filename = current.schedule.plan?.config?.timetable_only
+      ? '三个年级考试时间表.xlsx'
+      : '考试安排与考场座次.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    return res.send(buffer);
+  } catch (error) {
+    return res.status(400).json({ ok: false, errors: [{ code: 'BACKEND_ERROR', msg: error.message }] });
+  }
+});
+
 app.get('/api/state', (_req, res) => reply(res, () => repository.read()));
 app.get('/api/scheduling-policy', (_req, res) => reply(res, () =>
   schedulingPolicyForState(repository.read())));
@@ -1041,7 +1156,11 @@ app.post('/api/elective-sections/:id/move-student', (req, res) => reply(res, asy
 function activeMeetingLocks(state, extraLocks = []) {
   const manualPlan = state.manual_plan || emptyManualPlan();
   const savedScheduleLocks = (state.schedule?.locks || [])
-    .filter(lock => lock.origin !== 'manual' || manualPlan.status === 'confirmed');
+    // `manual_plan.locks` is the current, revision-aware source of truth for
+    // gold-frame locks.  A saved schedule can still contain the manual locks
+    // that produced an older timetable; merging those back after a new plan
+    // is confirmed can resurrect removed section ids and abort the next solve.
+    .filter(lock => lock.origin !== 'manual');
   const confirmedManualLocks = manualPlan.status === 'confirmed' ? manualPlan.locks || [] : [];
   return mergedMeetingLocks(savedScheduleLocks, confirmedManualLocks, extraLocks);
 }
@@ -2324,6 +2443,9 @@ function changedState(state, entity, items, extra = {}) {
     validateCourseClassScopes(next);
   }
   if (state.schedule) next.solve_status = 'stale';
+  if (state.exam_schedule && ['courses', 'students', 'teachers', 'teaching_assignments'].includes(entity)) {
+    next.exam_solve_status = 'stale';
+  }
   if (state.manual_plan?.status === 'confirmed') {
     next.manual_plan = {
       ...state.manual_plan,
@@ -2410,6 +2532,12 @@ app.delete('/api/:entity/:id', (req, res) => reply(res, () => {
 app.get('/api/:entity', (req, res) => reply(res, () => {
   const value = repository.read()[req.params.entity];
   if (!Array.isArray(value)) throw new Error(`不支持的实体: ${req.params.entity}`);
+  if (req.params.entity === 'teachers') {
+    return value.map(teacher => ({
+      ...teacher,
+      ...examStaffProfileForTeacher(teacher),
+    }));
+  }
   return value;
 }));
 

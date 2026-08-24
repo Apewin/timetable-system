@@ -31,6 +31,10 @@ async function solve(job) {
     const { solveScheduleQualityLowerBounds } = await import('./quality-lower-bound.mjs');
     return solveScheduleQualityLowerBounds(job.problem, options);
   }
+  if (job.solver === 'exam') {
+    const { solveExamSchedule } = await import('./exam-scheduling.mjs');
+    return solveExamSchedule(job.state || {}, job.plan || {}, options);
+  }
   throw Object.assign(new Error(`不支持的求解作业类型: ${job.solver}`), {
     code: 'SOLVER_JOB_TYPE_UNSUPPORTED',
   });

@@ -101,3 +101,15 @@ test('refuses to graduate twice when no Senior 3 student remains', () => {
   const state = baseState({ students: baseState().students.filter(student => student.grade !== 12) });
   assert.throws(() => graduationPreview(state), /没有 Senior 3 学生/);
 });
+
+test('clears the previous school year exam plan and result during graduation', () => {
+  const result = graduateStudents(baseState({
+    exam_plan: { version: 1, exams: [{ id: 'OLD_EXAM' }] },
+    exam_schedule: { ok: true, sessions: [{ exam_id: 'OLD_EXAM' }] },
+    exam_solve_status: 'valid',
+  }));
+
+  assert.equal(result.next.exam_plan, null);
+  assert.equal(result.next.exam_schedule, null);
+  assert.equal(result.next.exam_solve_status, 'not_run');
+});

@@ -71,3 +71,32 @@ test('isolates the two-metric quality lower-bound analysis in the solver worker'
   assert.equal(result.ap_student_gap_days.baseline_value, 0);
   assert.equal(result.ap_morning_empty_student_periods.baseline_value, 1);
 });
+
+test('isolates exam scheduling in the solver worker', async () => {
+  const result = await runSolverJob({
+    solver: 'exam',
+    state: {
+      courses: [{ id: 'MATH', name: '数学', type: 'required', grade: 10 }],
+      students: [{ id: 'S1', name: '学生一', grade: 10 }],
+      teachers: [],
+      teaching_assignments: [],
+    },
+    plan: {
+      config: {
+        day_count: 3,
+        day_start: '08:00',
+        day_end: '10:00',
+        breaks: [],
+        room_count: 1,
+        room_capacity: 30,
+        require_every_teacher_invigilates: false,
+      },
+      exams: [{ id: 'EXAM_MATH', course_id: 'MATH', duration_minutes: 60 }],
+    },
+    options: { maxTimeSeconds: 2, numSearchWorkers: 1 },
+  });
+
+  assert.equal(result.ok, true, result.reason || result.status);
+  assert.equal(result.validation.ok, true);
+  assert.equal(result.sessions[0].course_id, 'MATH');
+});

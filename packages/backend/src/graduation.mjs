@@ -179,6 +179,7 @@ function rolloutPreview(state, { admin, teaching }) {
     existing_graduation_archives: (state.graduation_archives || []).length,
     resets: [
       '当前课表会被清空，需要按新学年数据重新排课。',
+      '当前考试计划和排考结果会被清空，需要按新学年名单重新生成。',
       '已确认的手动必要条件会解除，金框课程不会带入新学年。',
       '原 Senior 3 学生会从当前学生库移除，但其选课快照会保存在“毕业学生选课信息”。',
       '所有继续在校学生的 AP、其他选修和 A/B/C 选课组信息会被清空；请在新学年重新导入选课。',
@@ -259,6 +260,9 @@ export function graduateStudents(state = {}, { confirmedBy = '管理员', now = 
     admin_classes: admin.classes,
     teaching_classes: teaching.classes,
     graduation_archives: [archive, ...(state.graduation_archives || [])],
+    exam_plan: null,
+    exam_schedule: null,
+    exam_solve_status: 'not_run',
   });
   return { next, archive, preview: graduationArchiveSummary(archive) };
 }

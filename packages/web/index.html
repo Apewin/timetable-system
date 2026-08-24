@@ -21,7 +21,7 @@
         </div>
       </div>
       <div class="header-actions">
-        <button id="btn-command-search" class="command-trigger" type="button" aria-haspopup="dialog">
+        <button id="btn-command-search" class="command-trigger" type="button" aria-haspopup="dialog" aria-label="搜索页面与功能">
           <span aria-hidden="true">⌕</span>
           <span>搜索页面与功能</span>
           <kbd>⌘ K</kbd>
@@ -34,65 +34,102 @@
       </div>
     </header>
 
+    <section id="computation-progress" class="computation-progress hidden" role="status" aria-live="polite" aria-atomic="true">
+      <div class="computation-progress-heading">
+        <div>
+          <span class="computation-progress-kicker">后台计算</span>
+          <strong id="computation-progress-label">正在准备计算…</strong>
+        </div>
+        <span id="computation-progress-time">已用 0 秒</span>
+      </div>
+      <progress id="computation-progress-bar" class="computation-progress-bar" max="100" value="0">0%</progress>
+      <p id="computation-progress-note">进度按时间预算估算；求解器可能提前完成。</p>
+    </section>
+
     <div class="container">
       <nav class="sidebar" aria-label="主导航">
-        <div class="sidebar-brand">
-          <div class="sidebar-brand-mark" aria-hidden="true">排</div>
-          <div class="sidebar-brand-copy">
-            <strong>智能排课</strong>
-            <span>Academic Scheduler</span>
+        <button id="btn-sidebar-close" class="sidebar-mobile-close" type="button" aria-label="关闭侧栏">
+          <span aria-hidden="true">×</span>
+        </button>
+        <button id="sidebar-mode-switch" class="sidebar-brand" type="button" role="switch" aria-checked="false" aria-label="切换到智能排考试模式">
+          <span id="sidebar-brand-mark" class="sidebar-brand-mark" aria-hidden="true">排</span>
+          <span class="sidebar-brand-copy">
+            <strong id="sidebar-brand-title">智能排课</strong>
+            <span id="sidebar-brand-subtitle">Academic Scheduler</span>
+          </span>
+          <span class="sidebar-mode-track" aria-hidden="true"><span></span></span>
+        </button>
+        <div id="schedule-sidebar-navigation" class="sidebar-mode-navigation" data-workspace-navigation="schedule">
+          <div class="nav-section nav-section-primary">
+            <h3>排课工作台</h3>
+            <ul>
+              <li><a href="#" data-view="welcome" class="active"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">概览</span></a></li>
+              <li><a href="#" data-view="manual-timetable"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">排课表</span></a></li>
+              <li><a href="#" data-view="teacher-availability"><span class="nav-icon" aria-hidden="true">◩</span><span class="nav-label">涂课表</span></a></li>
+              <li><a href="#" data-view="schedule-editor"><span class="nav-icon" aria-hidden="true">↔</span><span class="nav-label">改课表</span></a></li>
+              <li><a href="#" data-view="past-timetables"><span class="nav-icon" aria-hidden="true">◷</span><span class="nav-label">过往课表</span></a></li>
+            </ul>
+          </div>
+          <div class="nav-section">
+            <h3>课表查看</h3>
+            <ul>
+              <li><a href="#" data-view="overview-timetable"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">总课表概览</span></a></li>
+              <li><a href="#" data-view="class-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">班</span><span class="nav-label">按班级</span></a></li>
+              <li><a href="#" data-view="teacher-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">按教师</span></a></li>
+              <li><a href="#" data-view="student-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">生</span><span class="nav-label">按学生</span></a></li>
+              <li><a href="#" data-view="ap-group-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">AP</span><span class="nav-label">AP 分流组</span></a></li>
+              <li><a href="#" data-view="room-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">按教室</span></a></li>
+            </ul>
+          </div>
+          <div class="nav-section">
+            <h3>数据管理</h3>
+            <ul>
+              <li><a href="#" data-view="students"><span class="nav-icon nav-icon-text" aria-hidden="true">生</span><span class="nav-label">学生管理</span></a></li>
+              <li><a href="#" data-view="teachers"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">教师管理</span></a></li>
+              <li><a href="#" data-view="classes"><span class="nav-icon nav-icon-text" aria-hidden="true">班</span><span class="nav-label">班级管理</span></a></li>
+              <li><a href="#" data-view="courses"><span class="nav-icon nav-icon-text" aria-hidden="true">课</span><span class="nav-label">课程管理</span></a></li>
+              <li><a href="#" data-view="rooms"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">教室管理</span></a></li>
+              <li><a href="#" data-view="assignments"><span class="nav-icon" aria-hidden="true">⌘</span><span class="nav-label">教师分工</span></a></li>
+              <li><a href="#" data-view="selections"><span class="nav-icon nav-icon-text" aria-hidden="true">AP</span><span class="nav-label">AP 选课</span></a></li>
+              <li><a href="#" data-view="elective-selections"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">其他选课</span></a></li>
+              <li><a href="#" data-view="sectioning"><span class="nav-icon" aria-hidden="true">⑂</span><span class="nav-label">分班管理</span></a></li>
+              <li><a href="#" data-view="constraints"><span class="nav-icon" aria-hidden="true">≋</span><span class="nav-label">约束管理</span></a></li>
+            </ul>
+          </div>
+          <div class="nav-section">
+            <h3>系统工具</h3>
+            <ul>
+              <li><a href="#" data-view="import"><span class="nav-icon" aria-hidden="true">⇩</span><span class="nav-label">数据导入</span></a></li>
+              <li><a href="#" data-view="graduation-archives"><span class="nav-icon" aria-hidden="true">⌑</span><span class="nav-label">毕业学生选课信息</span></a></li>
+              <li><a href="#" data-view="export"><span class="nav-icon" aria-hidden="true">⇧</span><span class="nav-label">导出课表</span></a></li>
+              <li><a href="#" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">系统设置</span></a></li>
+            </ul>
           </div>
         </div>
-        <div class="nav-section nav-section-primary">
-          <h3>排课工作台</h3>
-          <ul>
-            <li><a href="#" data-view="welcome" class="active"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">概览</span></a></li>
-            <li><a href="#" data-view="manual-timetable"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">排课表</span></a></li>
-            <li><a href="#" data-view="teacher-availability"><span class="nav-icon" aria-hidden="true">◩</span><span class="nav-label">涂课表</span></a></li>
-            <li><a href="#" data-view="schedule-editor"><span class="nav-icon" aria-hidden="true">↔</span><span class="nav-label">改课表</span></a></li>
-            <li><a href="#" data-view="past-timetables"><span class="nav-icon" aria-hidden="true">◷</span><span class="nav-label">过往课表</span></a></li>
-          </ul>
-        </div>
-        <div class="nav-section">
-          <h3>课表查看</h3>
-          <ul>
-            <li><a href="#" data-view="overview-timetable"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">总课表概览</span></a></li>
-            <li><a href="#" data-view="class-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">班</span><span class="nav-label">按班级</span></a></li>
-            <li><a href="#" data-view="teacher-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">按教师</span></a></li>
-            <li><a href="#" data-view="student-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">生</span><span class="nav-label">按学生</span></a></li>
-            <li><a href="#" data-view="ap-group-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">AP</span><span class="nav-label">AP 分流组</span></a></li>
-            <li><a href="#" data-view="room-timetable"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">按教室</span></a></li>
-          </ul>
-        </div>
-        <div class="nav-section">
-          <h3>数据管理</h3>
-          <ul>
-            <li><a href="#" data-view="students"><span class="nav-icon nav-icon-text" aria-hidden="true">生</span><span class="nav-label">学生管理</span></a></li>
-            <li><a href="#" data-view="teachers"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">教师管理</span></a></li>
-            <li><a href="#" data-view="classes"><span class="nav-icon nav-icon-text" aria-hidden="true">班</span><span class="nav-label">班级管理</span></a></li>
-            <li><a href="#" data-view="courses"><span class="nav-icon nav-icon-text" aria-hidden="true">课</span><span class="nav-label">课程管理</span></a></li>
-            <li><a href="#" data-view="rooms"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">教室管理</span></a></li>
-            <li><a href="#" data-view="assignments"><span class="nav-icon" aria-hidden="true">⌘</span><span class="nav-label">教师分工</span></a></li>
-            <li><a href="#" data-view="selections"><span class="nav-icon nav-icon-text" aria-hidden="true">AP</span><span class="nav-label">AP 选课</span></a></li>
-            <li><a href="#" data-view="elective-selections"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">其他选课</span></a></li>
-            <li><a href="#" data-view="sectioning"><span class="nav-icon" aria-hidden="true">⑂</span><span class="nav-label">分班管理</span></a></li>
-            <li><a href="#" data-view="constraints"><span class="nav-icon" aria-hidden="true">≋</span><span class="nav-label">约束管理</span></a></li>
-          </ul>
-        </div>
-        <div class="nav-section">
-          <h3>系统工具</h3>
-          <ul>
-            <li><a href="#" data-view="import"><span class="nav-icon" aria-hidden="true">⇩</span><span class="nav-label">数据导入</span></a></li>
-            <li><a href="#" data-view="graduation-archives"><span class="nav-icon" aria-hidden="true">⌑</span><span class="nav-label">毕业学生选课信息</span></a></li>
-            <li><a href="#" data-view="export"><span class="nav-icon" aria-hidden="true">⇧</span><span class="nav-label">导出课表</span></a></li>
-            <li><a href="#" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">系统设置</span></a></li>
-          </ul>
+        <div id="exam-sidebar-navigation" class="sidebar-mode-navigation hidden" data-workspace-navigation="exam" hidden>
+          <div class="nav-section nav-section-primary">
+            <h3>智能排考试</h3>
+            <ul>
+              <li><a href="#" data-view="exam-scheduling"><span class="nav-icon" aria-hidden="true">考</span><span class="nav-label">考试工作台</span></a></li>
+              <li><a href="#" data-exam-target="exam-config-card"><span class="nav-icon nav-icon-text" aria-hidden="true">01</span><span class="nav-label">考试周期与时间</span></a></li>
+              <li><a href="#" data-exam-target="exam-subjects-card"><span class="nav-icon nav-icon-text" aria-hidden="true">02</span><span class="nav-label">考试科目与时长</span></a></li>
+              <li><a href="#" data-exam-target="exam-result-card"><span class="nav-icon nav-icon-text" aria-hidden="true">03</span><span class="nav-label">排考结果</span></a></li>
+            </ul>
+          </div>
+          <div class="nav-section">
+            <h3>输出与资源</h3>
+            <ul>
+              <li><a href="#" data-exam-action="export"><span class="nav-icon" aria-hidden="true">⇧</span><span class="nav-label">导出考试安排与座次</span></a></li>
+              <li><a href="#" data-exam-target="exam-result-card"><span class="nav-icon nav-icon-text" aria-hidden="true">室</span><span class="nav-label">考场与座次</span></a></li>
+              <li><a href="#" data-exam-target="exam-teacher-loads"><span class="nav-icon nav-icon-text" aria-hidden="true">师</span><span class="nav-label">监考与巡考</span></a></li>
+            </ul>
+          </div>
         </div>
         <div class="sidebar-footer">
           <span class="sidebar-status-dot" aria-hidden="true"></span>
           <div class="sidebar-footer-copy">
-            <strong>Rules-first 引擎</strong>
-            <span>硬约束独立校验</span>
+            <strong id="sidebar-footer-title">Rules-first 引擎</strong>
+            <span id="sidebar-footer-subtitle">硬约束独立校验</span>
           </div>
         </div>
       </nav>
@@ -192,6 +229,138 @@
               </aside>
             </div>
           </div>
+        </div>
+
+        <!-- 排考试 -->
+        <div id="view-exam-scheduling" class="view">
+          <div class="exam-page-header">
+            <div>
+              <span class="page-kicker">考试周工作台</span>
+              <h2>排考试与考场</h2>
+              <p>先生成三个年级考试时间表，再进入考场与教师任务阶段；第二阶段会校验学生冲突并分配座次。导出的每门考试会按实际选课名单生成可打印座次图：30 人考场使用 5 列座位，不足 30 人使用 4 列座位。每门考试只安排 1 位实际任课教师巡考；安生教师中除升学顾问外参加监考，季主任、班主任、实验教师和升学顾问不进入监考名单。巡考严格读取具体课程的教师分工，不按相近学科或授课资格推断。排考试与日常排课属于不同时间段，不读取日常课表冲突。</p>
+            </div>
+            <div class="exam-page-actions">
+              <button class="btn btn-secondary" type="button" onclick="saveExamPlan()">保存考试设置</button>
+              <button class="btn btn-primary" type="button" onclick="solveExamPlan()">生成考试时间表</button>
+              <button id="exam-staff-button" class="btn btn-primary" type="button" onclick="staffExamPlan()">安排监考与巡考</button>
+              <button id="exam-export-button" class="btn btn-success" type="button" onclick="exportExamPlan()" disabled>导出考试安排与座次 Excel</button>
+            </div>
+          </div>
+          <div id="exam-plan-status" class="exam-status" role="status" aria-live="polite">正在读取考试计划…</div>
+
+          <div class="exam-layout">
+            <section id="exam-config-card" class="exam-card">
+              <div class="exam-card-heading">
+                <div><span>01</span><h3>考试周期与时间窗口</h3></div>
+                <p>每个年级的考试只会安排在自己设置的天数范围内；教师任务阶段还会使用考场容量、教师学科和监考人数。普通考试后休息 15 分钟；系统自动识别本批次最长考试，结束后休息 30 分钟。</p>
+              </div>
+              <div class="exam-config-grid">
+                <label>高一考试天数
+                  <select id="exam-day-count-g10" class="select">
+                    <option value="3">3 天</option><option value="4">4 天</option><option value="5">5 天</option>
+                  </select>
+                </label>
+                <label>高二考试天数
+                  <select id="exam-day-count-g11" class="select">
+                    <option value="3">3 天</option><option value="4">4 天</option><option value="5">5 天</option>
+                  </select>
+                </label>
+                <label>高三考试天数
+                  <select id="exam-day-count-g12" class="select">
+                    <option value="3">3 天</option><option value="4">4 天</option><option value="5">5 天</option>
+                  </select>
+                </label>
+                <label>第一天日期
+                  <input id="exam-start-date" class="input" type="date">
+                </label>
+                <label>每日开始
+                  <input id="exam-day-start" class="input" type="time" step="1800" value="08:00">
+                </label>
+                <label>每日结束
+                  <input id="exam-day-end" class="input" type="time" step="1800" value="17:30">
+                </label>
+                <label>普通考试后休息（分钟）
+                  <input id="exam-minimum-gap" class="input" type="number" min="10" max="120" step="5" value="15">
+                </label>
+                <label>最长考试后休息（分钟）
+                  <input id="exam-longest-gap" class="input" type="number" min="10" max="120" step="5" value="30">
+                </label>
+                <label class="exam-config-wide">停考时段
+                  <input id="exam-breaks" class="input" value="12:00-13:30" placeholder="例如 12:00-13:30；多个时段用逗号分隔">
+                </label>
+                <label>同时可用考场上限
+                  <input id="exam-room-count" class="input" type="number" min="1" max="100" value="10">
+                </label>
+                <label>单考场容量上限
+                  <input id="exam-room-capacity" class="input" type="number" min="1" max="200" value="30">
+                </label>
+                <label>每考场监考人数
+                  <input id="exam-invigilators" class="input" type="number" min="1" max="4" value="1">
+                </label>
+                <label class="exam-checkbox exam-config-wide">
+                  <input id="exam-require-all-teachers" type="checkbox" checked>
+                  <span>保证每位具备监考资格的安生教师至少参加一次监考（升学顾问除外）；实际教授该课程的教师中只安排 1 位巡考/主考</span>
+                </label>
+              </div>
+            </section>
+
+            <section id="exam-subjects-card" class="exam-card">
+              <div class="exam-card-heading">
+                <div><span>02</span><h3>考试科目</h3></div>
+                <p>先上传考试时长统计表批量生成考试，再逐科核对课程映射和调整分钟数；当前只按科目和年级排时间，即使当前考生人数为 0 也不会漏排。</p>
+              </div>
+              <div class="exam-import-panel">
+                <div>
+                  <strong>从“各科目考试时长统计”导入</strong>
+                  <span>支持旧版 .xls 和 .xlsx；先预览匹配结果，不会直接覆盖当前列表。</span>
+                  <span>“二外”按法语、日语、德语合并识别；进入教师任务阶段后，由同一名具备监考资格的安生语言任课教师同时担任巡考和监考。</span>
+                </div>
+                <button class="btn btn-secondary" type="button" onclick="document.getElementById('exam-duration-file-input').click()">选择时长表</button>
+                <input id="exam-duration-file-input" type="file" accept=".xlsx,.xls" hidden>
+              </div>
+              <div id="exam-import-preview" class="exam-import-preview hidden">
+                <div class="exam-import-preview-heading">
+                  <p id="exam-import-summary"></p>
+                  <button class="btn btn-primary btn-sm" type="button" onclick="applyExamDurationImport()">应用并替换考试列表</button>
+                </div>
+                <div class="table-container exam-import-preview-table">
+                  <table class="exam-table">
+                    <thead><tr><th>年级</th><th>表中科目</th><th>收集时长</th><th>名单来源课程</th></tr></thead>
+                    <tbody id="exam-import-preview-rows"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="exam-add-row">
+                <select id="exam-course-select" class="select"><option value="">选择课程</option></select>
+                <select id="exam-duration-select" class="select">
+                  <option value="30">30 分钟</option><option value="60">1 小时</option>
+                  <option value="90" selected>1.5 小时</option><option value="120">2 小时</option>
+                </select>
+                <button class="btn btn-secondary" type="button" onclick="addExamCourse()">添加考试</button>
+              </div>
+              <div class="table-container exam-table-wrap">
+                <table class="exam-table">
+                  <thead><tr><th>科目</th><th>类型</th><th>时长</th><th>考生</th><th>预计考场</th><th></th></tr></thead>
+                  <tbody id="exam-course-rows"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <section id="exam-result-card" class="exam-card exam-result-card hidden">
+            <div class="exam-card-heading">
+              <div><span>03</span><h3>考试安排结果</h3></div>
+              <p id="exam-result-summary"></p>
+            </div>
+            <div id="exam-result-metrics" class="exam-metrics"></div>
+            <div class="table-container">
+              <table class="exam-table">
+                <thead><tr><th>考试日</th><th>时间</th><th>科目</th><th>考生</th><th>考场</th><th>巡考（实际任课）</th><th>监考</th></tr></thead>
+                <tbody id="exam-schedule-rows"></tbody>
+              </table>
+            </div>
+            <div id="exam-teacher-loads" class="exam-teacher-loads"></div>
+          </section>
         </div>
 
         <!-- 排课表 -->
@@ -662,6 +831,17 @@
             <input type="text" id="search-assignments" class="search-input" placeholder="🔍 搜索教师、课程或班级...">
             <button id="btn-add-assignment" class="btn btn-primary">添加分工</button>
             <button id="btn-build-tasks" class="btn btn-secondary">生成教学任务</button>
+          </div>
+          <div id="assignment-action-feedback" class="assignment-action-feedback hidden" role="status" aria-live="polite"></div>
+          <section id="teaching-task-results" class="assignment-task-results" aria-labelledby="teaching-task-results-title">
+            <div class="loading">正在读取教学任务生成结果…</div>
+          </section>
+          <div class="assignment-list-heading">
+            <div>
+              <span class="page-kicker">生成任务的数据来源</span>
+              <h3>已录入教师分工</h3>
+            </div>
+            <p>新增分工会出现在下表；如需让它进入排课任务，请重新点击“生成教学任务”。</p>
           </div>
           <div id="assignments-list" class="content">加载中...</div>
         </div>
