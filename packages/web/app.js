@@ -5940,9 +5940,15 @@ function initAdminShell() {
 
 let aiAssistantConversation = [];
 let aiAssistantBusy = false;
+let aiAssistantActiveView = '';
+let aiAssistantRequestId = 0;
 
 function aiAssistantViewLabel(viewName = getCurrentView()) {
   return AI_ASSISTANT_VIEW_LABELS[viewName] || '当前页面';
+}
+
+function aiAssistantIntroduction(viewName = getCurrentView()) {
+  return `我是排课助手。当前在${aiAssistantViewLabel(viewName)}，可以解释数据、排查问题，也能使用受控 CLI 查询状态，或把明确的修改需求整理成待确认操作。任何数据修改都必须点击确认后才会执行。`;
 }
 
 function aiAssistantContext(viewName = getCurrentView()) {
@@ -5976,9 +5982,27 @@ function aiAssistantContext(viewName = getCurrentView()) {
   return { view: viewName, selected };
 }
 
+function aiAssistantContextKey(context = aiAssistantContext()) {
+  return JSON.stringify(context);
+}
+
 function updateAiAssistantContext(viewName = getCurrentView()) {
   const label = document.getElementById('ai-assistant-context-label');
   if (label) label.textContent = `当前页面：${aiAssistantViewLabel(viewName)}`;
+  const changedView = Boolean(aiAssistantActiveView && aiAssistantActiveView !== viewName);
+  aiAssistantActiveView = viewName;
+  if (!changedView) return;
+
+  aiAssistantConversation = [];
+  aiAssistantRequestId += 1;
+  aiAssistantBusy = false;
+  const messages = document.getElementById('ai-assistant-messages');
+  if (messages) messages.replaceChildren();
+  const status = document.getElementById('ai-assistant-status');
+  if (status) status.textContent = '';
+  const sendButton = document.getElementById('btn-ai-assistant-send');
+  if (sendButton) sendButton.disabled = false;
+  renderAiAssistantMessage('assistant', aiAssistantIntroduction(viewName));
 }
 
 function renderAiAssistantMessage(role, content) {
@@ -6002,12 +6026,15 @@ async function executeAiAssistantAction(action, card, confirmButton) {
   const isTeacherSwap = action.type === 'swap_teaching_assignments';
   const isScheduleMove = action.type === 'move_schedule_meeting';
   const isCliOperation = action.type === 'cli_operation';
+  const isClearUnlocked = isCliOperation && action.operation === 'schedule.clear-unlocked';
   if (!isTeacherSwap && !isScheduleMove && !isCliOperation) return;
   const confirmation = isTeacherSwap
     ? '确认调换这两项课程的授课教师吗？当前课表会标记为待重排。'
     : isScheduleMove
       ? `确认将“${action.course_name}”从${action.from_label}调整到${action.to_label}吗？`
-      : `确认通过 CLI 执行“${action.title || action.operation}”吗？`;
+      : isClearUnlocked
+        ? '确认清除全部未锁定课时吗？系统会原位保留金框必要条件及其他已锁定课时。'
+        : `确认通过 CLI 执行“${action.title || action.operation}”吗？`;
   if (!confirm(confirmation)) return;
   confirmButton.disabled = true;
   setAiAssistantStatus(isTeacherSwap
@@ -6047,7 +6074,9 @@ async function executeAiAssistantAction(action, card, confirmButton) {
       ? '教师分工已更新。现有课表已标记为待重排，请重新确认必要条件后再运行 AI 排课。'
       : isScheduleMove
         ? '课程时段已调整并通过硬约束校验，当前课表已刷新。'
-        : `CLI 操作 ${action.operation} 已执行，页面数据已刷新。`);
+        : isClearUnlocked
+          ? (result.message || '未锁定课时已清除，所有金框和其他已锁定课时均已保留。')
+          : `CLI 操作 ${action.operation} 已执行，页面数据已刷新。`);
     setAiAssistantStatus('操作已完成，页面数据已刷新。');
     await loadViewData(getCurrentView());
     updateAiAssistantContext();
@@ -6135,20 +6164,27 @@ async function sendAiAssistantMessage(rawMessage) {
   if (!message || aiAssistantBusy) return;
   const input = document.getElementById('ai-assistant-input');
   const sendButton = document.getElementById('btn-ai-assistant-send');
-  const history = aiAssistantConversation.slice(-6);
-  aiAssistantConversation.push({ role: 'user', content: message });
+  const context = aiAssistantContext();
+  const contextKey = aiAssistantContextKey(context);
+  const history = aiAssistantConversation
+    .filter(item => item.context_key === contextKey)
+    .slice(-6)
+    .map(({ role, content }) => ({ role, content }));
+  aiAssistantConversation.push({ role: 'user', content: message, context_key: contextKey });
   renderAiAssistantMessage('user', message);
   if (input) input.value = '';
   aiAssistantBusy = true;
+  const requestId = ++aiAssistantRequestId;
   if (sendButton) sendButton.disabled = true;
   setAiAssistantStatus('DeepSeek 正在分析当前页面…');
   try {
     const result = await api('/assistant/chat', {
       method: 'POST',
-      body: JSON.stringify({ message, context: aiAssistantContext(), history }),
+      body: JSON.stringify({ message, context, history }),
     });
+    if (requestId !== aiAssistantRequestId || contextKey !== aiAssistantContextKey()) return;
     const response = String(result?.response || '').trim() || '没有收到可显示的回答，请稍后重试。';
-    aiAssistantConversation.push({ role: 'assistant', content: response });
+    aiAssistantConversation.push({ role: 'assistant', content: response, context_key: contextKey });
     renderAiAssistantMessage('assistant', response);
     if (result?.action) renderAiAssistantActionProposal(result.action);
     if (result?.action_error) renderAiAssistantMessage('error', result.action_error);
@@ -6157,13 +6193,16 @@ async function sendAiAssistantMessage(rawMessage) {
       ? `已使用 ${result?.model || '当前模型'}，并通过 CLI 查询 ${cliUsage.map(item => item.operation).join('、')}`
       : `已使用 ${result?.model || '当前模型'} 分析`);
   } catch (error) {
+    if (requestId !== aiAssistantRequestId || contextKey !== aiAssistantContextKey()) return;
     const response = `暂时无法分析：${error.message || '请求失败'}`;
-    aiAssistantConversation.push({ role: 'assistant', content: response });
+    aiAssistantConversation.push({ role: 'assistant', content: response, context_key: contextKey });
     renderAiAssistantMessage('error', response);
     setAiAssistantStatus('请求失败，可检查系统设置中的 API 配置。');
   } finally {
-    aiAssistantBusy = false;
-    if (sendButton) sendButton.disabled = false;
+    if (requestId === aiAssistantRequestId) {
+      aiAssistantBusy = false;
+      if (sendButton) sendButton.disabled = false;
+    }
   }
 }
 
@@ -6174,7 +6213,7 @@ function initAiAssistant() {
   const open = document.getElementById('btn-ai-assistant-open');
   if (!input || !sendButton || !toggle || !open) return;
   updateAiAssistantContext();
-  renderAiAssistantMessage('assistant', `我是排课助手。当前在${aiAssistantViewLabel()}，可以解释数据、排查问题，也能使用受控 CLI 查询状态，或把明确的修改需求整理成待确认操作。任何数据修改都必须点击确认后才会执行。`);
+  renderAiAssistantMessage('assistant', aiAssistantIntroduction());
   sendButton.addEventListener('click', () => sendAiAssistantMessage(input.value));
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey) {

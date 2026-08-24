@@ -4958,11 +4958,27 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
   line-height: 1.12;
 }
 
+.welcome-header .welcome-quote {
+  max-width: 1080px;
+  font-size: clamp(15px, 1.3vw, 19px);
+  font-weight: 560;
+  letter-spacing: -.01em;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
 .welcome-subtitle {
   max-width: 720px;
   margin: 9px 0 0;
   color: var(--shell-muted);
   font-size: 14px;
+}
+
+.welcome-quote-attribution {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
 }
 
 .welcome-header-actions { display: flex; gap: 8px; flex: 0 0 auto; }

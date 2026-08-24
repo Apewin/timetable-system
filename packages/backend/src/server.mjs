@@ -6,6 +6,7 @@ import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { StateRepository } from './state-repository.mjs';
 import { expandScheduleAssignments as expandedAssignments } from './schedule-projection.mjs';
+import { clearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
 import { apGroupDetail, listApGroups } from './ap-group-projection.mjs';
 import { normalizeSchedulingPolicy, schedulingPolicyForState } from './scheduling-policy.mjs';
 import { validateRules } from './rule-schema.mjs';
@@ -1316,6 +1317,34 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
 app.post('/api/solve', (req, res) => reply(res, async () =>
   solveAndPersist(repository.read(), req.body || {})));
 
+app.post('/api/schedule/clear-unlocked', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('仅清空未锁定课时必须携带待确认操作的数据版本');
+  }
+  const state = repository.read();
+  if (expectedRevision !== repository.revision(state)) {
+    throw new Error('系统数据已变化，请让助手基于最新课表重新生成操作');
+  }
+  const result = clearUnlockedSchedule(state, {
+    confirmedBy: importText(req.body?.confirmed_by) || 'AI 助手确认卡',
+  });
+  if (!result.changed) return {
+    message: '当前课表没有未锁定课时，无需清理。',
+    ...result.preview,
+    revision: repository.revision(state),
+    solve_status: state.solve_status,
+  };
+  const saved = repository.write(result.state, { expectedRevision });
+  return {
+    message: `已保留 ${result.preview.retained_locked_meetings} 个锁定课时，`
+      + `并清除 ${result.preview.cleared_unlocked_meetings} 个未锁定课时。`,
+    ...result.preview,
+    revision: repository.revision(saved),
+    solve_status: saved.solve_status,
+  };
+}));
+
 function manualEditingProblem(state) {
   try {
     return {
@@ -2175,7 +2204,7 @@ app.post('/api/assistant/actions/execute-cli-operation', (req, res) => reply(res
     baseUrl: internalApiBaseUrl(req),
   });
   return {
-    message: `CLI 操作 ${operation} 已执行`,
+    message: importText(result?.message) || `CLI 操作 ${operation} 已执行`,
     operation,
     result,
   };

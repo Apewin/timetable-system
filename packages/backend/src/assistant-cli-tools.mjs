@@ -1,5 +1,6 @@
 import { OPERATIONS } from '../../cli/src/api-manifest.mjs';
 import { runCli } from '../../cli/src/cli.mjs';
+import { previewClearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
 
 const SAFE_READ_OPERATIONS = new Set([
   'system.status',
@@ -18,6 +19,7 @@ const SAFE_READ_OPERATIONS = new Set([
 const CONFIRM_WRITE_OPERATIONS = new Set([
   'schedule.tasks.build',
   'schedule.solve',
+  'schedule.clear-unlocked',
   'schedule.lock',
   'schedule.unlock',
   'schedule.swap',
@@ -37,6 +39,7 @@ const CONFIRM_WRITE_OPERATIONS = new Set([
 const OPERATION_TITLES = {
   'schedule.tasks.build': '重新生成排课任务',
   'schedule.solve': '运行自动排课',
+  'schedule.clear-unlocked': '仅清空未锁定部分',
   'schedule.lock': '锁定课表课程',
   'schedule.unlock': '解除课表锁定',
   'schedule.swap': '调整课程时段',
@@ -78,7 +81,9 @@ export function assistantCliTools() {
       operation: operation.name,
       method: operation.method,
       path_parameters: pathParameters(operation.path),
-      body: operation.body,
+      body: operation.name === 'schedule.clear-unlocked'
+        ? { required: [], optional: [] }
+        : operation.body,
       mode: SAFE_READ_OPERATIONS.has(operation.name) ? 'read' : 'confirm',
     }));
 }
@@ -93,8 +98,11 @@ export function safeAssistantCliCall(rawCall) {
     throw new Error('助手请求了未获准的 CLI 操作');
   }
   const params = rawCall.params && typeof rawCall.params === 'object' && !Array.isArray(rawCall.params)
-    ? rawCall.params
+    ? { ...rawCall.params }
     : {};
+  // The confirmation card binds this revision to current server state. The
+  // model must never choose it or turn it into a path parameter.
+  if (operation.name === 'schedule.clear-unlocked') delete params.expected_revision;
   const body = rawCall.body === undefined ? null : rawCall.body;
   const requiredParams = pathParameters(operation.path);
   const suppliedParams = Object.keys(params);
@@ -123,12 +131,31 @@ export function safeAssistantCliReadCall(rawCall) {
 export function assistantCliMutationProposal(rawCall, state = {}) {
   const call = safeAssistantCliCall(rawCall);
   if (call?.mode !== 'confirm') throw new Error('该 CLI 操作不是可确认的写操作');
+  const expectedRevision = Number(state.meta?.revision) || 0;
+  if (call.operation === 'schedule.clear-unlocked') {
+    const preview = previewClearUnlockedSchedule(state);
+    if (!preview.cleared_unlocked_meetings) throw new Error('当前课表没有可清除的未锁定课时');
+    return {
+      type: 'cli_operation',
+      operation: call.operation,
+      params: call.params,
+      body: { ...(call.body || {}), expected_revision: expectedRevision },
+      expected_revision: expectedRevision,
+      title: OPERATION_TITLES[call.operation],
+      preview,
+      impacts: [
+        `保留 ${preview.retained_locked_meetings} 个已锁定课时，金框必要条件及其他课表锁不会解除。`,
+        `清除 ${preview.cleared_unlocked_meetings} 个未锁定课时；课程、教师、学生、分班和选课数据不变。`,
+        '执行后课表会回到“待补全”状态，可继续手排或重新运行 AI 补全。',
+      ],
+    };
+  }
   return {
     type: 'cli_operation',
     operation: call.operation,
     params: call.params,
     body: call.body,
-    expected_revision: Number(state.meta?.revision) || 0,
+    expected_revision: expectedRevision,
     title: OPERATION_TITLES[call.operation] || `执行 ${call.operation}`,
     impacts: [
       '只有点击确认后才会通过 CLI 执行；取消不会修改任何数据。',

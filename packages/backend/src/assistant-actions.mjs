@@ -27,6 +27,17 @@ function mentionedGrades(value) {
   return aliases.filter(([, pattern]) => pattern.test(source)).map(([grade]) => grade);
 }
 
+export function isClearUnlockedScheduleRequest(rawMessage) {
+  const message = text(rawMessage).replace(/\s+/g, '');
+  if (/(不要|别|无需|不需要|取消)(?:再)?(?:清空|清除|删除|移除|去掉)/.test(message)) return false;
+  const clear = /(清空|清除|删除|移除|去掉)/.test(message);
+  const unlocked = /(未锁定|没锁定|没有锁定|非锁定|未加锁|没加锁|非必要(?:条件|课程)?|未确认为必要条件)/.test(message);
+  const preserveLocked = /保留.*(锁定|金框)/.test(message);
+  const clearRemainder = /(?:清空|清除|删除|移除|去掉).*(?:其余|其他|剩余|剩下)/.test(message)
+    || /(?:其余|其他|剩余|剩下).*(?:清空|清除|删除|移除|去掉)/.test(message);
+  return (clear && unlocked) || (preserveLocked && clearRemainder);
+}
+
 function segmentForTeacher(message, teacherName, startAt = 0) {
   const index = message.indexOf(teacherName, startAt);
   if (index < 0) return null;

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   applyTeacherAssignmentSwap,
   inferTeacherAssignmentSwap,
+  isClearUnlockedScheduleRequest,
   teacherAssignmentSwapProposal,
 } from '../src/assistant-actions.mjs';
 
@@ -60,4 +61,15 @@ test('resolves an explicit two-teacher, two-grade request only when it is unique
     id: 'TA_A_ALT', teacher_id: 'T_A', course_id: 'C_B', class_ids: ['TC1'], class_type: 'teaching', weekly_hours: 1,
   });
   assert.equal(inferTeacherAssignmentSwap(ambiguous, '请调换甲老师和乙老师的课'), null);
+});
+
+test('recognizes the explicit clear-unlocked wording used in the assistant', () => {
+  assert.equal(isClearUnlockedScheduleRequest('仅清空未锁定部分'), true);
+  assert.equal(isClearUnlockedScheduleRequest('清除非锁定的'), true);
+  assert.equal(isClearUnlockedScheduleRequest('清除非锁定课程'), true);
+  assert.equal(isClearUnlockedScheduleRequest('清除非必要课程的排课'), true);
+  assert.equal(isClearUnlockedScheduleRequest('保留锁定课程，清空剩余课程'), true);
+  assert.equal(isClearUnlockedScheduleRequest('清空全部课程'), false);
+  assert.equal(isClearUnlockedScheduleRequest('解除全部锁定'), false);
+  assert.equal(isClearUnlockedScheduleRequest('不要清除非锁定课程'), false);
 });

@@ -12,6 +12,8 @@ packages/web/.env.local
 dist/
 build/
 outputs/
+/release/
+/.workbuddy/
 
 # IDE
 .vscode/

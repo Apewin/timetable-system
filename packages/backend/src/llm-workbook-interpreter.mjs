@@ -1,13 +1,18 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as XLSX from 'xlsx';
-import { inferTeacherAssignmentSwap, teacherAssignmentSwapProposal } from './assistant-actions.mjs';
+import {
+  inferTeacherAssignmentSwap,
+  isClearUnlockedScheduleRequest,
+  teacherAssignmentSwapProposal,
+} from './assistant-actions.mjs';
 import {
   assistantCliMutationProposal,
   assistantCliTools,
   boundedAssistantCliResult,
   safeAssistantCliCall,
 } from './assistant-cli-tools.mjs';
+import { previewClearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
 
 const envFile = fileURLToPath(new URL('../../../.env.local', import.meta.url));
 const DEFAULT_API_URL = 'https://api.deepseek.com';
@@ -341,12 +346,14 @@ export async function suggestTeacherTemplateMappings(mappings, {
 export const AI_ASSISTANT_PROMPT = [
   '你是学校排课系统内置的页面助手。请使用简洁、清晰的中文回答。',
   '你只能依据当前问题、对话历史和提供的页面数据摘要作答；不确定时要明确说明缺少的具体数据，绝不能编造。',
+  'page_snapshot 是本次请求的最新页面；若对话历史提到其他页面、班级或筛选项，必须忽略冲突的旧上下文，以 current_page 和 current_selection 为准。',
   '你不能直接写入：不得声称已经修改、保存、删除、导入、锁定、解锁、排课或调用了系统。',
   'cli_tools 是唯一可用的 CLI 白名单。mode=read 的工具可选择至多一个，系统返回 cli_tool_result 后再回答；mode=confirm 的工具只能在用户明确要求修改时生成待确认卡，绝不能声称已经执行。不得猜测或构造清单外的操作。',
   '当用户明确要求调换两项“教师分工”中的授课教师，并且数据摘要能唯一定位这两项分工时，可以提出待确认操作；绝不能把自然语言当作已执行的写操作。',
   '仅在两位教师互相具有对方课程授课资格时，才提出调换；若无法唯一定位、不是教师分工、或资格不满足，action 必须为 null，并说明缺少什么信息。',
   'can_teach_course_ids 是唯一的授课资格依据，不随年级变化；若两项教师分工的 course_id 都是 PE，且两位教师的列表都含 PE，即使分别写着高一/高二，也符合互换资格。',
   '手动确认并加金框的课程是必要条件，不能建议绕过或移动；自习除已锁定外可留空；当前排课不分配教室，也不考虑教室容量。',
+  '用户明确要求清空未锁定或非锁定课程时，必须选择 schedule.clear-unlocked 待确认操作；它会保留金框和其他课表锁，不得要求用户先解锁或重新排课。',
   '不要泄露 API Key、模型配置、服务器路径、完整学生名单、学生学号或其他未在数据摘要中提供的个人信息。',
   '当页面摘要含 selected_teacher_schedule，且用户询问课表均衡、排班或调课时，必须直接给出可执行的排班建议，不能只复述免责声明、要求用户自行查看课表或把判断推回给用户。',
   '这类回答应先用 1 句话说明实际周课量分布，再给出 1 条优先建议“课程／班级：原时段 → 候选时段”，并说明这一次调整如何改善每天节次分布。只能引用摘要中已有的实际时段和 candidate_targets；不得自行发明时段。',
@@ -374,11 +381,12 @@ function boundedCountBy(items = [], key) {
 function assistantPageContext(raw = {}) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const allowedViews = new Set([
-    'welcome', 'manual-timetable', 'past-timetables', 'overview-timetable',
+    'welcome', 'manual-timetable', 'teacher-availability', 'schedule-editor',
+    'past-timetables', 'overview-timetable',
     'class-timetable', 'teacher-timetable', 'student-timetable', 'ap-group-timetable',
     'room-timetable', 'students', 'teachers', 'classes', 'courses', 'rooms',
     'assignments', 'selections', 'elective-selections', 'sectioning', 'constraints',
-    'import', 'export', 'settings', 'status',
+    'import', 'graduation-archives', 'export', 'settings', 'status',
   ]);
   const selected = source.selected && typeof source.selected === 'object' ? source.selected : {};
   return {
@@ -558,6 +566,10 @@ export function assistantContextSnapshot(state = {}, rawContext = {}) {
   const courses = Array.isArray(state.courses) ? state.courses : [];
   const sections = Array.isArray(state.section_plan?.sections) ? state.section_plan.sections : [];
   const assignments = Array.isArray(state.schedule?.assignments) ? state.schedule.assignments : [];
+  const meetings = Array.isArray(state.schedule?.meetings) ? state.schedule.meetings : [];
+  const meetingLockSummary = state.schedule
+    ? previewClearUnlockedSchedule(state)
+    : { retained_locked_meetings: 0, cleared_unlocked_meetings: 0 };
   const manualPlan = state.manual_plan || {};
   const rules = Array.isArray(state.constraints) ? state.constraints : [];
   const violations = Array.isArray(state.validation?.violations) ? state.validation.violations : [];
@@ -578,7 +590,10 @@ export function assistantContextSnapshot(state = {}, rawContext = {}) {
       course_count: courses.length,
       courses_by_type: boundedCountBy(courses, item => item.type),
       section_count: sections.length,
-      scheduled_meeting_count: assignments.length,
+      scheduled_meeting_count: meetings.length,
+      locked_schedule_meeting_count: meetingLockSummary.retained_locked_meetings,
+      unlocked_schedule_meeting_count: meetingLockSummary.cleared_unlocked_meetings,
+      scheduled_student_assignment_count: assignments.length,
       rule_count: rules.length,
       hard_rule_count: rules.filter(rule => rule?.hard).length,
       validation_violation_count: violations.length,
@@ -650,6 +665,26 @@ export async function askAiAssistant({ message, context, state, history = [] } =
 } = {}) {
   const question = boundedText(message, 2_000);
   if (!question) throw new Error('请输入想咨询的问题');
+  if (isClearUnlockedScheduleRequest(question)) {
+    try {
+      const action = assistantCliMutationProposal({
+        operation: 'schedule.clear-unlocked', params: {}, body: null,
+      }, state);
+      return {
+        response: `可以。系统将保留 ${action.preview.retained_locked_meetings} 个已锁定课时，`
+          + `清除 ${action.preview.cleared_unlocked_meetings} 个未锁定课时；请核对下方影响后点击确认。`,
+        action,
+        model: '本地安全操作路由',
+      };
+    } catch (error) {
+      return {
+        response: `无法生成“仅清空未锁定部分”操作：${error.message}`,
+        action: null,
+        action_error: error.message,
+        model: '本地安全操作路由',
+      };
+    }
+  }
   if (!config.apiKey) throw new Error('大模型 API Key 尚未配置；请先在系统设置中保存 DeepSeek 或兼容接口的配置');
   const pagePayload = {
     question,

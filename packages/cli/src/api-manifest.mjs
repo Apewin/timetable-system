@@ -56,6 +56,10 @@ export const OPERATIONS = [
       optional: ['max_time_seconds', 'candidate_count', 'random_seed', 'approved_rule_relaxations', 'approved_hard_rule_relaxations', 'quality_limits'],
     },
   },
+  {
+    name: 'schedule.clear-unlocked', category: 'schedule', method: 'POST', path: '/schedule/clear-unlocked', mutates: true,
+    body: { required: ['expected_revision'], optional: ['confirmed_by'] },
+  },
   { name: 'schedule.timetable', category: 'schedule', method: 'GET', path: '/timetable/:by/:id', mutates: false },
   {
     name: 'schedule.lock', category: 'schedule', method: 'POST', path: '/lock', mutates: true,
