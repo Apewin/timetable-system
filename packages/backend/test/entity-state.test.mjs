@@ -78,3 +78,30 @@ test('requires teacher workload upper limits to be non-negative integers', () =>
     /每天上限.*非负整数/,
   );
 });
+
+test('requires teacher available slots to be a unique list of timetable slot ids', () => {
+  assert.throws(
+    () => validateEntityInput('teachers', {
+      id: 'T1', can_teach: [], available_slots: 'D1P1',
+    }),
+    /可用时段必须是数组/,
+  );
+});
+
+test('rejects duplicate teacher available slots', () => {
+  assert.throws(
+    () => validateEntityInput('teachers', {
+      id: 'T1', can_teach: [], available_slots: ['D1P1', 'D1P1'],
+    }),
+    /可用时段不能重复/,
+  );
+});
+
+test('rejects an unknown teacher available slot id', () => {
+  assert.throws(
+    () => validateEntityInput('teachers', {
+      id: 'T1', can_teach: [], available_slots: ['MONDAY_MORNING'],
+    }),
+    /可用时段无效.*MONDAY_MORNING/,
+  );
+});

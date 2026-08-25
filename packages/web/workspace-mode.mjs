@@ -3,7 +3,7 @@ const WORKSPACE_MODE_PRESENTATION = Object.freeze({
     mark: '排',
     title: '智能排课',
     subtitle: 'Academic Scheduler',
-    footerTitle: 'Rules-first 引擎',
+    footerTitle: '规则优先引擎',
     footerSubtitle: '硬约束独立校验',
     primaryAction: '进入排课',
     switchLabel: '切换到智能排考试模式',

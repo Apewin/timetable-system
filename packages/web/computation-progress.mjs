@@ -31,8 +31,8 @@ const COMPUTATION_ROUTES = new Map([
     defaultMaxSeconds: 30,
   }],
   ['/ai/solve', {
-    label: '正在生成 AI 排课方案',
-    successText: 'AI 排课方案计算完成',
+    label: '正在运行智能排课（规则求解器）',
+    successText: '智能排课方案计算完成',
     defaultMaxSeconds: 60,
   }],
   ['/schedule-quality-lower-bounds', {
@@ -102,5 +102,34 @@ export function computationProgressSnapshot({
       ? `已用 ${elapsedSeconds} 秒，超过预计的 ${budgetSeconds} 秒；后台仍在安全收尾…`
       : `已用 ${elapsedSeconds} 秒 / 预计预算 ${budgetSeconds} 秒`,
     note: '进度按时间预算估算；求解器可能提前完成。',
+  };
+}
+
+export function computationJobPresentation(job, now = Date.now()) {
+  const status = String(job?.status || 'queued');
+  const startedAt = Date.parse(job?.started_at || job?.created_at || '');
+  const finishedAt = Date.parse(job?.finished_at || '');
+  const elapsedSeconds = Number.isFinite(startedAt)
+    ? Math.max(0, Math.floor(((Number.isFinite(finishedAt) ? finishedAt : Number(now)) - startedAt) / 1_000))
+    : 0;
+  const terminal = ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(status);
+  const state = status === 'succeeded'
+    ? 'success'
+    : ['failed', 'interrupted'].includes(status)
+      ? 'error'
+      : status === 'cancelled'
+        ? 'cancelled'
+        : 'running';
+  return {
+    state,
+    terminal,
+    percent: Math.min(100, Math.max(0, Math.round(Number(job?.percent) || 0))),
+    elapsedSeconds,
+    timeText: terminal ? `总用时 ${elapsedSeconds} 秒` : `已运行 ${elapsedSeconds} 秒`,
+    title: String(job?.label || '后台计算'),
+    stageText: String(job?.message || job?.stage || '正在等待后台执行'),
+    resultText: job?.result_location?.label
+      ? `结果位置：${job.result_location.label}`
+      : '',
   };
 }

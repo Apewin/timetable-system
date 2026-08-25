@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const appSource = await readFile(new URL('../app.js', import.meta.url), 'utf8');
 const indexSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+const examViewSource = await readFile(new URL('../exam-planner-view.mjs', import.meta.url), 'utf8');
 
 test('teacher management displays and edits the exam staffing group', () => {
   assert.match(appSource, /<th>考试分组<\/th>/);
@@ -19,7 +20,8 @@ test('exam results explain that the guidance counselor remains Ansheng but is ex
   const end = appSource.indexOf('async function loadExamPlanner()', start);
   const functionSource = appSource.slice(start, end);
   assert.match(indexSource, /安生教师中除升学顾问外/);
-  assert.match(functionSource, /filter\(item => item\.invigilation_eligible !== false\)/);
-  assert.match(functionSource, /invigilation_exemption_reason/);
-  assert.match(functionSource, /exam_staff_group_name/);
+  assert.match(functionSource, /examTeacherDutyReview\(schedule\)/);
+  assert.match(examViewSource, /filter\(item => item\.invigilation_eligible !== false\)/);
+  assert.match(examViewSource, /invigilation_exemption_reason/);
+  assert.match(appSource, /exam_staff_group_name/);
 });

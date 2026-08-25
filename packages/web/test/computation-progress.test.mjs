@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  computationJobPresentation,
   computationRequestDescriptor,
   computationProgressSnapshot,
 } from '../computation-progress.mjs';
@@ -36,6 +37,30 @@ test('reports honest time-budget progress without claiming completion early', ()
   assert.equal(completed.percentText, '100%');
 });
 
+test('renders backend-reported job stages and a durable result location', () => {
+  const running = computationJobPresentation({
+    label: '生成考试安排', status: 'running', percent: 37,
+    created_at: '2026-08-25T08:00:00.000Z',
+    started_at: '2026-08-25T08:00:01.000Z',
+    message: '正在安排无冲突的考试时间',
+    result_location: { view: 'exam-scheduling', label: '排考试 → 安排结果' },
+  }, Date.parse('2026-08-25T08:00:11.000Z'));
+  assert.equal(running.percent, 37);
+  assert.equal(running.timeText, '已运行 10 秒');
+  assert.match(running.stageText, /无冲突/);
+  assert.equal(running.resultText, '结果位置：排考试 → 安排结果');
+
+  const failed = computationJobPresentation({
+    status: 'failed', percent: 100,
+    created_at: '2026-08-25T08:00:00.000Z',
+    started_at: '2026-08-25T08:00:01.000Z',
+    finished_at: '2026-08-25T08:00:05.000Z',
+    message: '无可行解',
+  });
+  assert.equal(failed.terminal, true);
+  assert.equal(failed.state, 'error');
+});
+
 test('recognizes every scheduling calculation request and its time budget', () => {
   assert.deepEqual(computationRequestDescriptor('/exams/solve', {
     method: 'POST',
@@ -58,7 +83,7 @@ test('recognizes every scheduling calculation request and its time budget', () =
     body: JSON.stringify({ timeout: 45_000 }),
   }).maxSeconds, 45);
   assert.equal(computationRequestDescriptor('/solve-sections', { method: 'POST' }).label, '正在计算选修课分班');
-  assert.equal(computationRequestDescriptor('/ai/solve', { method: 'POST' }).label, '正在生成 AI 排课方案');
+  assert.equal(computationRequestDescriptor('/ai/solve', { method: 'POST' }).label, '正在运行智能排课（规则求解器）');
   assert.equal(computationRequestDescriptor('/build-tasks', { method: 'POST' }).label, '正在生成教学任务');
   assert.equal(computationRequestDescriptor('/exams/solve', { method: 'GET' }), null);
 });

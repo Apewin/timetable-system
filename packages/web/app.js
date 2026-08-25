@@ -13,15 +13,28 @@ import {
   shouldCollapseAdminSections,
 } from './manual-course-scope.mjs';
 import { escapeHtml, safeDataAttribute } from './dom-safety.mjs';
+import { shouldAutoCollapseAiAssistant } from './responsive-shell.mjs';
 import { manualSolvedCellsBySlot } from './manual-solved-timetable.mjs';
 import { qualityMetricSummary } from './quality-analysis-view.mjs';
+import { overviewCardSummary } from './overview-timetable-view.mjs';
 import {
+  countElectiveSelections,
+  importReadinessModel,
+  importTemplateCsv,
+} from './import-readiness-view.mjs';
+import {
+  changeExamRooms,
   DEFAULT_EXAM_SOLVE_SECONDS,
   examDurationImportRowKey,
   examPlanFromEditor,
   examRestPolicySummary,
   examRowsFromDurationImport,
+  examSeatReview,
+  examScheduleReview,
   examSolveRequest,
+  examSubjectReadiness,
+  examTeacherDutyReview,
+  examWorkflowState,
 } from './exam-planner-view.mjs';
 import {
   normalizeWorkspaceMode,
@@ -31,13 +44,23 @@ import {
 import {
   nextTeachingAssignmentId,
   summarizeTeacherWorkloads,
+  teacherMatchesWorkloadFilter,
+  teacherWorkloadStatus,
+  teachingTaskStaffing,
   teachersQualifiedForCourse,
   summarizeTeachingTasks,
 } from './teacher-assignment-view.mjs';
 import {
-  computationProgressSnapshot,
+  computationJobPresentation,
   computationRequestDescriptor,
 } from './computation-progress.mjs';
+import {
+  teacherAvailabilityEditor,
+  teacherAvailabilitySummary,
+  teacherAvailableSlotsFromForm,
+} from './teacher-availability-view.mjs';
+import { changeSchedulingRooms } from './scheduling-room-view.mjs';
+import { qualityAffectedStudents, systemStatusReview } from './system-status-view.mjs';
 
 const API_BASE = '/api';
 
@@ -122,73 +145,99 @@ function showToast(message, type = 'success') {
   }, 3000);
 }
 
-let activeComputationProgress = null;
-let computationProgressSequence = 0;
-let computationProgressHideTimer = null;
-
-function renderComputationProgress(run, state = 'running', message = '') {
-  if (!run || activeComputationProgress?.id !== run.id) return;
-
+function renderComputationJob(job) {
+  if (!job) return;
   const panel = document.getElementById('computation-progress');
   const label = document.getElementById('computation-progress-label');
   const time = document.getElementById('computation-progress-time');
   const progress = document.getElementById('computation-progress-bar');
   const note = document.getElementById('computation-progress-note');
-  if (!panel || !label || !time || !progress || !note) return;
+  const cancel = document.getElementById('computation-progress-cancel');
+  const result = document.getElementById('computation-progress-result');
+  const dismiss = document.getElementById('computation-progress-dismiss');
+  if (!panel || !label || !time || !progress || !note || !cancel || !result || !dismiss) return;
 
-  const snapshot = computationProgressSnapshot({
-    startedAt: run.startedAt,
-    now: Date.now(),
-    maxSeconds: run.maxSeconds,
-    state,
-  });
-  const statusLabel = state === 'running'
-    ? run.label
-    : message || (state === 'success' ? run.successText : '计算未完成');
-
-  panel.classList.remove('hidden', 'is-running', 'is-success', 'is-error');
-  panel.classList.add(`is-${state}`);
-  label.textContent = statusLabel;
-  time.textContent = snapshot.timeText;
-  progress.value = snapshot.percent;
-  progress.textContent = snapshot.percentText;
+  const presentation = computationJobPresentation(job);
+  panel.classList.remove('hidden', 'is-running', 'is-success', 'is-error', 'is-cancelled');
+  panel.classList.add(`is-${presentation.state}`);
+  label.textContent = presentation.title;
+  time.textContent = presentation.timeText;
+  progress.value = presentation.percent;
+  progress.textContent = `${presentation.percent}%`;
   progress.setAttribute(
     'aria-valuetext',
-    `${statusLabel}；${snapshot.timeText}；${snapshot.note}`,
+    `${presentation.title}；${presentation.timeText}；${presentation.stageText}`,
   );
-  note.textContent = state === 'running' ? snapshot.note : message || statusLabel;
+  note.textContent = [presentation.stageText, presentation.resultText].filter(Boolean).join(' · ');
+  cancel.classList.toggle('hidden', !job.cancelable);
+  cancel.dataset.jobId = job.id;
+  result.classList.toggle('hidden', !presentation.terminal || !job.result_location?.view);
+  result.dataset.view = job.result_location?.view || '';
+  dismiss.classList.toggle('hidden', !presentation.terminal);
 }
 
-function beginComputationProgress(descriptor) {
-  clearTimeout(computationProgressHideTimer);
-  if (activeComputationProgress?.timer) clearInterval(activeComputationProgress.timer);
-
-  const run = {
-    id: ++computationProgressSequence,
-    startedAt: Date.now(),
-    label: descriptor.label,
-    successText: descriptor.successText || '计算完成',
-    maxSeconds: descriptor.maxSeconds || 90,
-    timer: null,
-  };
-  activeComputationProgress = run;
-  renderComputationProgress(run);
-  run.timer = setInterval(() => renderComputationProgress(run), 500);
-  return run;
+function computationJobError(job) {
+  const message = job?.error?.message || job?.message || '后台计算未完成';
+  const error = new Error(message);
+  error.code = job?.error?.code || (job?.status === 'cancelled' ? 'COMPUTATION_CANCELLED' : 'COMPUTATION_FAILED');
+  return error;
 }
 
-function finishComputationProgress(run, { state = 'success', message = '' } = {}) {
-  if (!run || activeComputationProgress?.id !== run.id) return;
-  clearInterval(run.timer);
-  run.timer = null;
-  renderComputationProgress(run, state, message);
+async function waitForComputationJob(initialJob, { detached = false } = {}) {
+  let job = initialJob;
+  renderComputationJob(job);
+  localStorage.setItem('timetable-active-computation-job', job.id);
+  while (['queued', 'running'].includes(job.status)) {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    const response = await fetch(`${API_BASE}/computation-jobs/${encodeURIComponent(job.id)}`);
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.errors?.[0]?.msg || '无法读取后台计算状态');
+    job = payload.data;
+    renderComputationJob(job);
+  }
+  localStorage.removeItem('timetable-active-computation-job');
+  if (job.status === 'succeeded') return job.result;
+  if (detached) return null;
+  throw computationJobError(job);
+}
 
-  const finishedId = run.id;
-  computationProgressHideTimer = setTimeout(() => {
-    if (activeComputationProgress?.id !== finishedId) return;
+async function restoreComputationJobCenter() {
+  try {
+    const response = await fetch(`${API_BASE}/computation-jobs?limit=10`);
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) return;
+    const jobs = payload.data || [];
+    const activeId = localStorage.getItem('timetable-active-computation-job');
+    const running = jobs.find(job => job.id === activeId && ['queued', 'running'].includes(job.status))
+      || jobs.find(job => ['queued', 'running'].includes(job.status));
+    if (running) {
+      await waitForComputationJob(running, { detached: true });
+      return;
+    }
+    if (jobs[0]) renderComputationJob(jobs[0]);
+  } catch {
+    // The job center is auxiliary; ordinary pages remain usable if its
+    // history cannot be read during startup.
+  }
+}
+
+function initComputationJobCenter() {
+  document.getElementById('computation-progress-cancel')?.addEventListener('click', async event => {
+    const id = event.currentTarget.dataset.jobId;
+    if (!id || !confirm('取消当前计算吗？已有的有效课表或考试安排不会被覆盖。')) return;
+    const response = await fetch(`${API_BASE}/computation-jobs/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    const payload = await response.json();
+    if (payload.ok) renderComputationJob(payload.data);
+  });
+  document.getElementById('computation-progress-result')?.addEventListener('click', event => {
+    const view = event.currentTarget.dataset.view;
+    if (view) switchView(view);
+  });
+  document.getElementById('computation-progress-dismiss')?.addEventListener('click', () => {
     document.getElementById('computation-progress')?.classList.add('hidden');
-    activeComputationProgress = null;
-  }, state === 'error' ? 5000 : 2200);
+  });
 }
 
 let activeAiProcessingRun = 0;
@@ -378,38 +427,105 @@ async function api(path, options = {}) {
   const descriptor = computation === false
     ? null
     : computation || computationRequestDescriptor(path, requestOptions);
-  const progressRun = descriptor ? beginComputationProgress(descriptor) : null;
   try {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(requestOptions.headers || {}),
+      ...(descriptor ? { 'X-Computation-Job': 'async' } : {}),
+    };
     const response = await fetch(`${API_BASE}${path}`, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
       ...requestOptions,
+      headers,
     });
     const data = await response.json();
     if (!data.ok) {
+      if (response.status === 401 && data.errors?.[0]?.code === 'AUTH_REQUIRED') {
+        showAuthGate('登录状态已过期，请重新登录。');
+      }
       throw new Error(data.errors?.[0]?.msg || '请求失败');
     }
-    if (progressRun) {
-      finishComputationProgress(progressRun, {
-        message: descriptor.successText,
-      });
+    if (response.status === 202 && data.data?.job) {
+      return await waitForComputationJob(data.data.job);
     }
     return data.data;
   } catch (error) {
-    if (progressRun) {
-      finishComputationProgress(progressRun, {
-        state: 'error',
-        message: `计算失败：${error.message}`,
-      });
-    }
     showToast(error.message, 'error');
     throw error;
   }
 }
 
+let applicationInitialized = false;
+
+function showAuthGate(message = '') {
+  const gate = document.getElementById('auth-gate');
+  const status = document.getElementById('auth-login-status');
+  if (!gate || !status) return;
+  status.textContent = message;
+  gate.classList.remove('hidden');
+  document.getElementById('auth-password')?.focus();
+}
+
+function hideAuthGate() {
+  document.getElementById('auth-gate')?.classList.add('hidden');
+}
+
+function initializeApplicationOnce() {
+  if (applicationInitialized) return;
+  applicationInitialized = true;
+  init();
+}
+
+async function bootstrapApplication() {
+  const loginForm = document.getElementById('auth-login-form');
+  const logoutButton = document.getElementById('btn-auth-logout');
+  loginForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const status = document.getElementById('auth-login-status');
+    const submit = loginForm.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    status.textContent = '正在验证…';
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: new FormData(loginForm).get('password') }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.errors?.[0]?.msg || '登录失败');
+      loginForm.reset();
+      hideAuthGate();
+      logoutButton?.classList.remove('hidden');
+      initializeApplicationOnce();
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  logoutButton?.addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.reload();
+  });
+
+  try {
+    const response = await fetch('/api/auth/status');
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.errors?.[0]?.msg || '无法读取登录状态');
+    if (payload.data.enabled && !payload.data.authenticated) {
+      showAuthGate();
+      return;
+    }
+    if (payload.data.enabled) logoutButton?.classList.remove('hidden');
+    initializeApplicationOnce();
+  } catch (error) {
+    showAuthGate(`无法连接系统：${error.message}`);
+  }
+}
+
 // 视图切换
 async function switchView(viewName, { syncWorkspaceMode = true } = {}) {
+  if (viewName !== 'manual-timetable') setManualFocusMode(false);
+  if (viewName !== 'overview-timetable') setOverviewFocusMode(false);
   const viewWorkspaceMode = workspaceModeForView(viewName);
   if (viewWorkspaceMode === 'schedule') lastScheduleView = viewName;
   if (syncWorkspaceMode && viewWorkspaceMode !== adminWorkspaceMode) {
@@ -503,7 +619,7 @@ async function loadViewData(viewName) {
       await loadOverviewTimetable();
       break;
     case 'import':
-      initImportPage();
+      await initImportPage();
       break;
     case 'graduation-archives':
       await loadGraduationArchives();
@@ -536,9 +652,180 @@ function examPlannerState() {
     courses: [],
     revision: 0,
     examRows: [],
+    examRooms: [],
+    examRoomsDirty: false,
     importPreview: null,
     importMappings: {},
+    students: [],
+    activeOutput: 'seats',
   };
+}
+
+function currentExamWorkflow() {
+  const state = examPlannerState();
+  const subjectReview = examSubjectReadiness(state.examRows || [], state.courses || []);
+  return examWorkflowState({
+    examCount: state.examRows?.length || 0,
+    subjectIssueCount: subjectReview.issue_count,
+    planSaved: Boolean(state.plan?.exams?.length),
+    planIssues: state.plan_issues || [],
+    dirty: state.dirty === true,
+    solveStatus: state.solve_status,
+    schedule: state.schedule,
+  });
+}
+
+function updateExamWorkflow() {
+  const state = examPlannerState();
+  const workflow = currentExamWorkflow();
+  const subjectReview = examSubjectReadiness(state.examRows || [], state.courses || []);
+  const stageNames = {
+    subjects: '第 1 步：核对科目与时长',
+    config: '第 2 步：设置并保存考试窗口',
+    timetable: '第 3 步：生成考试时间表',
+    staffing: workflow.staffingReady ? '四个阶段已完成' : '第 4 步：安排考场与教师任务',
+  };
+  if (!state.activeStage || workflow.stages[state.activeStage]?.locked) {
+    state.activeStage = workflow.activeStage;
+  }
+  const selectedStage = state.activeStage;
+  const current = document.getElementById('exam-workflow-current');
+  if (current) current.textContent = stageNames[selectedStage];
+  document.querySelectorAll('[data-exam-workflow-stage]').forEach(button => {
+    const stage = button.dataset.examWorkflowStage;
+    const status = workflow.stages[stage];
+    button.classList.toggle('is-complete', status.complete);
+    button.classList.toggle('is-active', stage === selectedStage);
+    button.classList.toggle('is-locked', status.locked);
+    button.disabled = status.locked;
+    if (stage === selectedStage) button.setAttribute('aria-current', 'step');
+    else button.removeAttribute('aria-current');
+    const label = button.querySelector('[data-exam-workflow-status]');
+    if (label) label.textContent = status.label;
+  });
+  document.querySelectorAll('#exam-sidebar-navigation [data-exam-stage]').forEach(link => {
+    const locked = workflow.stages[link.dataset.examStage]?.locked === true;
+    link.classList.toggle('is-locked', locked);
+    if (locked) link.setAttribute('aria-description', '尚未解锁；点击可查看需要先完成的步骤');
+    else link.removeAttribute('aria-description');
+  });
+  document.querySelectorAll('#exam-sidebar-navigation [data-exam-output]').forEach(link => {
+    link.classList.toggle('is-locked', workflow.stages.staffing.locked);
+    if (workflow.stages.staffing.locked) link.setAttribute('aria-description', '尚未解锁；点击可查看需要先完成的步骤');
+    else link.removeAttribute('aria-description');
+  });
+  document.querySelectorAll('[data-exam-stage-panel]').forEach(panel => {
+    panel.classList.toggle('hidden', panel.dataset.examStagePanel !== selectedStage);
+  });
+  const subjectSummary = document.getElementById('exam-subject-stage-summary');
+  if (subjectSummary) {
+    subjectSummary.textContent = state.examRows?.length
+      ? subjectReview.issue_count
+        ? `已添加 ${state.examRows.length} 门考试，其中 ${subjectReview.issue_count} 门缺少年级或名单来源，修复后才能继续。`
+        : `已添加 ${state.examRows.length} 门考试，课程映射和年级均已确认；考生名单将在安排考场时按当前选课数据生成。`
+      : '请先导入或添加考试科目。';
+  }
+  const staffingStatus = document.getElementById('exam-staffing-status');
+  if (staffingStatus) {
+    staffingStatus.textContent = workflow.staffingReady
+      ? '考场、座次、巡考与监考均已生成并通过校验'
+      : workflow.canStaff
+        ? '考试时间表已就绪，可以安排考场和教师任务'
+        : '请先完成第 3 步并生成有效考试时间表';
+  }
+  const staffButton = document.getElementById('exam-staff-button');
+  if (staffButton) staffButton.disabled = !workflow.canStaff;
+  const continueButton = document.getElementById('exam-continue-staffing');
+  if (continueButton) continueButton.disabled = !workflow.canStaff;
+  const exportButton = document.getElementById('exam-export-button');
+  if (exportButton) {
+    exportButton.disabled = !workflow.canExport;
+    exportButton.textContent = workflow.exportLabel;
+  }
+  const showExportButton = document.getElementById('exam-show-export-button');
+  if (showExportButton) showExportButton.disabled = !workflow.canExport;
+  updateExamOutputPanels();
+}
+
+function markExamPlanDirty() {
+  const state = examPlannerState();
+  state.dirty = true;
+  updateExamWorkflow();
+}
+
+window.goToExamStage = function(stage) {
+  const state = examPlannerState();
+  const workflow = currentExamWorkflow();
+  if (workflow.stages[stage]?.locked) {
+    state.activeStage = workflow.activeStage;
+    updateExamWorkflow();
+    const message = stage === 'config'
+      ? '请先确认每门考试的名单来源课程和年级'
+      : stage === 'timetable'
+        ? '请先保存考试时间窗口'
+        : '请先生成并审核考试时间表';
+    setExamStatus(message, 'warning');
+    showToast(message, 'warning');
+    document.querySelector(`[data-exam-stage-panel="${state.activeStage}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  if (!workflow.stages[stage]) return;
+  state.activeStage = stage;
+  const manager = document.getElementById('exam-room-manager');
+  if (manager) manager.open = false;
+  updateExamWorkflow();
+  document.querySelector(`[data-exam-stage-panel="${stage}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+
+function updateExamOutputPanels() {
+  const state = examPlannerState();
+  const selected = ['seats', 'teachers', 'export'].includes(state.activeOutput)
+    ? state.activeOutput
+    : 'seats';
+  state.activeOutput = selected;
+  document.querySelectorAll('[data-exam-output-panel]').forEach(panel => {
+    panel.classList.toggle('hidden', panel.dataset.examOutputPanel !== selected);
+  });
+  document.querySelectorAll('.exam-output-tabs [data-exam-output]').forEach(button => {
+    const active = button.dataset.examOutput === selected;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+}
+
+window.setExamOutputPanel = function(output) {
+  const workflow = currentExamWorkflow();
+  if (workflow.stages.staffing.locked) {
+    const state = examPlannerState();
+    state.activeStage = workflow.activeStage;
+    updateExamWorkflow();
+    setExamStatus('座次、监考与导出尚未解锁：请先生成并审核考试时间表。', 'warning');
+    showToast('请先生成并审核考试时间表', 'warning');
+    document.querySelector(`[data-exam-stage-panel="${state.activeStage}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  const state = examPlannerState();
+  state.activeOutput = ['seats', 'teachers', 'export'].includes(output) ? output : 'seats';
+  state.activeStage = 'staffing';
+  updateExamWorkflow();
+};
+
+function bindExamWorkflow() {
+  const workflow = document.getElementById('exam-workflow');
+  if (workflow && workflow.dataset.bound !== 'true') {
+    workflow.dataset.bound = 'true';
+    workflow.querySelectorAll('[data-exam-workflow-stage]').forEach(button => {
+      button.addEventListener('click', () => window.goToExamStage(button.dataset.examWorkflowStage));
+    });
+  }
+  const config = document.getElementById('exam-config-card');
+  if (config && config.dataset.workflowBound !== 'true') {
+    config.dataset.workflowBound = 'true';
+    config.querySelectorAll('input, select').forEach(field => {
+      if (field.closest('#exam-room-manager')) return;
+      field.addEventListener('change', markExamPlanDirty);
+    });
+  }
 }
 
 function examTypeLabel(type) {
@@ -645,6 +932,7 @@ function bindExamDurationImport() {
 
 function populateExamConfig(plan) {
   const config = plan?.config || {};
+  const state = examPlannerState();
   for (const grade of [10, 11, 12]) {
     document.getElementById(`exam-day-count-g${grade}`).value = String(
       config.grade_day_counts?.[grade] || config.day_count || 4,
@@ -657,10 +945,153 @@ function populateExamConfig(plan) {
   document.getElementById('exam-longest-gap').value = String(config.longest_exam_gap_minutes || 30);
   document.getElementById('exam-breaks').value = (config.breaks || [])
     .map(item => `${item.start}-${item.end}`).join('，');
-  document.getElementById('exam-room-count').value = String(config.rooms?.length || 10);
-  document.getElementById('exam-room-capacity').value = String(config.room_capacity || config.rooms?.[0]?.capacity || 30);
+  document.getElementById('exam-room-capacity').value = String(
+    state.examRooms?.[0]?.capacity || config.room_capacity || config.rooms?.[0]?.capacity || 30,
+  );
   document.getElementById('exam-invigilators').value = String(config.invigilators_per_room || 1);
   document.getElementById('exam-require-all-teachers').checked = config.require_every_teacher_invigilates !== false;
+  renderExamRoomManager();
+}
+
+function updateExamRoomList(command) {
+  const state = examPlannerState();
+  try {
+    state.examRooms = changeExamRooms(state.examRooms, command);
+    state.examRoomsDirty = true;
+    renderExamRoomManager();
+    return true;
+  } catch (error) {
+    showToast(error.message, 'warning');
+    return false;
+  }
+}
+
+function renderExamRoomManager() {
+  const state = examPlannerState();
+  const rooms = state.examRooms || [];
+  const manager = document.getElementById('exam-room-manager');
+  const list = document.getElementById('exam-room-list');
+  const summary = document.getElementById('exam-room-count-summary');
+  const saveButton = document.getElementById('exam-save-rooms');
+  const saveStatus = document.getElementById('exam-room-save-status');
+  if (!list || !summary || !saveButton || !saveStatus) return;
+  if (manager && rooms.length === 0) manager.open = true;
+  summary.textContent = `${rooms.length} 个考场`;
+  list.innerHTML = rooms.length ? rooms.map((room, index) => `<div class="exam-room-row" data-exam-room-row="${safeDataAttribute(room.id)}">
+    <span class="exam-room-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
+    <label>
+      <span class="sr-only">第 ${index + 1} 个考场名称</span>
+      <input class="input" type="text" maxlength="80" value="${escapeHtml(room.name)}" data-exam-room-name="${safeDataAttribute(room.id)}" aria-label="${escapeHtml(room.name)}的考场名称">
+    </label>
+    <button class="btn btn-danger btn-sm" type="button" data-exam-room-delete="${safeDataAttribute(room.id)}"${rooms.length <= 1 ? ' disabled title="至少保留一个考场"' : ''}>删除</button>
+  </div>`).join('') : '<div class="exam-room-empty"><strong>还没有考场</strong><span>在下方输入第一个考场名称，然后单独保存这份名单。</span></div>';
+  saveButton.disabled = rooms.length === 0 || state.examRoomsDirty !== true;
+  saveStatus.className = `exam-room-save-status${state.examRoomsDirty ? ' is-dirty' : rooms.length ? ' is-saved' : ''}`;
+  saveStatus.textContent = state.examRoomsDirty
+    ? `有 ${rooms.length} 个考场尚未保存。点击“保存考场名单”后，后续排考才会使用它们。`
+    : rooms.length
+      ? `已保存 ${rooms.length} 个考场；现在可以导入或添加考试科目。`
+      : '尚未添加考场。请先添加并保存，再开始考试计划。';
+  list.querySelectorAll('[data-exam-room-name]').forEach(input => {
+    input.addEventListener('input', () => {
+      try {
+        state.examRooms = changeExamRooms(state.examRooms, {
+          type: 'rename',
+          id: input.dataset.examRoomName,
+          name: input.value,
+        });
+        state.examRoomsDirty = true;
+        input.setCustomValidity('');
+        saveButton.disabled = false;
+        saveStatus.className = 'exam-room-save-status is-dirty';
+        saveStatus.textContent = `有 ${state.examRooms.length} 个考场尚未保存。点击“保存考场名单”后，后续排考才会使用它们。`;
+      } catch (error) {
+        input.setCustomValidity(error.message);
+        saveButton.disabled = true;
+        saveStatus.className = 'exam-room-save-status is-error';
+        saveStatus.textContent = `请先修正考场名称：${error.message}`;
+      }
+    });
+    input.addEventListener('change', () => {
+      if (input.checkValidity()) {
+        showToast('考场改名已加入未保存修改；点击“保存考场名单”后生效', 'success');
+      }
+    });
+  });
+  list.querySelectorAll('[data-exam-room-delete]').forEach(button => {
+    button.addEventListener('click', () => {
+      const room = rooms.find(item => item.id === button.dataset.examRoomDelete);
+      if (!room || !window.confirm(`删除“${room.name}”？保存考场名单后，现有考试安排需要重新生成。`)) return;
+      if (updateExamRoomList({ type: 'delete', id: room.id })) {
+        showToast(`已删除${room.name}，请保存考场名单`, 'success');
+      }
+    });
+  });
+}
+
+window.saveExamRooms = async function() {
+  const state = examPlannerState();
+  try {
+    if (!state.examRooms.length) throw new Error('请先添加至少一个考场');
+    const capacity = Number(document.getElementById('exam-room-capacity').value);
+    const rooms = state.examRooms.map(room => ({ ...room, capacity }));
+    const saved = await api('/exam-rooms', {
+      method: 'PUT',
+      body: JSON.stringify({ rooms, expected_revision: state.revision }),
+    });
+    state.examRooms = saved.rooms.map(room => ({ ...room }));
+    state.examRoomsDirty = false;
+    state.revision = saved.revision;
+    state.solve_status = saved.solve_status;
+    if (saved.plan && state.dirty !== true) state.plan = saved.plan;
+    if (state.schedule && saved.solve_status !== 'valid') {
+      state.schedule = null;
+      renderExamSchedule(null);
+    }
+    renderExamRoomManager();
+    updateExamWorkflow();
+    showToast(`已独立保存 ${saved.rooms.length} 个考场`, 'success');
+  } catch (error) {
+    const saveStatus = document.getElementById('exam-room-save-status');
+    if (saveStatus) {
+      saveStatus.className = 'exam-room-save-status is-error';
+      saveStatus.textContent = `考场名单保存失败：${error.message}`;
+    }
+    showToast(error.message, 'error');
+  }
+};
+
+function bindExamRoomManager() {
+  const form = document.getElementById('exam-room-add-form');
+  const input = document.getElementById('exam-new-room-name');
+  const capacity = document.getElementById('exam-room-capacity');
+  const saveButton = document.getElementById('exam-save-rooms');
+  if (!form || !input || !capacity || !saveButton || form.dataset.bound === 'true') return;
+  form.dataset.bound = 'true';
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (updateExamRoomList({
+      type: 'add',
+      name: input.value,
+      capacity: document.getElementById('exam-room-capacity').value,
+    })) {
+      input.value = '';
+      input.focus();
+      showToast('考场已添加，请保存考场名单', 'success');
+    }
+  });
+  capacity.addEventListener('change', () => {
+    const parsed = Number(capacity.value);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) {
+      showToast('考场容量必须是 1–200 范围内的整数', 'warning');
+      return;
+    }
+    const state = examPlannerState();
+    state.examRooms = state.examRooms.map(room => ({ ...room, capacity: parsed }));
+    state.examRoomsDirty = state.examRooms.length > 0;
+    renderExamRoomManager();
+  });
+  saveButton.addEventListener('click', () => window.saveExamRooms());
 }
 
 function populateExamCourseSelect() {
@@ -678,69 +1109,206 @@ function populateExamCourseSelect() {
 function renderExamCourseRows() {
   const state = examPlannerState();
   const courses = new Map(state.courses.map(course => [course.id, course]));
+  const readiness = examSubjectReadiness(state.examRows, state.courses);
   const body = document.getElementById('exam-course-rows');
+  const gradeFilter = document.getElementById('exam-subject-grade-filter');
+  const visibleCount = document.getElementById('exam-subject-visible-count');
   if (!body) return;
   if (!state.examRows.length) {
-    body.innerHTML = '<tr><td colspan="6" class="empty-state">尚未添加考试科目</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty-state">尚未添加考试科目</td></tr>';
+    if (visibleCount) visibleCount.textContent = '尚未添加考试';
     populateExamCourseSelect();
+    updateExamWorkflow();
     return;
   }
-  body.innerHTML = state.examRows.map(exam => {
+  const selectedGrade = gradeFilter?.value || 'all';
+  const visibleRows = readiness.rows.filter(exam => selectedGrade === 'all'
+    || (selectedGrade === 'unresolved' && !exam.grades.length)
+    || exam.grades.includes(Number(selectedGrade)));
+  body.innerHTML = visibleRows.map(exam => {
     const course = courses.get(exam.course_id) || { name: exam.course_name || exam.course_id, type: '' };
     const examName = exam.course_name || course.name;
     const courseScope = exam.subject_id === 'SECOND_FOREIGN_LANGUAGE'
       || /二外|second[ _-]*foreign[ _-]*language/i.test(examName)
       ? '合并考试：法语 / 日语 / 德语'
       : examName === course.name ? exam.course_id : `名单来源：${course.name}`;
-    return `<tr>
-      <td><strong>${escapeHtml(examName)}</strong><small>${escapeHtml(courseScope)}</small></td>
+    const rosterLabel = exam.student_count !== null
+      && exam.student_count !== undefined
+      && Number.isInteger(Number(exam.student_count))
+      ? `${Number(exam.student_count)} 人`
+      : '按当前学生选课自动生成';
+    return `<tr class="${exam.ready ? '' : 'is-warning'}">
+      <td><strong>${escapeHtml(exam.grade_label)}</strong><small>${escapeHtml(exam.source_label)}</small></td>
+      <td><strong>${escapeHtml(examName)}</strong><small>${escapeHtml(courseScope)}</small>${exam.issues.length ? `<small class="exam-import-unmatched">${escapeHtml(exam.issues.join('；'))}</small>` : ''}</td>
       <td>${escapeHtml(examTypeLabel(course.type))}</td>
       <td><input class="input exam-duration" type="number" min="5" max="240" step="5" value="${Number(exam.duration_minutes)}" data-exam-duration="${safeDataAttribute(exam.id)}">${exam.source_duration ? `<small>原表：${escapeHtml(exam.source_duration)} · 可调整</small>` : '<small>按分钟调整</small>'}</td>
-      <td>暂不校验${exam.student_count === 0 ? '<small>当前 0 人也会排考</small>' : ''}</td>
-      <td>下一阶段</td>
+      <td>${escapeHtml(rosterLabel)}<small>${exam.roster_mode === 'explicit' ? '使用已确认的手工名单' : '安排考场时按当前选课重新核对'}</small></td>
+      <td>第 4 步分配<small>按实际人数均分考场</small></td>
       <td><button class="btn btn-danger btn-sm" type="button" data-exam-remove="${safeDataAttribute(exam.id)}">移除</button></td>
     </tr>`;
   }).join('');
+  if (!visibleRows.length) body.innerHTML = '<tr><td colspan="7" class="empty-state">当前年级筛选下没有考试</td></tr>';
+  if (visibleCount) {
+    visibleCount.textContent = readiness.issue_count
+      ? `显示 ${visibleRows.length} / ${readiness.rows.length} 门；${readiness.issue_count} 门需要确认`
+      : `显示 ${visibleRows.length} / ${readiness.rows.length} 门；年级与课程映射完整`;
+  }
+  if (gradeFilter) gradeFilter.onchange = renderExamCourseRows;
   body.querySelectorAll('[data-exam-duration]').forEach(select => {
     select.addEventListener('change', () => {
       const exam = state.examRows.find(item => item.id === select.dataset.examDuration);
-      if (exam) exam.duration_minutes = Number(select.value);
+      if (exam) {
+        exam.duration_minutes = Number(select.value);
+        markExamPlanDirty();
+      }
     });
   });
   body.querySelectorAll('[data-exam-remove]').forEach(button => {
     button.addEventListener('click', () => {
       state.examRows = state.examRows.filter(exam => exam.id !== button.dataset.examRemove);
+      markExamPlanDirty();
       renderExamCourseRows();
     });
   });
   populateExamCourseSelect();
+  updateExamWorkflow();
 }
 
 function teacherDisplayMap(schedule) {
   return new Map((schedule?.teacher_loads || []).map(item => [item.teacher_id, item.teacher_name]));
 }
 
-function renderExamSchedule(schedule) {
-  const card = document.getElementById('exam-result-card');
-  const exportButton = document.getElementById('exam-export-button');
-  if (!schedule?.ok || !schedule.validation?.ok) {
-    card?.classList.add('hidden');
-    if (exportButton) exportButton.disabled = true;
-    return;
-  }
-  card?.classList.remove('hidden');
-  if (exportButton) exportButton.disabled = false;
+function renderExamTeacherDuties(schedule, review) {
+  const container = document.getElementById('exam-teacher-loads');
+  if (!container) return;
   const timetableOnly = schedule.plan?.config?.timetable_only === true;
+  const empty = document.getElementById('exam-teacher-empty');
+  const content = document.getElementById('exam-teacher-duty-content');
+  empty?.classList.toggle('hidden', !timetableOnly);
+  content?.classList.toggle('hidden', timetableOnly);
+  if (timetableOnly) return;
+  const duties = examTeacherDutyReview(schedule);
   const teachers = teacherDisplayMap(schedule);
   const nameList = ids => (ids || []).map(id => teachers.get(id) || id).join('、') || '—';
+  document.getElementById('exam-teacher-duty-summary').innerHTML = [
+    ['可监考教师', `${duties.eligible.length} 人`],
+    ['平均监考', `${duties.average_count.toFixed(1)} 场`],
+    ['最高最低差', `${duties.spread} 场`],
+    ['免监考教师', `${duties.ineligible.length} 人`],
+  ].map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join('');
+  const rowByExam = new Map(review.rows.map(row => [row.exam_id, row]));
+  document.getElementById('exam-session-duty-rows').innerHTML = schedule.sessions.map(session => {
+    const row = rowByExam.get(session.exam_id) || session;
+    const rooms = session.room_allocations || [];
+    return `<tr>
+      <td><strong>${escapeHtml(row.date_label || session.day_label)}</strong><small>${escapeHtml(session.start_time)}–${escapeHtml(session.end_time)}</small></td>
+      <td>${escapeHtml(session.course_name)}</td>
+      <td>${rooms.map(room => `${escapeHtml(room.room_name)}（${room.student_ids?.length || 0} 人）`).join('<br>') || '—'}</td>
+      <td>${escapeHtml(nameList(session.chief_teacher_ids))}</td>
+      <td>${rooms.map(room => `<span>${escapeHtml(room.room_name)}：${escapeHtml(nameList(room.invigilator_teacher_ids))}</span>`).join('<br>') || '—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('exam-teacher-duty-eligible').innerHTML = duties.eligible.length
+    ? duties.eligible.map(item => `<tr class="exam-duty-${item.fairness === '均衡' ? 'balanced' : item.fairness === '偏高' ? 'high' : 'low'}">
+      <td><strong>${escapeHtml(item.teacher_name)}</strong><small>${escapeHtml(item.exam_staff_group_name || '安生教师')}</small></td>
+      <td>${Number(item.invigilation_count || 0)} 场</td>
+      <td>${Number(item.invigilation_minutes || 0)} 分钟</td>
+      <td>${item.chief_exam_ids?.length || 0} 门</td>
+      <td><span class="exam-duty-fairness">${escapeHtml(item.fairness)} ${item.deviation >= 0 ? '+' : ''}${item.deviation.toFixed(1)}</span></td>
+    </tr>`).join('')
+    : '<tr><td colspan="5" class="empty-cell">当前没有可参加监考的教师</td></tr>';
+  document.getElementById('exam-teacher-duty-ineligible').innerHTML = duties.ineligible.length
+    ? duties.ineligible.map(item => `<span><strong>${escapeHtml(item.teacher_name)}</strong>${escapeHtml(item.reason)}</span>`).join('')
+    : '<span>没有免监考教师</span>';
+}
+
+function renderExamSeatPreview(schedule, students) {
+  const grid = document.getElementById('exam-seat-room-grid');
+  if (!grid) return;
+  const review = examSeatReview(schedule, students);
+  const dayFilter = document.getElementById('exam-seat-day-filter');
+  const gradeFilter = document.getElementById('exam-seat-grade-filter');
+  const examFilter = document.getElementById('exam-seat-exam-filter');
+  const roomFilter = document.getElementById('exam-seat-room-filter');
+  const warning = document.getElementById('exam-seat-warning');
+  const setOptions = (select, label, options, { defaultFirst = false } = {}) => {
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = `<option value="all">${escapeHtml(label)}</option>` + options
+      .map(option => `<option value="${safeDataAttribute(option.value)}">${escapeHtml(option.label || option.value)}</option>`)
+      .join('');
+    if ([...select.options].some(option => option.value === previous)) select.value = previous;
+    else if (defaultFirst && options.length) select.value = String(options[0].value);
+  };
+  setOptions(dayFilter, '全部日期', review.day_options, { defaultFirst: true });
+  setOptions(gradeFilter, '全部年级', review.grade_options);
+  setOptions(examFilter, '全部考试', review.exam_options);
+  setOptions(roomFilter, '全部考场', review.room_options);
+
+  if (warning) {
+    warning.classList.toggle('hidden', review.missing_student_count === 0);
+    warning.className = `exam-review-validation ${review.missing_student_count ? 'error' : 'hidden'}`;
+    warning.textContent = review.missing_student_count
+      ? `有 ${review.missing_student_count} 个座位找不到当前学生资料；请先核对学生名单再导出。`
+      : '';
+  }
+  const renderRooms = () => {
+    const rooms = review.rooms.filter(room =>
+      (!dayFilter || dayFilter.value === 'all' || String(room.day_index) === dayFilter.value)
+      && (!gradeFilter || gradeFilter.value === 'all' || room.grade_filter.includes(gradeFilter.value))
+      && (!examFilter || examFilter.value === 'all' || room.exam_id === examFilter.value)
+      && (!roomFilter || roomFilter.value === 'all' || room.room_id === roomFilter.value));
+    document.getElementById('exam-seat-visible-count').textContent = review.rooms.length
+      ? `显示 ${rooms.length} / ${review.rooms.length} 个考场`
+      : '尚未生成座次';
+    grid.innerHTML = rooms.length ? rooms.map(room => `
+      <article class="exam-seat-room-card">
+        <header>
+          <div><strong>${escapeHtml(room.course_name)}</strong><span>${escapeHtml(room.date_label || room.day_label)} · ${escapeHtml(room.time_label)}</span></div>
+          <div><strong>${escapeHtml(room.room_name)}</strong><span>${room.student_count} 人 · ${room.column_count} 列</span></div>
+        </header>
+        <div class="exam-seat-lectern">讲台</div>
+        <div class="exam-seat-grid" style="--exam-seat-columns: ${room.column_count}">
+          ${room.seats.map(seat => `<div class="exam-seat ${seat.student_found ? '' : 'exam-seat-missing'}" style="grid-row: ${seat.grid_row}; grid-column: ${seat.grid_column}">
+            <span>${seat.seat_number} 号</span>
+            <strong>${escapeHtml(seat.student_name)}</strong>
+            ${seat.english_name ? `<small>${escapeHtml(seat.english_name)}</small>` : ''}
+            <small>${escapeHtml([seat.student_id, seat.admin_class_id].filter(Boolean).join(' · '))}</small>
+          </div>`).join('')}
+        </div>
+      </article>`).join('') : `<div class="exam-stage-empty"><strong>${review.rooms.length ? '当前筛选条件下没有座次' : '还没有可预览的座次'}</strong><span>${review.rooms.length ? '请调整上方筛选条件。' : '请先完成考场与教师任务安排。'}</span></div>`;
+  };
+  for (const filter of [dayFilter, gradeFilter, examFilter, roomFilter]) {
+    if (filter) filter.onchange = renderRooms;
+  }
+  renderRooms();
+}
+
+function renderExamSchedule(schedule) {
+  const empty = document.getElementById('exam-result-empty');
+  const content = document.getElementById('exam-result-content');
+  const exportButton = document.getElementById('exam-export-button');
+  if (!schedule?.ok || !schedule.validation?.ok) {
+    empty?.classList.remove('hidden');
+    content?.classList.add('hidden');
+    renderExamSeatPreview({}, examPlannerState().students || []);
+    document.getElementById('exam-teacher-empty')?.classList.remove('hidden');
+    document.getElementById('exam-teacher-duty-content')?.classList.add('hidden');
+    if (exportButton) exportButton.disabled = true;
+    updateExamWorkflow();
+    return;
+  }
+  empty?.classList.add('hidden');
+  content?.classList.remove('hidden');
+  if (exportButton) exportButton.disabled = false;
+  const timetableOnly = schedule.plan?.config?.timetable_only === true;
+  const review = examScheduleReview(schedule);
+  const duties = examTeacherDutyReview(schedule);
   const restPolicy = examRestPolicySummary(schedule);
   document.getElementById('exam-result-summary').textContent =
     timetableOnly
       ? `已完成 ${schedule.sessions.length} 门考试，时间窗口、休息间隔和年级内顺序校验通过；可以导出三个年级考试时间表。${restPolicy}`
       : `已完成 ${schedule.sessions.length} 门考试，独立校验通过；可以导出考试总表、教师任务和考场座次。${restPolicy}`;
-  const eligibleTeacherLoads = (schedule.teacher_loads || [])
-    .filter(item => item.invigilation_eligible !== false);
-  const loads = eligibleTeacherLoads.map(item => item.invigilation_count);
   const gradeCount = new Set(schedule.sessions.flatMap(session => session.grades || [])).size;
   document.getElementById('exam-result-metrics').innerHTML = (timetableOnly ? [
     ['使用天数', `${schedule.metrics.used_days} 天`],
@@ -751,52 +1319,92 @@ function renderExamSchedule(schedule) {
     ['使用天数', `${schedule.metrics.used_days} 天`],
     ['考试科目', `${schedule.sessions.length} 门`],
     ['考场场次', `${schedule.metrics.total_room_sessions} 场`],
-    ['监考差值', loads.length ? `${Math.max(...loads) - Math.min(...loads)} 场` : '待安排'],
+    ['监考差值', `${duties.spread} 场`],
   ]).map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join('');
-  document.getElementById('exam-schedule-rows').innerHTML = schedule.sessions.map(session => `<tr>
-    <td>${escapeHtml(session.day_label)}</td>
-    <td><strong>${escapeHtml(session.start_time)}–${escapeHtml(session.end_time)}</strong><small>${session.duration_minutes} 分钟</small></td>
-    <td><strong>${escapeHtml(session.course_name)}</strong></td>
-    <td>${timetableOnly ? '暂不校验' : `${session.student_count} 人`}</td>
-    <td>${timetableOnly ? '下一阶段' : session.room_allocations.map(room => `${escapeHtml(room.room_name)}（${room.student_ids.length}人）`).join('<br>')}</td>
-    <td>${timetableOnly ? '下一阶段' : escapeHtml(nameList(session.chief_teacher_ids))}</td>
-    <td>${timetableOnly ? '下一阶段' : session.room_allocations.map(room => `<span>${escapeHtml(room.room_name)}：${escapeHtml(nameList(room.invigilator_teacher_ids))}</span>`).join('<br>')}</td>
-  </tr>`).join('');
-  const loadContainer = document.getElementById('exam-teacher-loads');
-  loadContainer.innerHTML = timetableOnly
-    ? '<h4>教师任务</h4><div><span>将在下一阶段安排监考与巡考</span></div>'
-    : '<h4>教师任务（安生教师中除升学顾问外参加监考）</h4><div>' + (schedule.teacher_loads || [])
-      .map(item => {
-        const groupName = item.exam_staff_group_name || '安生教师';
-        const invigilationText = item.invigilation_eligible !== false
-          ? `${item.invigilation_count} 场 / ${item.invigilation_minutes} 分钟`
-          : (item.invigilation_exemption_reason || '不参加监考');
-        return `<span><strong>${escapeHtml(item.teacher_name)}</strong><em>${escapeHtml(groupName)}</em>${invigilationText}${item.chief_exam_ids.length ? ` · 巡考 ${item.chief_exam_ids.length} 门` : ''}</span>`;
-      })
-      .join('') + '</div>';
+  const validation = document.getElementById('exam-review-validation');
+  validation.className = `exam-review-validation ${review.validation_ok ? 'success' : 'error'}`;
+  validation.textContent = review.validation_ok
+    ? `校验通过：${review.rows.length} 门考试无学生冲突，且考试间休息符合当前策略。`
+    : `发现 ${review.conflict_count} 组学生考试冲突或休息间隔问题，请返回修改后重新生成。`;
+  const dayFilter = document.getElementById('exam-review-day-filter');
+  const gradeFilter = document.getElementById('exam-review-grade-filter');
+  dayFilter.innerHTML = '<option value="all">全部日期</option>' + review.day_options
+    .map(option => `<option value="${safeDataAttribute(option.value)}">${escapeHtml(option.label)}</option>`).join('');
+  gradeFilter.innerHTML = '<option value="all">全部年级</option>' + review.grade_options
+    .map(option => `<option value="${safeDataAttribute(option.value)}">${escapeHtml(option.label)}</option>`).join('');
+  const renderRows = () => {
+    const rows = review.rows.filter(row => (dayFilter.value === 'all' || String(row.day_index) === dayFilter.value)
+      && (gradeFilter.value === 'all' || row.grade_filter.includes(gradeFilter.value)));
+    let previousGroup = '';
+    document.getElementById('exam-schedule-rows').innerHTML = rows.map(row => {
+      const group = `${row.day_index}:${row.start_time}`;
+      const groupHeading = group === previousGroup ? '' : `<tr class="exam-session-group"><td colspan="8">${escapeHtml(row.date_label || row.day_label)} · ${escapeHtml(row.start_time)} 开始</td></tr>`;
+      previousGroup = group;
+      const roomText = timetableOnly
+        ? '第 4 步分配'
+        : (row.room_allocations || []).map(room => `${escapeHtml(room.room_name)}（${room.student_ids?.length || 0} 人）`).join('<br>') || '—';
+      const restText = row.rest_after_minutes === null
+        ? '无需预留'
+        : `${row.rest_after_minutes} 分钟（需 ${row.required_rest_minutes}）`;
+      return `${groupHeading}<tr class="exam-review-${row.review_status === '通过' ? 'ready' : 'warning'}">
+        <td><strong>${escapeHtml(row.date || row.day_label)}</strong><small>${escapeHtml(row.day_label)}</small></td>
+        <td>${escapeHtml(row.grade_label)}</td>
+        <td><strong>${escapeHtml(row.time_label)}</strong><small>${Number(row.duration_minutes)} 分钟</small></td>
+        <td><strong>${escapeHtml(row.course_name)}</strong></td>
+        <td>${Number(row.student_count ?? row.student_ids?.length ?? 0)} 人</td>
+        <td>${roomText}</td>
+        <td><span class="exam-review-badge ${row.conflict_status === '无冲突' ? 'success' : 'error'}">${escapeHtml(row.conflict_status)}</span></td>
+        <td><span class="exam-review-badge ${row.rest_status === '不足' ? 'error' : 'success'}">${escapeHtml(row.rest_status)}</span><small>${escapeHtml(restText)}</small></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="8" class="empty-cell">当前筛选条件下没有考试</td></tr>';
+    document.getElementById('exam-review-visible-count').textContent = `显示 ${rows.length} / ${review.rows.length} 门考试`;
+  };
+  dayFilter.onchange = renderRows;
+  gradeFilter.onchange = renderRows;
+  renderRows();
+  renderExamTeacherDuties(schedule, review);
+  renderExamSeatPreview(schedule, examPlannerState().students || []);
+  const exportSummary = document.getElementById('exam-export-summary');
+  if (exportSummary) {
+    exportSummary.textContent = timetableOnly
+      ? `当前为时间表阶段：可导出三个年级考试时间表；安排监考与巡考后再导出考场座次。`
+      : `将导出 ${schedule.sessions.length} 门考试、${schedule.metrics.total_room_sessions} 个考场场次，以及教师任务和逐考场座次图。`;
+  }
+  updateExamWorkflow();
 }
 
 async function loadExamPlanner() {
-  const data = await api('/exams');
+  const [data, roomCatalog, students] = await Promise.all([api('/exams'), api('/exam-rooms'), api('/students')]);
   window._examPlanner = {
     ...data,
+    revision: roomCatalog.revision,
     examRows: (data.plan?.exams || []).map(exam => ({ ...exam })),
+    examRooms: roomCatalog.rooms.map(room => ({ ...room })),
+    examRoomsDirty: false,
+    students,
+    activeOutput: window._examPlanner?.activeOutput || 'seats',
     importPreview: null,
     importMappings: {},
+    dirty: false,
   };
   populateExamConfig(data.plan);
+  bindExamRoomManager();
   bindExamDurationImport();
+  bindExamWorkflow();
   renderExamImportPreview();
   renderExamCourseRows();
   renderExamSchedule(data.solve_status === 'valid' ? data.schedule : null);
-  const status = data.plan_issues?.length
+  const status = roomCatalog.rooms.length === 0
+    ? '请先在页面顶部添加并保存考场名单，然后再创建考试计划。'
+    : data.plan_issues?.length
     ? `考试计划有 ${data.plan_issues.length} 项需要修复：${data.plan_issues[0].message}。请移除失效科目或重新保存。`
     : data.solve_status === 'valid'
       ? '当前考试安排已生成并通过校验。'
       : data.plan?.exams?.length
-        ? '考试设置已保存；点击“生成考试安排”计算三个年级的考试时间表。'
-        : '先设置考试周期，再从课程目录添加本次需要考试的科目。';
+        ? '考试设置已保存；点击“生成考试时间表”计算三个年级的考试安排。'
+        : '考场名单已就绪；现在可从时长表导入或手动添加本次考试科目。';
   setExamStatus(status, data.plan_issues?.length ? 'error' : data.solve_status === 'valid' ? 'success' : '');
+  updateExamWorkflow();
 }
 
 window.addExamCourse = function() {
@@ -812,25 +1420,32 @@ window.addExamCourse = function() {
     course_name: course?.name || courseId,
     duration_minutes: Number(document.getElementById('exam-duration-select').value),
   });
+  markExamPlanDirty();
   renderExamCourseRows();
 };
 
 window.applyExamDurationImport = function() {
   const state = examPlannerState();
   if (!state.importPreview) return showToast('请先选择考试时长统计表', 'warning');
-  const imported = examRowsFromDurationImport(state.importPreview.rows, state.importMappings || {});
+  const imported = examRowsFromDurationImport(
+    state.importPreview.rows.map(row => ({ ...row, source_sheet: state.importPreview.source_sheet })),
+    state.importMappings || {},
+  );
   if (imported.unmapped.length) {
     showToast(`还有 ${imported.unmapped.length} 门考试没有选择名单来源课程`, 'warning');
     return;
   }
   if (state.examRows.length && !window.confirm(`将用导入的 ${imported.exams.length} 门考试替换当前考试列表，是否继续？`)) return;
   state.examRows = imported.exams;
+  markExamPlanDirty();
   renderExamCourseRows();
   setExamStatus(`已把 ${imported.exams.length} 门考试加入列表。分钟数仍可逐科调整；确认后请保存考试设置。`, 'success');
   showToast(`已导入 ${imported.exams.length} 门考试`, 'success');
 };
 
 function examEditorFields(timetableOnly) {
+  const state = examPlannerState();
+  const roomCapacity = document.getElementById('exam-room-capacity').value;
   return {
     timetable_only: timetableOnly,
     grade_day_counts: {
@@ -844,8 +1459,8 @@ function examEditorFields(timetableOnly) {
     minimum_exam_gap_minutes: document.getElementById('exam-minimum-gap').value,
     longest_exam_gap_minutes: document.getElementById('exam-longest-gap').value,
     breaks: document.getElementById('exam-breaks').value,
-    room_count: document.getElementById('exam-room-count').value,
-    room_capacity: document.getElementById('exam-room-capacity').value,
+    rooms: (state.examRooms || []).map(room => ({ ...room, capacity: roomCapacity })),
+    room_capacity: roomCapacity,
     invigilators_per_room: document.getElementById('exam-invigilators').value,
     require_every_teacher_invigilates: document.getElementById('exam-require-all-teachers').checked,
   };
@@ -854,16 +1469,28 @@ function examEditorFields(timetableOnly) {
 window.saveExamPlan = async function({ quiet = false, timetableOnly } = {}) {
   const state = examPlannerState();
   try {
+    if (state.examRoomsDirty) throw new Error('请先保存考场名单，再保存考试计划');
+    if (!state.examRooms.length) throw new Error('请先添加并保存考场名单');
     const effectiveTimetableOnly = timetableOnly ?? state.plan?.config?.timetable_only !== false;
     const plan = examPlanFromEditor(examEditorFields(effectiveTimetableOnly), state.examRows);
     const saved = await api('/exams', {
       method: 'PUT',
       body: JSON.stringify({ plan, expected_revision: state.revision }),
     });
-    window._examPlanner = { ...saved, examRows: saved.plan.exams.map(exam => ({ ...exam })) };
+    window._examPlanner = {
+      ...saved,
+      examRows: saved.plan.exams.map(exam => ({ ...exam })),
+      examRooms: saved.plan.config.rooms.map(room => ({ ...room })),
+      examRoomsDirty: false,
+      dirty: false,
+      activeStage: state.activeStage,
+      activeOutput: state.activeOutput || 'seats',
+      students: state.students || [],
+    };
     populateExamConfig(saved.plan);
     renderExamCourseRows();
     renderExamSchedule(null);
+    updateExamWorkflow();
     if (!quiet) {
       setExamStatus('考试设置已保存，旧的考试安排已失效。', 'success');
       showToast('考试设置已保存', 'success');
@@ -872,6 +1499,18 @@ window.saveExamPlan = async function({ quiet = false, timetableOnly } = {}) {
   } catch (error) {
     setExamStatus(`保存失败：${error.message}`, 'error');
     throw error;
+  }
+};
+
+window.saveExamPlanAndContinue = async function() {
+  try {
+    await window.saveExamPlan({ quiet: true, timetableOnly: true });
+    window._examPlanner.activeStage = 'timetable';
+    updateExamWorkflow();
+    setExamStatus('考试窗口已保存。请在第 3 步启动计算并审核结果。', 'success');
+    showToast('设置已保存，可以生成时间表', 'success');
+  } catch {
+    // saveExamPlan already shows the actionable validation error.
   }
 };
 
@@ -891,7 +1530,9 @@ async function solveExamPhase({ timetableOnly, progressMessage, successMessage, 
     window._examPlanner.schedule = result.schedule;
     window._examPlanner.revision = result.revision;
     window._examPlanner.solve_status = 'valid';
+    window._examPlanner.activeStage = timetableOnly ? 'timetable' : 'staffing';
     renderExamSchedule(result.schedule);
+    updateExamWorkflow();
     setExamStatus(successMessage, 'success');
     showToast(toastMessage, 'success');
   } catch (error) {
@@ -1010,7 +1651,7 @@ function setManualCoursePanelExpanded(expanded, { persist = true } = {}) {
   view?.classList.toggle('course-panel-collapsed', !resolvedExpanded);
   button?.setAttribute('aria-expanded', resolvedExpanded ? 'true' : 'false');
   const label = button?.querySelector('span:last-child');
-  if (label) label.textContent = resolvedExpanded ? '隐藏课程池' : '显示课程池';
+  if (label) label.textContent = resolvedExpanded ? '隐藏锁课池' : '显示锁课池';
   if (persist) localStorage.setItem(MANUAL_COURSE_PANEL_STORAGE_KEY, String(resolvedExpanded));
 }
 
@@ -1022,6 +1663,24 @@ function setManualFocusMode(enabled) {
   button?.setAttribute('aria-pressed', resolvedEnabled ? 'true' : 'false');
   const label = button?.querySelector('span:last-child');
   if (label) label.textContent = resolvedEnabled ? '退出专注' : '专注课表';
+}
+
+function setOverviewFocusMode(enabled) {
+  const app = document.querySelector('.app');
+  const button = document.getElementById('overview-focus-mode');
+  const resolvedEnabled = Boolean(enabled);
+  app?.classList.toggle('overview-focus-mode', resolvedEnabled);
+  button?.setAttribute('aria-pressed', resolvedEnabled ? 'true' : 'false');
+  if (button) button.textContent = resolvedEnabled ? '退出专注' : '专注查看';
+}
+
+function setOverviewSingleColumn(enabled) {
+  const view = document.getElementById('view-overview-timetable');
+  const button = document.getElementById('overview-layout-toggle');
+  const resolvedEnabled = Boolean(enabled);
+  view?.classList.toggle('overview-single-column', resolvedEnabled);
+  button?.setAttribute('aria-pressed', resolvedEnabled ? 'true' : 'false');
+  if (button) button.textContent = resolvedEnabled ? '自动排列' : '单列查看';
 }
 
 function manualPlanIsConfirmed() {
@@ -1436,24 +2095,24 @@ function renderManualCoursePool() {
     const scheduled = Math.max(0, Number(item.scheduled_uses) || 0);
     const percentage = total > 0 ? Math.min(100, Math.round((scheduled / total) * 100)) : 0;
     const remainingLabel = item.remaining_uses === Infinity
-      ? '不限次数'
+      ? '可重复锁定'
       : item.current_class_remaining != null
-        ? `本班剩余 ${item.current_class_remaining} 节`
-        : `剩余 ${item.remaining_uses} 次`;
+        ? `本班还可手动锁定 ${item.current_class_remaining} 节`
+        : `还可手动锁定 ${item.remaining_uses} 次`;
     const technicalLabel = [...(item.course_ids || []), ...(item.section_ids || [])].join(' · ');
     const badges = [
       `<span class="manual-course-category-badge">${escapeHtml(manualCourseCategoryLabel(category))}</span>`,
       item.kind === 'bundle' ? '<span class="manual-course-state-badge">同步分流</span>' : '',
       item.deck_scope === 'grade_teaching' ? '<span class="manual-course-state-badge">年级共享</span>' : '',
       item.teacher_unassigned ? '<span class="manual-course-state-badge is-warning">待配教师</span>' : '',
-      item.current_class_remaining === 0 ? '<span class="manual-course-state-badge">本班已排完</span>' : '',
+      item.current_class_remaining === 0 ? '<span class="manual-course-state-badge">本班已锁完</span>' : '',
     ].filter(Boolean).join('');
     const progressMarkup = item.remaining_uses === Infinity ? `
       <div class="manual-course-progress">
-        <div class="manual-course-progress-copy"><span>可重复安排</span><strong>${remainingLabel}</strong></div>
+        <div class="manual-course-progress-copy"><span>可重复锁定</span><strong>${remainingLabel}</strong></div>
       </div>` : `
       <div class="manual-course-progress">
-        <div class="manual-course-progress-copy"><span>已排 ${scheduled} / ${total} 节</span><strong>${remainingLabel}</strong></div>
+        <div class="manual-course-progress-copy"><span>手动锁定草稿：${scheduled} / ${total} 节</span><strong>${remainingLabel}</strong></div>
         <span class="manual-course-progress-track" aria-hidden="true"><i style="width:${percentage}%"></i></span>
       </div>`;
     const adminProgress = item.administrative_progress?.length
@@ -1580,14 +2239,14 @@ function renderManualPlanControls(message = '') {
     status.textContent = message;
   } else if (confirmed) {
     status.textContent = window._manualScheduleAvailable === true
-      ? `完整课表已生成并显示在下方：${plan.counts?.section_locks || plan.locks?.length || 0} 个金框必要条件保持锁定，其余课程标记为“AI 已排”。`
-      : `已锁定：${plan.counts?.visual_placements || placementCount} 个手动格，展开为 ${plan.counts?.section_locks || plan.locks?.length || 0} 个 section 必要条件。AI 排课不会移动金框课程。`;
+      ? `完整课表已生成并显示在下方：${plan.counts?.section_locks || plan.locks?.length || 0} 个金框课时保持锁定，其余课程标记为“自动排入”。`
+      : `已锁定 ${plan.counts?.visual_placements || placementCount} 个手动课程格，对应 ${plan.counts?.section_locks || plan.locks?.length || 0} 个具体课时。规则求解器不会移动金框课程。`;
   } else if (plan.status === 'stale') {
-    status.textContent = plan.issues?.[0]?.message || '输入数据已变化，请重新校验并确认必要条件。';
+    status.textContent = plan.issues?.[0]?.message || '输入数据已变化，请重新校验并锁定课程。';
   } else {
     const base = placementCount
       ? `手动草稿：${placementCount} 个课程格，尚未锁定。确认前仍可拖动或删除。`
-      : '第一步：把需要人工确定的课程拖入课表；完成后点击“确认为必要条件”。';
+      : '第一步：把需要人工确定的课程拖入课表；完成后点击“锁定课程”。';
     status.textContent = window._manualPlan?.catalog?.warning
       ? `${base} 注意：${window._manualPlan.catalog.warning}`
       : base;
@@ -1685,7 +2344,7 @@ function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons =
     <div class="manual-slot-course">
       <span>${manualPoolItemLabel(item)}</span>
       ${locked
-        ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">锁</span>'
+        ? '<span class="manual-lock-badge" title="已锁定课程" aria-label="已锁定">锁</span>'
         : `<button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-id="${targetClassId}" aria-label="删除课程">×</button>`}
     </div>
     ${conflictReasons.length ? `<span class="manual-slot-conflict-mark" aria-label="${conflictTitle}" title="${conflictTitle}"></span>` : ''}`;
@@ -1709,10 +2368,10 @@ function manualGeneratedSlotMarkup(slot) {
       }).join('')}
     </span>` : '';
   const badge = slot.manual_lock_state === 'all'
-    ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">锁</span>'
+    ? '<span class="manual-lock-badge" title="已锁定课程" aria-label="已锁定">锁</span>'
     : slot.manual_lock_state === 'partial'
-      ? '<span class="manual-generated-badge partial" title="该分流时段中部分课程为必要条件">部分金框</span>'
-      : '<span class="manual-generated-badge" title="由 AI 补全的课程">AI 已排</span>';
+      ? '<span class="manual-generated-badge partial" title="该分流时段中部分课程已锁定">部分金框</span>'
+      : '<span class="manual-generated-badge" title="由规则求解器自动排入的课程">自动排入</span>';
   return `
     <div class="manual-slot-course manual-generated-course">
       <span class="manual-generated-course-copy">
@@ -1850,7 +2509,7 @@ function renderManualTimetableGrid() {
             <div class="manual-slot-course">
               <span>${manualPoolItemLabel(mergedItem)}</span>
               ${mergedLocked
-                ? '<span class="manual-lock-badge" title="已确认为必要条件" aria-label="已锁定">锁</span>'
+                ? '<span class="manual-lock-badge" title="已锁定课程" aria-label="已锁定">锁</span>'
                 : `<button type="button" class="manual-slot-remove" data-slot-id="${slotId}" data-target-class-ids="${adminEntries.map(entry => entry.classId).join(',')}" aria-label="删除两个行政班课程">×</button>`}
             </div>
             ${mergedConflicts.length ? `<span class="manual-slot-conflict-mark" aria-label="${mergedConflictTitle}" title="${mergedConflictTitle}"></span>` : ''}
@@ -1919,9 +2578,206 @@ function renderManualTimetableGrid() {
   renderManualPlanControls();
 }
 
+const SCHEDULING_ROOM_TYPES = Object.freeze([
+  ['general', '普通'],
+  ['physics', '物理'],
+  ['chemistry', '化学'],
+  ['biology', '生物'],
+  ['computer', '计算机'],
+  ['art', '美术'],
+  ['music', '音乐'],
+]);
+
+function schedulingRoomTypeOptions(selectedType = 'general') {
+  const selected = String(selectedType || 'general');
+  const knownTypes = new Set(SCHEDULING_ROOM_TYPES.map(([value]) => value));
+  const custom = knownTypes.has(selected)
+    ? ''
+    : `<option value="${safeDataAttribute(selected)}" selected>${escapeHtml(selected)}</option>`;
+  return custom + SCHEDULING_ROOM_TYPES.map(([value, label]) =>
+    `<option value="${safeDataAttribute(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`
+  ).join('');
+}
+
+function renderManualRoomSaveState() {
+  const rooms = window._manualRooms || [];
+  const count = document.getElementById('manual-room-count');
+  const status = document.getElementById('manual-room-save-status');
+  const save = document.getElementById('manual-room-save');
+  if (count) count.textContent = `${rooms.length} 个教室`;
+  if (!status || !save) return;
+  save.disabled = window._manualRoomsDirty !== true || window._manualRoomsSaving === true;
+  save.textContent = window._manualRoomsSaving === true ? '正在保存…' : '保存教室名单';
+  status.className = '';
+  if (window._manualRoomSaveError) {
+    status.className = 'is-error';
+    status.textContent = `保存失败：${window._manualRoomSaveError}`;
+  } else if (window._manualRoomsSaving === true) {
+    status.textContent = '正在保存教室名单；当前课表和排课结果不会被重置。';
+  } else if (window._manualRoomsDirty === true) {
+    status.className = 'is-dirty';
+    status.textContent = '有未保存的修改；保存后不会触发教室冲突报错或重新排课。';
+  } else if (rooms.length) {
+    const hasLegacyIds = rooms.some(room => /^R\d+$/i.test(String(room.id || '').trim()));
+    status.textContent = `已保存 ${rooms.length} 个教室。当前不参与教室冲突校验。${hasLegacyIds ? ' 检测到 R1 这类旧式系统 ID；可直接改成门牌号（如 101）后统一保存。' : ''}`;
+  } else {
+    status.textContent = '尚未维护教室；没有教室也可以正常排课。';
+  }
+}
+
+function renderManualRoomManager() {
+  const list = document.getElementById('manual-room-list');
+  if (!list) return;
+  const rooms = window._manualRooms || [];
+  const manager = document.getElementById('manual-room-manager');
+  if (manager && rooms.length === 0) manager.open = true;
+  list.innerHTML = rooms.length ? rooms.map(room => `
+    <article class="manual-room-row" data-manual-room-id="${safeDataAttribute(room.id)}">
+      <label>
+        <span>门牌号 / 教室 ID</span>
+        <input class="input" type="text" maxlength="80" value="${safeDataAttribute(room.id)}" data-manual-room-field="id" aria-label="${safeDataAttribute(room.name)}的门牌号或教室 ID">
+      </label>
+      <label>
+        <span>教室名称</span>
+        <input class="input" type="text" maxlength="80" value="${safeDataAttribute(room.name)}" data-manual-room-field="name" aria-label="${safeDataAttribute(room.name)}的名称">
+      </label>
+      <label>
+        <span>类型</span>
+        <select class="select" data-manual-room-field="type" aria-label="${safeDataAttribute(room.name)}的类型">
+          ${schedulingRoomTypeOptions(room.type)}
+        </select>
+      </label>
+      <label>
+        <span>容量</span>
+        <input class="input" type="number" min="1" max="500" value="${safeDataAttribute(room.capacity ?? 30)}" data-manual-room-field="capacity" aria-label="${safeDataAttribute(room.name)}的容量">
+      </label>
+      <button class="btn btn-danger btn-sm" type="button" data-manual-room-delete="${safeDataAttribute(room.id)}">删除</button>
+    </article>
+  `).join('') : `
+    <div class="manual-room-empty">
+      还没有日常上课教室。你可以现在添加，也可以保持为空并直接排课。
+    </div>
+  `;
+  renderManualRoomSaveState();
+}
+
+function applyManualRoomChange(command, { render = true } = {}) {
+  try {
+    const previousId = String(command.id || '').trim();
+    const nextRooms = changeSchedulingRooms(window._manualRooms || [], command);
+    if (command.type === 'update') {
+      const nextId = String(command.newId ?? previousId).trim();
+      if (nextId !== previousId) recordManualRoomIdRename(previousId, nextId);
+    } else if (command.type === 'delete') {
+      const source = [...(window._manualRoomIdRenames || new Map()).entries()]
+        .find(([, target]) => target === previousId)?.[0];
+      if (source) window._manualRoomIdRenames.delete(source);
+    }
+    window._manualRooms = nextRooms;
+    window._manualRoomsDirty = true;
+    window._manualRoomSaveError = '';
+    if (render) renderManualRoomManager();
+    else renderManualRoomSaveState();
+    return true;
+  } catch (error) {
+    showToast(error.message, 'error');
+    renderManualRoomManager();
+    return false;
+  }
+}
+
+function recordManualRoomIdRename(previousId, nextId) {
+  const renames = window._manualRoomIdRenames ||= new Map();
+  const persistedIds = window._manualPersistedRoomIds || new Set();
+  const originalId = [...renames.entries()]
+    .find(([, currentId]) => currentId === previousId)?.[0]
+    || (persistedIds.has(previousId) ? previousId : '');
+  if (!originalId) return;
+  if (originalId === nextId) renames.delete(originalId);
+  else renames.set(originalId, nextId);
+}
+
+async function saveManualRooms() {
+  if (window._manualRoomsDirty !== true || window._manualRoomsSaving === true) return;
+  window._manualRoomsSaving = true;
+  window._manualRoomSaveError = '';
+  renderManualRoomSaveState();
+  try {
+    const saved = await api('/rooms', {
+      method: 'PUT',
+      body: JSON.stringify({
+        expected_revision: window._manualRoomsRevision,
+        rooms: window._manualRooms || [],
+        renames: [...(window._manualRoomIdRenames || new Map())]
+          .map(([from, to]) => ({ from, to })),
+      }),
+    });
+    window._manualRooms = (saved.rooms || []).map(room => ({ ...room }));
+    window._manualRoomsRevision = Number(saved.revision);
+    window._manualPersistedRoomIds = new Set(window._manualRooms.map(room => room.id));
+    window._manualRoomIdRenames = new Map();
+    window._manualRoomsDirty = false;
+    window._manualRoomSaveError = '';
+    renderManualRoomManager();
+    showToast(window._manualRooms.length
+      ? `已保存 ${window._manualRooms.length} 个教室`
+      : '教室名单已清空，仍可正常排课');
+  } catch (error) {
+    window._manualRoomSaveError = error.message;
+  } finally {
+    window._manualRoomsSaving = false;
+    renderManualRoomSaveState();
+  }
+}
+
+function bindManualRoomManager() {
+  const list = document.getElementById('manual-room-list');
+  const form = document.getElementById('manual-room-add-form');
+  const save = document.getElementById('manual-room-save');
+  if (!list || !form || !save) return;
+
+  list.onchange = event => {
+    const field = event.target.dataset.manualRoomField;
+    const row = event.target.closest('[data-manual-room-id]');
+    if (!field || !row) return;
+    applyManualRoomChange({
+      type: 'update',
+      id: row.dataset.manualRoomId,
+      newId: row.querySelector('[data-manual-room-field="id"]').value,
+      name: row.querySelector('[data-manual-room-field="name"]').value,
+      roomType: row.querySelector('[data-manual-room-field="type"]').value,
+      capacity: row.querySelector('[data-manual-room-field="capacity"]').value,
+    }, { render: field === 'id' });
+  };
+
+  list.onclick = event => {
+    const button = event.target.closest('[data-manual-room-delete]');
+    if (!button) return;
+    const room = (window._manualRooms || []).find(item => item.id === button.dataset.manualRoomDelete);
+    if (!room || !confirm(`删除教室“${room.name}”吗？保存名单后生效。`)) return;
+    applyManualRoomChange({ type: 'delete', id: room.id });
+  };
+
+  form.onsubmit = event => {
+    event.preventDefault();
+    const added = applyManualRoomChange({
+      type: 'add',
+      id: document.getElementById('manual-room-new-id').value,
+      name: document.getElementById('manual-room-new-name').value,
+      roomType: document.getElementById('manual-room-new-type').value,
+      capacity: document.getElementById('manual-room-new-capacity').value,
+    });
+    if (added) {
+      form.reset();
+      document.getElementById('manual-room-new-name').focus();
+    }
+  };
+  save.onclick = saveManualRooms;
+}
+
 async function loadManualTimetable() {
-  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks, students, manualPlan, status] = await Promise.all([
-    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'), api('/students'), api('/manual-plan'), api('/status'),
+  const [teachingClasses, adminClasses, courses, teachingAssignments, selectionBlocks, students, manualPlan, rooms, status] = await Promise.all([
+    api('/teaching_classes'), api('/admin_classes'), api('/courses'), api('/teaching_assignments'), api('/selection_blocks'), api('/students'), api('/manual-plan'), api('/rooms'), api('/status'),
   ]);
   window._manualCourses = [...courses].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN'));
   window._manualTeachingAssignments = teachingAssignments;
@@ -1929,6 +2785,13 @@ async function loadManualTimetable() {
   window._manualSelectionBlocks = selectionBlocks;
   window._manualSections = manualPlan.catalog?.sections || [];
   window._manualPlan = manualPlan;
+  window._manualRooms = rooms.map(room => ({ ...room }));
+  window._manualPersistedRoomIds = new Set(rooms.map(room => room.id));
+  window._manualRoomIdRenames = new Map();
+  window._manualRoomsRevision = Number(status.revision);
+  window._manualRoomsDirty = false;
+  window._manualRoomsSaving = false;
+  window._manualRoomSaveError = '';
   window._manualScheduleAvailable = status.solve_status === 'valid';
   window._manualHasSchedule = Number(status.counts?.assignments || 0) > 0;
   window._manualGeneratedTimetables = new Map();
@@ -1937,10 +2800,20 @@ async function loadManualTimetable() {
   renderManualActionFeedback('');
   setManualFocusMode(false);
   setManualCoursePanelExpanded(
-    localStorage.getItem(MANUAL_COURSE_PANEL_STORAGE_KEY) !== 'false',
+    status.solve_status !== 'valid'
+      && localStorage.getItem(MANUAL_COURSE_PANEL_STORAGE_KEY) !== 'false',
     { persist: false },
   );
+  const poolContext = document.getElementById('manual-course-pool-context');
+  if (poolContext) {
+    poolContext.textContent = status.solve_status === 'valid'
+      ? '完整课表已生成。这里的数字只统计“手动锁课草稿”，不是最终课表完成度；实际结果请查看下方课表或左侧“总课表概览”。'
+      : '这里只统计手动拖入并锁定的课程，用于约束下一次求解；没有锁定的课程仍由系统自动安排。';
+    poolContext.classList.toggle('is-schedule-ready', status.solve_status === 'valid');
+  }
   applyScheduleArchiveStatus(status);
+  bindManualRoomManager();
+  renderManualRoomManager();
   const clearUnlockedButton = document.getElementById('manual-clear-unlocked-schedule');
   if (clearUnlockedButton) clearUnlockedButton.disabled = !window._manualHasSchedule;
   const selector = document.getElementById('manual-class-select');
@@ -1997,7 +2870,7 @@ async function loadManualTimetable() {
       if (conflictCount) {
         return showToast(`当前草稿还有 ${conflictCount} 个冲突格，请先处理红色叉号`, 'error');
       }
-      if (!confirm(`将 ${placements.length} 个手动课程格确认为不可自动破坏的必要条件吗？确认后会显示金色锁框。`)) return;
+      if (!confirm(`锁定这 ${placements.length} 个手动课程格吗？锁定后会显示金色边框，自动排课不会移动它们。`)) return;
       renderManualPlanControls('正在校验课程、教师、学生和 section 映射…');
       const plan = await api('/manual-plan/confirm', {
         method: 'POST',
@@ -2011,7 +2884,7 @@ async function loadManualTimetable() {
       window._manualGeneratedTimetables = new Map();
       window._manualGeneratedTimetableRequests = new Map();
       manualDraftUndoStack = [];
-      renderManualActionFeedback('必要条件已经锁定；如需调整，请先解除必要条件。', {
+      renderManualActionFeedback('课程已经锁定；如需调整，请先解除课程锁定。', {
         neutral: true,
         canUndo: false,
       });
@@ -2020,19 +2893,19 @@ async function loadManualTimetable() {
       renderManualCoursePool();
       renderManualTimetableGrid();
       renderManualPlanControls();
-      showToast(`已锁定 ${plan.counts?.section_locks || plan.locks?.length || 0} 个 section 必要条件`);
+      showToast(`已锁定 ${plan.counts?.section_locks || plan.locks?.length || 0} 个具体课时`);
     } catch {
       renderManualPlanControls();
     }
   };
   document.getElementById('manual-unlock-plan').onclick = async () => {
-    if (!confirm('解除全部手动必要条件吗？解除后金框课程可以再次拖动，下一次排课也不再强制保留这些时段。')) return;
+    if (!confirm('解除全部课程锁定吗？解除后金框课程可以再次拖动，下一次排课也不再强制保留这些时段。')) return;
     const plan = await api('/manual-plan/unlock', { method: 'POST', body: '{}' });
     window._manualPlan = plan;
     renderManualCoursePool();
     renderManualTimetableGrid();
     renderManualPlanControls();
-    showToast('必要条件已解除，可以继续修改草稿');
+    showToast('课程锁定已解除，可以继续修改草稿');
   };
   const runManualAiSolve = async ({ optimize = false } = {}) => {
     const button = document.getElementById(optimize ? 'manual-ai-optimize' : 'manual-ai-solve');
@@ -2046,7 +2919,7 @@ async function loadManualTimetable() {
       const stage = optimize
         ? '继续优化：独立求解进程正在保留当前可行课表并寻找更好排法'
         : seconds < 45
-        ? 'AI 排课阶段 1/2：DeepSeek 正在分析约束和课程优先级'
+        ? '辅助 AI 阶段 1/2：DeepSeek 正在整理约束和搜索优先级'
         : '快速生成阶段 2/2：已保留可行初稿，正在用剩余预算进行全局择优';
       renderManualPlanControls(`${stage}（已用 ${seconds} 秒）…`);
     }, 1000);
@@ -2058,8 +2931,8 @@ async function loadManualTimetable() {
         candidate_count: 2,
         max_time_seconds: 120,
         instruction: optimize
-          ? '保留全部手动必要条件和现有可行解；只在硬约束始终成立时改善课程分布与教师负担。'
-          : '保留全部手动必要条件；先快速构造完整可行课表，再优先处理跨年级教师和高约束课程。',
+          ? '保留全部手动锁定课程和现有可行解；只在硬约束始终成立时改善课程分布与教师负担。'
+          : '保留全部手动锁定课程；先快速构造完整可行课表，再优先处理跨年级教师和高约束课程。',
       }, '/manual-plan/ai-solve');
       const duration = ((result.solve_duration_ms || 0) / 1000).toFixed(1);
       if (!result.solved) {
@@ -2111,20 +2984,20 @@ async function loadManualTimetable() {
       const reviewWarning = reviewCount
         ? `；有 ${reviewCount} 项待人工复核`
         : '';
-      renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}完成：保留 ${result.manual_lock_count || 0} 个必要条件，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${blockMorningSummary}${reviewWarning}${qualityWarning}${policyWarning}${selectionWarning}${warning}`);
+      renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}完成：保留 ${result.manual_lock_count || 0} 个锁定课程，求解用时 ${duration} 秒，课时、锁定、教师和学生冲突校验通过${blockMorningSummary}${reviewWarning}${qualityWarning}${policyWarning}${selectionWarning}${warning}`);
       const hasWarning = result.publication_status === 'review_required'
         || incompleteChoices.length
         || reviewCount;
       showToast(hasWarning
         ? `课表已生成但不可正式发布；${reviewCount || 1} 项问题待人工复核`
         : incompleteChoices.length
-          ? `AI 排课完成；${new Set(incompleteChoices.map(item => item.student_id)).size} 名学生待补选课`
-          : `AI 排课完成，用时 ${duration} 秒`, hasWarning ? 'warning' : 'success');
+          ? `智能排课完成；${new Set(incompleteChoices.map(item => item.student_id)).size} 名学生待补选课`
+          : `智能排课完成，用时 ${duration} 秒`, hasWarning ? 'warning' : 'success');
       if (confirm(`完整课表已生成，核心硬约束校验通过${hasWarning ? '，但当前状态为“待复核”，不能视为正式发布' : ''}。现在查看总课表吗？`)) {
         await switchView('overview-timetable');
       }
     } catch (error) {
-      renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}失败：${error.message}。金框必要条件和原有效课表仍然保留，可以修正数据后重试。`);
+      renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}失败：${error.message}。金框锁定课程和原有效课表仍然保留，可以修正数据后重试。`);
     } finally {
       clearInterval(timer);
       window._manualAiRunning = false;
@@ -2238,7 +3111,7 @@ function renderTeacherAvailabilityStatus() {
   count.textContent = `已标记 ${slots.size} 个时段${dirty ? ' · 尚未保存' : ''}`;
   status.className = `teacher-availability-status${dirty ? ' is-dirty' : ''}`;
   status.textContent = dirty
-    ? `${teacher?.name || teacherId} 的禁排时段已修改。保存后会使现有课表与手动必要条件进入待重新校验状态。`
+    ? `${teacher?.name || teacherId} 的禁排时段已修改。保存后会使现有课表与手动锁定课程进入待重新校验状态。`
     : slots.size
       ? `${teacher?.name || teacherId} 当前有 ${slots.size} 个已保存的硬性禁排时段；排课引擎不会在这些格子安排其课程。`
       : `${teacher?.name || teacherId} 暂无已保存的禁排时段。`;
@@ -2402,7 +3275,7 @@ async function loadScheduleEditor() {
     document.getElementById('schedule-editor-event-duration').oninput = updateScheduleEditorSpecialTemplate;
     updateScheduleEditorSpecialTemplate();
     if (!editor.available) {
-      status.textContent = '当前没有可编辑的有效课表。请先完成 AI 排课并通过校验。';
+      status.textContent = '当前没有可编辑的有效课表。请先完成智能排课并通过校验。';
       document.getElementById('schedule-editor-grid').innerHTML = '<div class="empty-state"><p>尚无有效课表</p></div>';
       return;
     }
@@ -2439,9 +3312,9 @@ async function clearManualUnlockedSchedule() {
     }
     const confirmed = confirm(
       `一键清除当前课表中的未锁定课程吗？\n\n`
-      + `将保留 ${preview.retained_locked_meetings} 个已锁定课时（金框必要条件和其他课表锁）。\n`
+      + `将保留 ${preview.retained_locked_meetings} 个已锁定课时（金框锁定课程和其他课表锁）。\n`
       + `将清除 ${preview.cleared_unlocked_meetings} 个未锁定课时。\n\n`
-      + '课程、教师、学生、分班和选课数据不会改变；清除后可以重新运行 AI 补全。',
+      + '课程、教师、学生、分班和选课数据不会改变；清除后可以重新运行规则求解器自动排课。',
     );
     if (!confirmed) {
       renderManualPlanControls('已取消清除；当前课表没有变化。');
@@ -2474,6 +3347,30 @@ function formatArchiveDateTime(value) {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium', timeStyle: 'medium', hour12: false,
   }).format(new Date(value));
+}
+
+function suggestedScheduleArchiveName(now = new Date()) {
+  const year = now.getFullYear();
+  const academicYearStart = now.getMonth() >= 6 ? year : year - 1;
+  const term = now.getMonth() >= 6 ? '秋季' : '春季';
+  return `${academicYearStart}–${academicYearStart + 1} 学年${term}课表`;
+}
+
+function scheduleArchiveDisplayName(archive = {}) {
+  const savedName = String(archive.name || '').trim();
+  const legacyTimestampName = /^(?:课表存档\s*[·•-]\s*)?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(savedName);
+  if (savedName && !legacyTimestampName) return savedName;
+  const embeddedTimestamp = savedName.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?/)?.[0];
+  const timestamp = archive.saved_at || embeddedTimestamp;
+  if (!timestamp || Number.isNaN(new Date(timestamp).getTime())) return '历史课表';
+  const date = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'long' }).format(new Date(timestamp));
+  return `历史课表 · ${date}`;
+}
+
+function scheduleArchiveIsLegacy(archive = {}) {
+  const savedName = String(archive.name || '').trim();
+  return !savedName
+    || /^(?:课表存档\s*[·•-]\s*)?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(savedName);
 }
 
 function setScheduleArchiveStatus(message, tone = '') {
@@ -2515,8 +3412,21 @@ async function saveCurrentScheduleArchive() {
   syncScheduleArchiveControls();
   setScheduleArchiveStatus('正在校验并保存当前完整课表…');
   try {
+    const requestedName = prompt('请给这个历史版本命名（以后可按名称查找）：', suggestedScheduleArchiveName());
+    if (requestedName === null) {
+      setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
+      return;
+    }
+    const requestedNotes = prompt('可填写版本说明（选填，例如执行日期、核对人或调整原因）：', '');
+    if (requestedNotes === null) {
+      setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
+      return;
+    }
     const review = await api('/schedule-quality-review');
-    let body = {};
+    const body = {
+      name: requestedName.trim() || suggestedScheduleArchiveName(),
+      notes: requestedNotes.trim(),
+    };
     if (review.required) {
       if (!review.allowed) throw new Error(review.blocked_reason || '当前课表不能通过质量例外审批归档');
       const diagnosis = review.quality_gate?.diagnosis;
@@ -2548,12 +3458,10 @@ async function saveCurrentScheduleArchive() {
         setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
         return;
       }
-      body = {
-        quality_exception: {
-          reason,
-          approved_by: approvedBy,
-          confirmation,
-        },
+      body.quality_exception = {
+        reason,
+        approved_by: approvedBy,
+        confirmation,
       };
     }
     const result = await api('/schedule-archives', {
@@ -2574,6 +3482,47 @@ async function saveCurrentScheduleArchive() {
   }
 }
 
+async function restoreScheduleArchive(archiveId, button) {
+  if (!archiveId || !button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const preview = await api(`/schedule-archives/${encodeURIComponent(archiveId)}/restore-preview`);
+    const archive = preview.archive || {};
+    const labels = {
+      students: '学生', teachers: '教师', courses: '课程', rooms: '教室',
+      admin_classes: '行政班', teaching_classes: '教学班',
+    };
+    const impact = Object.entries(preview.impact || {})
+      .map(([key, counts]) => `${labels[key] || key}：${counts.current} → ${counts.restored}`)
+      .join('\n');
+    const confirmed = confirm(
+      `将“${scheduleArchiveDisplayName(archive) || archiveId}”恢复为当前课表吗？\n\n`
+      + `${impact}\n\n`
+      + (preview.creates_safety_snapshot
+        ? '系统会先把当前版本自动保存为“恢复前自动备份”，因此可以再次找回。'
+        : '当前没有可自动保存的课表。'),
+    );
+    if (!confirmed) return;
+    const result = await api(`/schedule-archives/${encodeURIComponent(archiveId)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_revision: preview.revision,
+        confirmation: archive.id,
+      }),
+    });
+    window._selectedScheduleArchiveId = null;
+    window._manualScheduleAvailable = false;
+    window._manualGeneratedTimetables = new Map();
+    window._manualGeneratedTimetableRequests = new Map();
+    showToast(result.message, 'success');
+    await switchView('overview-timetable');
+  } catch {
+    // api() already displays the backend's actionable safety error.
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
 async function deleteScheduleArchive(archiveId, button) {
   if (!archiveId || !button || button.disabled) return;
   button.disabled = true;
@@ -2581,7 +3530,7 @@ async function deleteScheduleArchive(archiveId, button) {
     const preview = await api(`/schedule-archives/${encodeURIComponent(archiveId)}/delete-preview`);
     const archive = preview.archive || {};
     const confirmed = confirm(
-      `永久删除过往课表“${archive.name || archiveId}”吗？\n\n`
+      `永久删除过往课表“${scheduleArchiveDisplayName(archive) || archiveId}”吗？\n\n`
       + `储存时间：${formatArchiveDateTime(archive.saved_at)}\n`
       + '删除后无法恢复，但当前正在使用的课表不会变化。',
     );
@@ -2612,7 +3561,7 @@ async function loadPastTimetables() {
   try {
     const archives = await api('/schedule-archives');
     if (!archives.length) {
-      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成 AI 排课后，在“排课表”或“总课表概览”点击“保存为过往课表”即可创建第一份记录。</p></div>';
+      content.innerHTML = '<div class="empty-state"><p>还没有储存过课表。完成智能排课后，在“排课表”或“总课表概览”点击“保存为过往课表”即可创建第一份记录。</p></div>';
       return;
     }
     content.innerHTML = `
@@ -2620,14 +3569,21 @@ async function loadPastTimetables() {
         ${archives.map(archive => `
           <article class="schedule-archive-card ${archive.id === window._selectedScheduleArchiveId ? 'selected' : ''}">
             <div>
-              <h3>${escapeHtml(archive.name || '课表存档')}</h3>
+              <h3>${escapeHtml(scheduleArchiveDisplayName(archive))}</h3>
               <p>储存时间：${formatArchiveDateTime(archive.saved_at)}</p>
               <p>${archive.assignments_count || 0} 条学生课时 · ${archive.meetings_count || 0} 个课程时段${archive.solve_duration_ms != null ? ` · 排课用时 ${(archive.solve_duration_ms / 1000).toFixed(1)} 秒` : ''}</p>
+              ${archive.notes ? `<p class="schedule-archive-notes">${escapeHtml(archive.notes)}</p>` : ''}
+              ${scheduleArchiveIsLegacy(archive) ? '<p class="schedule-archive-legacy-warning">旧版存档未记录学年、用途或保存人；恢复前请先查看内容并确认日期。</p>' : ''}
               ${archive.quality_exception_approval ? `<p class="validation-result warning">质量例外：${escapeHtml(archive.quality_exception_approval.approved_by)} 于 ${escapeHtml(formatArchiveDateTime(archive.quality_exception_approval.approved_at))} 批准；${escapeHtml(archive.quality_exception_approval.reason)}</p>` : ''}
             </div>
             <div class="schedule-archive-card-actions">
               <button class="btn btn-primary" type="button" data-open-archive="${safeDataAttribute(archive.id)}">查看课表</button>
-              <button class="btn btn-danger" type="button" data-delete-archive="${safeDataAttribute(archive.id)}">删除存档</button>
+              <button class="btn btn-secondary" type="button" data-restore-archive="${safeDataAttribute(archive.id)}">恢复为当前课表</button>
+              <small>恢复前会自动备份当前课表。</small>
+              <details class="schedule-archive-danger">
+                <summary>更多操作</summary>
+                <button class="btn btn-danger btn-sm" type="button" data-delete-archive="${safeDataAttribute(archive.id)}">删除存档</button>
+              </details>
             </div>
           </article>
         `).join('')}
@@ -2639,6 +3595,9 @@ async function loadPastTimetables() {
     });
     content.querySelectorAll('[data-delete-archive]').forEach(button => {
       button.addEventListener('click', () => deleteScheduleArchive(button.dataset.deleteArchive, button));
+    });
+    content.querySelectorAll('[data-restore-archive]').forEach(button => {
+      button.addEventListener('click', () => restoreScheduleArchive(button.dataset.restoreArchive, button));
     });
     const selected = archives.find(archive => archive.id === window._selectedScheduleArchiveId);
     if (selected) await openPastTimetable(selected.id);
@@ -2661,8 +3620,9 @@ async function openPastTimetable(archiveId) {
     detail.innerHTML = `
       <div class="past-timetable-toolbar">
         <div>
-          <h3>${archive.name || '课表存档'}</h3>
+          <h3>${escapeHtml(scheduleArchiveDisplayName(archive))}</h3>
           <p>储存于 ${formatArchiveDateTime(archive.saved_at)}；显示的是当时固定下来的数据快照。</p>
+          ${archive.notes ? `<p class="schedule-archive-notes">${escapeHtml(archive.notes)}</p>` : ''}
         </div>
         <label>查看班级
           <select id="past-timetable-class-select" class="select">
@@ -2719,24 +3679,50 @@ async function loadWelcomePage() {
 
 function setDashboardText(id, value) {
   const element = document.getElementById(id);
-  if (element) element.textContent = value;
+  if (element) {
+    element.textContent = value;
+    element.classList.remove('skeleton-value');
+    element.removeAttribute('aria-busy');
+  }
 }
 
 function renderDashboardStatus(status) {
   const counts = status?.counts || {};
-  setDashboardText('dashboard-students', status ? String(counts.students ?? 0) : '—');
-  setDashboardText('dashboard-teachers', status ? String(counts.teachers ?? 0) : '—');
-  setDashboardText('dashboard-courses', status ? String(counts.courses ?? 0) : '—');
-  setDashboardText('dashboard-constraints', status ? String(counts.constraints ?? 0) : '—');
-  setDashboardText('dashboard-backend', status?.backend === 'rules-first-v1' ? 'Rules-first CP-SAT' : status?.backend || '未连接');
+  const review = systemStatusReview(status);
+  setDashboardText('dashboard-students', status ? String(counts.students ?? 0) : '未连接');
+  setDashboardText('dashboard-teachers', status ? String(counts.teachers ?? 0) : '未连接');
+  setDashboardText('dashboard-courses', status ? String(counts.courses ?? 0) : '未连接');
+  setDashboardText('dashboard-constraints', status ? String(counts.constraints ?? 0) : '未连接');
+  setDashboardText('dashboard-backend', status?.backend === 'rules-first-v1' ? '规则优先 CP-SAT' : status?.backend || '未连接');
 
   const publicationLabels = {
     ready: '可发布',
+    ready_with_quality_exception: '已批准带例外发布',
     review_required: '需人工复核',
     not_ready: '尚未生成',
   };
   setDashboardText('dashboard-publication', status ? (publicationLabels[status.publication_status] || status.publication_status || '未生成') : '后端未连接');
-  setDashboardText('dashboard-review', status ? (status.review_required ? '存在待复核项' : '无需复核') : '状态未知');
+  setDashboardText('dashboard-review', review.label);
+  setDashboardText('dashboard-release-guidance', review.guidance);
+  const releaseCheck = document.getElementById('dashboard-release-check');
+  if (releaseCheck) releaseCheck.className = `dashboard-release-check dashboard-release-check-${review.tone}`;
+  const reviewItems = document.getElementById('dashboard-review-items');
+  if (reviewItems) {
+    reviewItems.replaceChildren(...review.items.map(message => {
+      const item = document.createElement('li');
+      item.textContent = message;
+      return item;
+    }));
+    reviewItems.hidden = review.items.length === 0;
+  }
+  const releaseDetails = document.getElementById('dashboard-release-details');
+  if (releaseDetails) {
+    releaseDetails.hidden = !status;
+    releaseDetails.textContent = review.ordinary_publication_allowed
+      ? '查看发布检查'
+      : '查看问题明细与处理方式';
+    releaseDetails.onclick = () => switchView('status');
+  }
 
   const stage = document.getElementById('dashboard-stage');
   if (!stage) return;
@@ -2827,8 +3813,45 @@ window.testAIConnection = async function() {
 
 // 加载状态
 async function loadStatus() {
-  const data = await api('/status');
+  const [data, auditEntries, validation, students] = await Promise.all([
+    api('/status'),
+    api('/audit?limit=30', { computation: false }),
+    api('/validate'),
+    api('/students'),
+  ]);
   const content = document.getElementById('status-content');
+  const statusCountLabels = {
+    teachers: '教师', rooms: '教室', courses: '课程', students: '学生',
+    admin_classes: '行政班', teaching_classes: '教学班', selection_blocks: '选课组',
+    constraints: '排课规则', assignments: '学生课时记录', meetings: '课程时段', schedule_archives: '过往课表',
+  };
+  const statusStageLabels = {
+    timetable: '课表已生成', needs_resolve: '数据已变更，需重新排课',
+    sections: '分班已完成，待排课', not_run: '尚未开始',
+  };
+  const statusActorLabels = { 'trusted-lan': '可信内网', admin: '管理员', anonymous: '未登录访问' };
+  const statusMethodLabels = { GET: '读取', POST: '新增 / 执行', PUT: '更新', PATCH: '调整', DELETE: '删除' };
+  const review = systemStatusReview(data);
+  const affected = qualityAffectedStudents(validation, students);
+  const diagnosis = data.quality_gate?.diagnosis;
+  const dayLabels = { 1: '周一', 2: '周二', 3: '周三', 4: '周四', 5: '周五' };
+  const affectedRows = affected.rows.map(student => `
+    <tr>
+      <td>${escapeHtml(student.grade_label)}</td>
+      <td><strong>${escapeHtml(student.student_name)}</strong>${student.english_name ? `<small>${escapeHtml(student.english_name)}</small>` : ''}<small>${escapeHtml(student.student_id)}</small></td>
+      <td>${student.day_details.map(day => `${escapeHtml(day.day_label)}：${day.missing_periods.length ? `第 ${day.missing_periods.join('、')} 节` : '存在空堂'}`).join('<br>')}</td>
+    </tr>`).join('');
+  const diagnosisSummary = diagnosis ? `
+    <div class="quality-diagnosis-summary">
+      <strong>问题集中位置</strong>
+      <p>${escapeHtml(diagnosis.summary || '')}</p>
+      <div class="quality-diagnosis-metrics">
+        <span>受影响学生 <strong>${Number(diagnosis.affected_students || affected.affected_students)}</strong> 人</span>
+        <span>受影响学生日 <strong>${Number(diagnosis.affected_student_days || affected.affected_student_days)}</strong> 个</span>
+        ${(diagnosis.top_days || []).slice(0, 3).map(item => `<span>${escapeHtml(dayLabels[item.day] || `第 ${item.day} 天`)} <strong>${Number(item.student_days || 0)}</strong> 人次</span>`).join('')}
+        ${(diagnosis.top_missing_periods || []).slice(0, 3).map(item => `<span>第 ${Number(item.period)} 节空堂 <strong>${Number(item.student_days || 0)}</strong> 人次</span>`).join('')}
+      </div>
+    </div>` : '';
   content.innerHTML = `
     <div class="status-grid">
       <div class="status-card">
@@ -2837,15 +3860,72 @@ async function loadStatus() {
       </div>
       <div class="status-card">
         <h4>当前阶段</h4>
-        <div class="value">${data.last_stage}</div>
+        <div class="value">${escapeHtml(statusStageLabels[data.last_stage] || data.last_stage || '未知')}</div>
       </div>
       ${Object.entries(data.counts).map(([key, value]) => `
         <div class="status-card">
-          <h4>${key}</h4>
+          <h4>${escapeHtml(statusCountLabels[key] || key)}</h4>
           <div class="value">${value}</div>
         </div>
       `).join('')}
     </div>
+    <section class="release-check-panel release-check-panel-${review.tone}" aria-labelledby="status-release-check-title">
+      <div class="security-status-heading">
+        <div>
+          <p class="page-kicker">结果可信度</p>
+          <h3 id="status-release-check-title">发布前检查</h3>
+        </div>
+        <span class="status-badge ${review.tone === 'success' ? 'status-badge-success' : review.tone === 'warning' ? 'status-badge-warning' : ''}">${escapeHtml(review.label)}</span>
+      </div>
+      <p class="form-hint">${escapeHtml(review.guidance)}</p>
+      ${review.items.length ? `<ol class="release-check-list">${review.items.map(message => `<li>${escapeHtml(message)}</li>`).join('')}</ol>` : ''}
+      ${review.ordinary_publication_allowed
+    ? '<p class="release-decision is-ready"><strong>可以按普通结果发布。</strong> 保存前仍建议抽查班级、教师和学生课表。</p>'
+    : review.quality_exception_available
+      ? '<p class="release-decision is-blocked"><strong>当前不能按普通结果发布。</strong> 可以返回排课表继续优化；确需保留时，请在“保存为过往课表”流程填写质量例外原因、审批人和确认词。导出文件不代表已经完成发布审批。</p>'
+      : '<p class="release-decision"><strong>当前还没有可发布结果。</strong> 请先完成排课并重新检查。</p>'}
+      ${diagnosisSummary}
+      <details id="quality-affected-students" class="quality-affected-students" ${affected.rows.length ? '' : 'hidden'}>
+        <summary>查看受影响学生与空节明细（${affected.affected_students} 人 / ${affected.affected_student_days} 个学生日）</summary>
+        <div class="table-container">
+          <table>
+            <thead><tr><th>年级</th><th>学生</th><th>需要处理的空节</th></tr></thead>
+            <tbody>${affectedRows || '<tr><td colspan="3">当前校验没有返回可定位到学生的空节。</td></tr>'}</tbody>
+          </table>
+        </div>
+      </details>
+      <div class="release-check-actions">
+        <button class="btn btn-primary btn-sm" type="button" onclick="switchView('manual-timetable')">返回排课表继续优化</button>
+        <button class="btn btn-secondary btn-sm" type="button" onclick="switchView('overview-timetable')">查看总课表</button>
+      </div>
+    </section>
+    <section class="security-status-panel">
+      <div class="security-status-heading">
+        <div>
+          <p class="page-kicker">安全边界</p>
+          <h3>登录保护与操作审计</h3>
+        </div>
+        <span class="status-badge ${data.security?.authentication_enabled ? 'status-badge-success' : 'status-badge-warning'}">
+          ${data.security?.authentication_enabled ? '登录保护已开启' : '可信内网模式'}
+        </span>
+      </div>
+      <p class="form-hint">${data.security?.authentication_enabled
+    ? '所有数据接口均要求管理员会话；写操作会记录操作者、时间、路径和结果。'
+    : '当前未要求登录，适合受控内网测试；写操作仍会记录为“可信内网”。'}</p>
+      <div class="table-container audit-table-container">
+        <table>
+          <thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>接口</th><th>结果</th></tr></thead>
+          <tbody>${auditEntries.length ? auditEntries.map(entry => `
+            <tr>
+              <td>${escapeHtml(new Date(entry.occurred_at).toLocaleString('zh-CN'))}</td>
+              <td>${escapeHtml(statusActorLabels[entry.actor] || entry.actor)}</td>
+              <td>${escapeHtml(statusMethodLabels[entry.method] || entry.method)}</td>
+              <td><code>${escapeHtml(entry.path)}</code></td>
+              <td><span class="status-badge ${Number(entry.status) < 400 ? 'status-badge-success' : 'status-badge-danger'}">${escapeHtml(entry.status)}</span></td>
+            </tr>`).join('') : '<tr><td colspan="5">暂无操作记录</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -2858,14 +3938,25 @@ async function loadTeachers() {
   const enhancedTeachers = summarizeTeacherWorkloads(teachers, assignments);
 
   window._teachersData = enhancedTeachers;
-  renderTeachersList(enhancedTeachers);
-  initEntitySearch('search-teachers', enhancedTeachers, renderTeachersList, (item, keyword) => {
-    return item.id.toLowerCase().includes(keyword) ||
-           item.name.toLowerCase().includes(keyword) ||
-           item.exam_staff_group_name?.toLowerCase().includes(keyword) ||
-           item.invigilation_exemption_reason?.toLowerCase().includes(keyword) ||
-           item.can_teach.some(c => c.toLowerCase().includes(keyword));
-  });
+  const search = document.getElementById('search-teachers');
+  const workloadFilter = document.getElementById('teacher-workload-filter');
+  const applyTeacherFilters = () => {
+    const keyword = String(search?.value || '').trim().toLowerCase();
+    const filter = workloadFilter?.value || 'all';
+    const filtered = enhancedTeachers.filter(item => {
+      const matchesKeyword = !keyword
+        || String(item.id || '').toLowerCase().includes(keyword)
+        || String(item.name || '').toLowerCase().includes(keyword)
+        || String(item.exam_staff_group_name || '').toLowerCase().includes(keyword)
+        || String(item.invigilation_exemption_reason || '').toLowerCase().includes(keyword)
+        || (item.can_teach || []).some(course => String(course).toLowerCase().includes(keyword));
+      return matchesKeyword && teacherMatchesWorkloadFilter(item, filter);
+    });
+    renderTeachersList(filtered, enhancedTeachers.length);
+  };
+  if (search) search.oninput = applyTeacherFilters;
+  if (workloadFilter) workloadFilter.onchange = applyTeacherFilters;
+  applyTeacherFilters();
 }
 
 function examStaffGroupOptions(selected = 'ansheng') {
@@ -2877,24 +3968,34 @@ function examStaffGroupOptions(selected = 'ansheng') {
   `;
 }
 
-function renderTeachersList(data) {
+function renderTeachersList(data, totalCount = data.length) {
   const content = document.getElementById('teachers-list');
   if (data.length === 0) {
-    content.innerHTML = '<div class="empty-state"><p>暂无教师数据</p></div>';
+    content.innerHTML = totalCount
+      ? '<div class="empty-state"><p>没有符合当前搜索或课时筛选条件的教师</p><small>可以清空搜索词或切换为“全部课时情况”。</small></div>'
+      : '<div class="empty-state"><p>暂无教师数据</p></div>';
     return;
   }
 
   const totalAssignedHours = data.reduce((sum, teacher) =>
     sum + Number(teacher.assigned_weekly_hours || 0), 0);
+  const hasScheduledHours = teacher => teacher.scheduled_weekly_hours !== null
+    && teacher.scheduled_weekly_hours !== undefined
+    && Number.isFinite(Number(teacher.scheduled_weekly_hours));
+  const scheduledHoursAvailable = data.some(hasScheduledHours);
+  const totalScheduledHours = data.reduce((sum, teacher) =>
+    sum + (hasScheduledHours(teacher)
+      ? Number(teacher.scheduled_weekly_hours)
+      : 0), 0);
   const totalCapacity = data.reduce((sum, teacher) => {
     const maximum = Number(teacher.max_per_week);
     return sum + (Number.isInteger(maximum) && maximum >= 0 ? maximum : 0);
   }, 0);
-  const overloadedTeachers = data.filter(teacher => teacher.exceeds_weekly_limit).length;
+  const overloadedTeachers = data.filter(teacher => teacherWorkloadStatus(teacher).over_limit).length;
 
   content.innerHTML = `
     <div style="padding: 8px 0; color: var(--gray-500); font-size: 13px;">
-      共 ${data.length} 位教师，已分配 ${totalAssignedHours} 节/周，每周上限合计 ${totalCapacity} 节
+      ${data.length === totalCount ? `共 ${data.length} 位教师` : `显示 ${data.length} / ${totalCount} 位教师`}，${scheduledHoursAvailable ? `当前有效课表共安排 ${totalScheduledHours} 个教师课时；` : '当前没有有效课表；'}已录入固定分工需求 ${totalAssignedHours} 节/周，每周上限合计 ${totalCapacity} 节（上限，不要求排满）
       ${overloadedTeachers ? `；<span class="status-badge status-badge-warning">${overloadedTeachers} 人超限</span>` : ''}
     </div>
     <div class="table-container">
@@ -2904,8 +4005,10 @@ function renderTeachersList(data) {
             <th>ID</th>
             <th>姓名</th>
             <th>考试分组</th>
-            <th>已分配周课时</th>
-            <th>每周上限</th>
+            <th>当前课表</th>
+            <th>固定分工需求</th>
+            <th>授课上限（不要求排满）</th>
+            <th>可用时段</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -2915,8 +4018,10 @@ function renderTeachersList(data) {
               <td>${escapeHtml(t.id)}</td>
               <td>${escapeHtml(t.name)}</td>
               <td><span class="status-badge ${t.invigilation_eligible ? 'status-badge-success' : 'status-badge-warning'}">${escapeHtml(t.exam_staff_group_name || '安生教师')}</span>${t.invigilation_exemption_reason ? `<small>${escapeHtml(t.invigilation_exemption_reason)}</small>` : ''}</td>
+              <td>${hasScheduledHours(t) ? `${Number(t.scheduled_weekly_hours)} 节${teacherWorkloadStatus(t).difference_from_fixed_demand === 0 ? '' : `<small>与固定分工相差 ${teacherWorkloadStatus(t).difference_from_fixed_demand > 0 ? '+' : ''}${teacherWorkloadStatus(t).difference_from_fixed_demand} 节，仅供核对</small>`}` : '待生成课表'}</td>
               <td>${t.assigned_weekly_hours} 节</td>
-              <td>${Number.isInteger(Number(t.max_per_week)) ? `${Number(t.max_per_week)} 节` : '未设置'}${t.exceeds_weekly_limit ? ' <span class="status-badge status-badge-warning">已超限</span>' : ''}</td>
+              <td>每天 ${Number.isInteger(Number(t.max_per_day)) ? Number(t.max_per_day) : '未设置'} 节<br>每周 ${Number.isInteger(Number(t.max_per_week)) ? Number(t.max_per_week) : '未设置'} 节${t.exceeds_weekly_limit ? ' <span class="status-badge status-badge-warning">已超限</span>' : ''}</td>
+              <td>${escapeHtml(teacherAvailabilitySummary(t.available_slots || []))}</td>
               <td>
                 ${entityActionButton('teachers', t.id, 'edit', '编辑', 'btn-primary')}
                 ${entityActionButton('teachers', t.id, 'delete', '删除', 'btn-danger')}
@@ -3000,7 +4105,7 @@ async function loadCourses() {
   const highTwoClasses = teachingClasses
     .filter(item => Number(item.grade) === 11)
     .sort((left, right) => left.id.localeCompare(right.id));
-  classFilter.innerHTML = '<option value="">全部 Senior 2 教学班</option>'
+  classFilter.innerHTML = '<option value="">全部高二教学班</option>'
     + highTwoClasses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('');
   gradeFilter.onchange = () => {
     syncCourseClassFilter();
@@ -3027,7 +4132,7 @@ function courseAppliesToGrade(course, grade) {
 
 function seniorGradeLabel(grade) {
   const number = Number(grade);
-  return [10, 11, 12].includes(number) ? `Senior ${number - 9}` : '未设置';
+  return ({ 10: '高一', 11: '高二', 12: '高三' })[number] || '未设置';
 }
 
 function courseGradeLabel(course) {
@@ -3147,9 +4252,9 @@ function renderCourseGradeOptions(course = { grade: [10, 11, 12] }) {
   return `
     <div class="grade-range-options" role="group" aria-label="课程适用年级">
       ${[
-        [10, 'Senior 1'],
-        [11, 'Senior 2'],
-        [12, 'Senior 3'],
+        [10, '高一'],
+        [11, '高二'],
+        [12, '高三'],
       ].map(([grade, label]) => `
         <label class="grade-range-option">
           <input type="checkbox" name="grade_scope" value="${grade}" ${selected.has(grade) ? 'checked' : ''}>
@@ -3193,7 +4298,7 @@ function renderCourseClassOptions(course = {}) {
     ? effectiveCourseClassIds(course)
     : highTwoTeachingClasses().map(item => item.id));
   return `
-    <div class="class-range-options" role="group" aria-label="Senior 2 适用教学班">
+    <div class="class-range-options" role="group" aria-label="高二适用教学班">
       ${highTwoTeachingClasses().map(item => `
         <label class="class-range-option">
           <input type="checkbox" name="class_scope" value="${item.id}" ${selected.has(item.id) ? 'checked' : ''}>
@@ -3201,7 +4306,7 @@ function renderCourseClassOptions(course = {}) {
         </label>
       `).join('')}
     </div>
-    <div class="form-help">仅用于 Senior 2 分层必修课；未被勾选的教学班不会生成该课程的排课任务。</div>
+    <div class="form-help">仅用于高二分层必修课；未被勾选的教学班不会生成该课程的排课任务。</div>
   `;
 }
 
@@ -3560,10 +4665,12 @@ function renderStudentsList(data, hasFilter = false) {
 
 // 加载班级列表
 async function loadClasses() {
-  const [adminClasses, teachingClasses] = await Promise.all([
+  const [adminClasses, teachingClasses, status] = await Promise.all([
     api('/admin_classes'),
     api('/teaching_classes'),
+    api('/status'),
   ]);
+  window._classesRevision = Number(status.revision);
 
   const allClasses = [
     ...adminClasses.map(c => ({ ...c, classType: 'admin' })),
@@ -3610,7 +4717,8 @@ function renderClassesList(adminClasses, teachingClasses) {
                 <td>${escapeHtml(c.fixed_room_id || '-')}</td>
                 <td>${c.student_ids?.length || 0}</td>
                 <td>
-                  ${entityActionButton('admin_classes', c.id, 'edit', '编辑', 'btn-primary')}
+                  ${entityActionButton('admin_classes', c.id, 'rename-class', '修改名称', 'btn-primary')}
+                  ${entityActionButton('admin_classes', c.id, 'edit', '编辑资料', 'btn-secondary')}
                   ${entityActionButton('admin_classes', c.id, 'delete', '删除', 'btn-danger')}
                 </td>
               </tr>
@@ -3642,7 +4750,8 @@ function renderClassesList(adminClasses, teachingClasses) {
                 <td>${escapeHtml(c.fixed_room_id || '-')}</td>
                 <td>${c.student_ids?.length || 0}</td>
                 <td>
-                  ${entityActionButton('teaching_classes', c.id, 'edit', '编辑', 'btn-primary')}
+                  ${entityActionButton('teaching_classes', c.id, 'rename-class', '修改名称', 'btn-primary')}
+                  ${entityActionButton('teaching_classes', c.id, 'edit', '编辑资料', 'btn-secondary')}
                   ${entityActionButton('teaching_classes', c.id, 'delete', '删除', 'btn-danger')}
                 </td>
               </tr>
@@ -3673,20 +4782,22 @@ function showAssignmentFeedback(message, type = 'success') {
 
 function renderTeachingTaskRows(tasks) {
   if (!tasks.length) {
-    return '<tr><td colspan="8" class="empty-cell">没有符合筛选条件的教学任务</td></tr>';
+    return '<tr><td colspan="7" class="empty-cell">没有符合筛选条件的教学任务</td></tr>';
   }
-  return tasks.map(task => `
-    <tr class="${task.teacher_id ? '' : 'teaching-task-unassigned'}">
-      <td>${escapeHtml(task.id)}</td>
+  return tasks.map(task => {
+    const staffing = teachingTaskStaffing(task);
+    return `
+    <tr class="teaching-task-${staffing.code}">
       <td>${escapeHtml(task.course_name)}</td>
       <td>${escapeHtml(task.teacher_name)}</td>
       <td>${escapeHtml(task.class_name)}</td>
       <td>${escapeHtml(teachingTaskTypeLabel(task.class_type))}</td>
       <td>${task.student_ids?.length || 0}</td>
       <td>${Number(task.weekly_hours) || 0} 节</td>
-      <td>${task.teacher_id ? '<span class="task-status-ready">已分工</span>' : '<span class="task-status-warning">待补教师</span>'}</td>
+      <td><span class="task-status-${staffing.code}">${escapeHtml(staffing.label)}</span></td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function renderTeachingTaskResults(tasks, { teachers, courses, classes } = {}) {
@@ -3695,16 +4806,21 @@ function renderTeachingTaskResults(tasks, { teachers, courses, classes } = {}) {
   const teacherMap = new Map((teachers || []).map(item => [item.id, item]));
   const courseMap = new Map((courses || []).map(item => [item.id, item]));
   const classMap = new Map((classes || []).map(item => [item.id, item]));
-  const enhancedTasks = (tasks || []).map(task => ({
-    ...task,
-    course_name: courseMap.get(task.course_id)?.name || task.course_id || '未知课程',
-    teacher_name: teacherMap.get(task.teacher_id)?.name || task.teacher_id || '待补教师',
-    class_name: classMap.get(task.class_id)?.name
-      || task.ap_block_name
-      || task.class_id
-      || '选课分组',
-  })).sort((left, right) => {
-    const staffingOrder = Number(Boolean(left.teacher_id)) - Number(Boolean(right.teacher_id));
+  const enhancedTasks = (tasks || []).map(task => {
+    const staffing = teachingTaskStaffing(task);
+    return {
+      ...task,
+      staffing,
+      course_name: courseMap.get(task.course_id)?.name || task.course_id || '未知课程',
+      teacher_name: teacherMap.get(task.teacher_id)?.name || task.teacher_id || staffing.label,
+      class_name: classMap.get(task.class_id)?.name
+        || task.ap_block_name
+        || task.class_id
+        || '选课分组',
+    };
+  }).sort((left, right) => {
+    const order = { missing: 0, ready: 1, not_required: 2 };
+    const staffingOrder = order[left.staffing.code] - order[right.staffing.code];
     if (staffingOrder) return staffingOrder;
     return `${left.course_name}-${left.class_name}`.localeCompare(
       `${right.course_name}-${right.class_name}`,
@@ -3745,6 +4861,7 @@ function renderTeachingTaskResults(tasks, { teachers, courses, classes } = {}) {
       <div><span>每周总课时</span><strong>${summary.weekly_periods}</strong><small>节/周</small></div>
       <div><span>覆盖学生</span><strong>${summary.unique_students}</strong><small>名学生</small></div>
       <div class="${summary.unassigned_teacher_records ? 'has-warning' : ''}"><span>待补教师</span><strong>${summary.unassigned_teacher_records}</strong><small>条任务</small></div>
+      <div><span>无需教师</span><strong>${summary.no_teacher_required_records}</strong><small>条 0 课时记录</small></div>
     </div>
     ${summary.unassigned_teacher_records ? `
       <div class="assignment-task-warning" role="status">
@@ -3753,13 +4870,13 @@ function renderTeachingTaskResults(tasks, { teachers, courses, classes } = {}) {
     ` : ''}
     <div class="assignment-task-toolbar">
       <label for="search-teaching-tasks">筛选任务明细</label>
-      <input id="search-teaching-tasks" class="search-input" type="search" placeholder="搜索课程、教师、班级或任务 ID…">
+      <input id="search-teaching-tasks" class="search-input" type="search" placeholder="搜索课程、教师或班级…">
       <span id="teaching-task-visible-count">显示 ${summary.task_records} / ${summary.task_records} 条</span>
     </div>
     <div class="table-container assignment-task-table-container">
       <table>
         <thead>
-          <tr><th>任务 ID</th><th>课程</th><th>教师</th><th>班级 / 分组</th><th>类型</th><th>学生</th><th>周课时</th><th>状态</th></tr>
+          <tr><th>课程</th><th>教师</th><th>班级 / 分组</th><th>类型</th><th>学生</th><th>周课时</th><th>状态</th></tr>
         </thead>
         <tbody id="teaching-task-rows">${renderTeachingTaskRows(enhancedTasks)}</tbody>
       </table>
@@ -3850,7 +4967,6 @@ function renderAssignmentsList(data, { highlightId = null } = {}) {
       <table>
         <thead>
           <tr>
-            <th>ID</th>
             <th>教师</th>
             <th>课程</th>
             <th>班级</th>
@@ -3862,7 +4978,6 @@ function renderAssignmentsList(data, { highlightId = null } = {}) {
         <tbody>
           ${data.map(a => `
             <tr data-assignment-id="${safeDataAttribute(a.id)}" tabindex="-1" class="${a.id === highlightId ? 'assignment-row-highlight' : ''}">
-              <td>${escapeHtml(a.id)}</td>
               <td>${escapeHtml(a.teacher_name)}</td>
               <td>${escapeHtml(a.course_name)}</td>
               <td>${escapeHtml((a.class_ids || [a.class_id]).filter(Boolean).join('、') || '-')}</td>
@@ -4472,7 +5587,7 @@ function renderSectioningMode(data) {
     const nextEnabled = event.target.value === 'block';
     if (nextEnabled === enabled) return;
     const action = nextEnabled ? '启用 AP Block 分班' : '切回普通 AP 平行分班';
-    if (!confirm(`确定${action}吗？这会重新生成 AP section，并将现有课表与手动必要条件标记为需要重新排课。`)) {
+    if (!confirm(`确定${action}吗？这会重新生成 AP section，并将现有课表与手动锁定课程标记为需要重新排课。`)) {
       event.target.value = enabled ? 'block' : 'standard';
       return;
     }
@@ -4910,8 +6025,11 @@ async function loadConstraints() {
 
   initEntitySearch('search-constraints', data, renderConstraintsList, (item, keyword) => {
     return item.id.toLowerCase().includes(keyword) ||
+           String(item.name || '').toLowerCase().includes(keyword) ||
            item.type.toLowerCase().includes(keyword) ||
+           String(ruleTypeLabels[item.type] || '').toLowerCase().includes(keyword) ||
            item.scope.toLowerCase().includes(keyword) ||
+           String(ruleScopeLabels[item.scope] || '').toLowerCase().includes(keyword) ||
            (item.target_id && item.target_id.toLowerCase().includes(keyword));
   });
 }
@@ -4920,16 +6038,44 @@ const ruleTypeHints = {
   fixed_slots: '指定 section 必须出现在给定时段；exact 表示其全部课时都只能在这些时段。',
   forbid_slots: '禁止目标在给定时段上课。',
   preferred_slots: '偏好目标在给定时段上课；通常设为软规则。',
+  target_occurrences_in_slots: '要求目标在指定时段集合中出现给定次数。',
   max_occurrences_per_day: '限制同一目标每天最多出现几节。',
+  min_occurrence_days: '要求课程至少分布在几个不同上课日。',
   no_internal_gaps: '学生每天已排课程必须从第 1 节连续向后占位，空位只能留在当天末尾；仅支持 student 硬规则。',
+  preferred_consecutive_pairs: '偏好同一课程形成指定数量的连堂；仅支持教学分组软规则。',
   max_consecutive_lessons: '限制同一目标一天中连续课时的最大长度；本校“连续不超过三节”应设为 student 范围。',
   max_consecutive_days_in_period: '限制目标连续几天出现在同一节次。',
   avoid_teacher_day_extremes: '若教师同一天既有第一节又有最后一节则计入软惩罚；仅支持 teacher 软规则。',
+  synchronized_slots: '要求选中的多个教学分组在相同时段开课。',
+  separate_class_types: '要求两类课程不在同一时段出现；仅支持全校硬规则。',
   priority: '仅影响求解变量的优先顺序，不改变硬约束。',
 };
 
+const ruleTypeLabels = {
+  fixed_slots: '固定到指定时段',
+  forbid_slots: '禁止使用指定时段',
+  preferred_slots: '优先使用指定时段',
+  target_occurrences_in_slots: '指定时段内达到目标次数',
+  max_occurrences_per_day: '每天最多课时',
+  min_occurrence_days: '至少覆盖若干上课日',
+  no_internal_gaps: '学生当天课程连续',
+  preferred_consecutive_pairs: '优先安排连堂',
+  max_consecutive_lessons: '最多连续课时',
+  max_consecutive_days_in_period: '限制连续多天同一节',
+  avoid_teacher_day_extremes: '教师避免同日首尾课',
+  synchronized_slots: '多个教学分组同步上课',
+  separate_class_types: '两类课程错开安排',
+  priority: '求解优先顺序',
+};
+
+const ruleScopeLabels = {
+  global: '全校', teacher: '教师', room: '教室', course: '课程',
+  class: '班级', section: '教学分组', student: '学生',
+};
+
 function constraintParamsFromForm(formData, type) {
-  const selectorText = formData.get('selector_json').trim();
+  const splitValues = name => String(formData.get(name) || '').split(/[,，\s]+/).map(value => value.trim()).filter(Boolean);
+  const selectorText = String(formData.get('selector_json') || '').trim();
   let selector = {};
   if (selectorText) {
     try { selector = JSON.parse(selectorText); }
@@ -4938,13 +6084,23 @@ function constraintParamsFromForm(formData, type) {
   }
   const params = Object.keys(selector).length ? { selector } : {};
   const slots = formData.get('slots').split(/[,，\s]+/).filter(Boolean);
-  if (['fixed_slots', 'forbid_slots', 'preferred_slots'].includes(type)) {
+  if (['fixed_slots', 'forbid_slots', 'preferred_slots', 'target_occurrences_in_slots'].includes(type)) {
     if (!slots.length) throw new Error('该规则需要至少一个时段，例如 D1P1,D2P3');
     params.slots = slots;
     if (type === 'fixed_slots') params.mode = formData.get('slot_mode');
   }
+  if (type === 'target_occurrences_in_slots') params.target = Number(formData.get('target'));
   if (['max_occurrences_per_day', 'max_consecutive_lessons'].includes(type)) {
     params.max = Number(formData.get('max'));
+  }
+  if (type === 'min_occurrence_days') params.min = Number(formData.get('min'));
+  if (type === 'preferred_consecutive_pairs') {
+    const targetPairs = Number(formData.get('target_pairs'));
+    if (targetPairs > 0) params.target_pairs = targetPairs;
+  }
+  if (type === 'no_internal_gaps') {
+    const ignoredCourseIds = splitValues('ignore_course_ids');
+    if (ignoredCourseIds.length) params.ignore_course_ids = ignoredCourseIds;
   }
   if (type === 'max_consecutive_days_in_period') {
     params.max = Number(formData.get('max'));
@@ -4954,60 +6110,115 @@ function constraintParamsFromForm(formData, type) {
     params.first_period = Number(formData.get('first_period'));
     params.last_period = Number(formData.get('last_period'));
   }
+  if (type === 'separate_class_types') {
+    params.left_class_types = splitValues('left_class_types');
+    params.right_class_types = splitValues('right_class_types');
+    const grades = splitValues('grades').map(Number);
+    if (grades.length) params.grades = grades;
+  }
   if (type === 'priority') params.rank = Number(formData.get('rank'));
   return params;
 }
 
 window.openConstraintDialog = function(existing = null) {
+  const generatedRuleId = `RULE_${Date.now()}`;
   const rule = existing || {
-    id: '', type: 'max_occurrences_per_day', scope: 'course', hard: true, weight: 10,
+    id: generatedRuleId, type: 'max_occurrences_per_day', scope: 'course', hard: true, weight: 10,
     target_id: '', params: { max: 1 },
   };
   const params = rule.params || {};
   showModal(existing ? `编辑约束 - ${rule.id}` : '添加约束', `
     <form id="form-constraint">
-      <div class="form-group"><label>ID</label>
-        <input name="id" value="${rule.id}" ${existing ? 'readonly' : ''} required placeholder="如 course_once_per_day"></div>
+      <div class="form-group"><label>规则名称</label>
+        <input name="name" value="${escapeHtml(rule.name || '')}" required placeholder="例如：体育课不排第一节"></div>
       <div class="form-group"><label>规则类型</label>
-        <select name="type" class="select">${Object.entries(ruleTypeHints).map(([id, hint]) => `<option value="${id}" ${id === rule.type ? 'selected' : ''}>${id} — ${hint}</option>`).join('')}</select></div>
+        <select name="type" class="select">${Object.entries(ruleTypeHints).map(([id, hint]) => `<option value="${id}" ${id === rule.type ? 'selected' : ''}>${ruleTypeLabels[id] || id} — ${hint}</option>`).join('')}</select></div>
       <div class="form-group"><label>作用范围</label>
-        <select name="scope" class="select">${['global', 'teacher', 'room', 'course', 'class', 'section', 'student'].map(scope => `<option value="${scope}" ${scope === rule.scope ? 'selected' : ''}>${scope}</option>`).join('')}</select></div>
-      <div class="form-group"><label>目标 ID（可留空，表示该范围内的全部对象）</label>
-        <input name="target_id" value="${rule.target_id || ''}" placeholder="如 AP_BIO 或 T_EXP_A"></div>
-      <div class="form-group"><label>时段（固定、禁排、偏好规则必填）</label>
-        <input name="slots" value="${(params.slots || []).join(',')}" placeholder="D1P1,D2P3"></div>
-      <div class="form-group"><label>固定时段模式</label>
-        <select name="slot_mode" class="select"><option value="contains" ${params.mode !== 'exact' ? 'selected' : ''}>contains（包含这些时段）</option><option value="exact" ${params.mode === 'exact' ? 'selected' : ''}>exact（全部课时恰为这些时段）</option></select></div>
-      <div class="form-group"><label>最大次数/最大连续节数</label>
+        <select name="scope" class="select">${['global', 'teacher', 'room', 'course', 'class', 'section', 'student'].map(scope => `<option value="${scope}" ${scope === rule.scope ? 'selected' : ''}>${ruleScopeLabels[scope] || scope}</option>`).join('')}</select></div>
+      <div class="form-group" data-constraint-types="fixed_slots forbid_slots preferred_slots target_occurrences_in_slots"><label>时段</label>
+        <input name="slots" value="${escapeHtml((params.slots || []).join(','))}" placeholder="D1P1,D2P3"></div>
+      <div class="form-group" data-constraint-types="fixed_slots"><label>固定时段模式</label>
+        <select name="slot_mode" class="select"><option value="contains" ${params.mode !== 'exact' ? 'selected' : ''}>包含这些时段</option><option value="exact" ${params.mode === 'exact' ? 'selected' : ''}>全部课时只能是这些时段</option></select></div>
+      <div class="form-group" data-constraint-types="target_occurrences_in_slots"><label>指定时段内目标次数</label>
+        <input type="number" min="1" name="target" value="${params.target || 1}"></div>
+      <div class="form-group" data-constraint-types="max_occurrences_per_day max_consecutive_lessons max_consecutive_days_in_period"><label>最大次数/最大连续节数</label>
         <input type="number" min="1" name="max" value="${params.max || 1}"></div>
-      <div class="form-group"><label>指定节次（仅“连续天同一节次”使用）</label>
+      <div class="form-group" data-constraint-types="min_occurrence_days"><label>至少覆盖上课日数</label>
+        <input type="number" min="1" max="5" name="min" value="${params.min || 1}"></div>
+      <div class="form-group" data-constraint-types="preferred_consecutive_pairs"><label>目标连堂组数（可留空）</label>
+        <input type="number" min="1" name="target_pairs" value="${params.target_pairs || ''}" placeholder="留空表示尽可能安排"></div>
+      <div class="form-group" data-constraint-types="max_consecutive_days_in_period"><label>指定节次</label>
         <input type="number" min="1" max="10" name="period" value="${params.period || 1}"></div>
-      <div class="form-group"><label>首节/末节（仅“教师避免同日首尾课”使用）</label>
+      <div class="form-group" data-constraint-types="avoid_teacher_day_extremes"><label>首节/末节</label>
         <div style="display:flex;gap:8px;">
           <input type="number" min="1" max="10" name="first_period" value="${params.first_period || 1}" aria-label="首节">
           <input type="number" min="1" max="10" name="last_period" value="${params.last_period || 10}" aria-label="末节">
         </div></div>
-      <div class="form-group"><label>优先级 rank（仅 priority 使用，数字越小越先安排）</label>
+      <div class="form-group" data-constraint-types="no_internal_gaps"><label>忽略的课程编号（可留空，逗号分隔）</label>
+        <input name="ignore_course_ids" value="${escapeHtml((params.ignore_course_ids || []).join(','))}" placeholder="例如：CLUB,ASSEMBLY"></div>
+      <div class="form-group" data-constraint-types="separate_class_types"><label>需要错开的两类课程</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <input name="left_class_types" value="${escapeHtml((params.left_class_types || []).join(','))}" placeholder="左侧，例如 admin">
+          <input name="right_class_types" value="${escapeHtml((params.right_class_types || []).join(','))}" placeholder="右侧，例如 ap,elective">
+        </div></div>
+      <div class="form-group" data-constraint-types="separate_class_types"><label>适用年级（可留空，逗号分隔）</label>
+        <input name="grades" value="${escapeHtml((params.grades || []).join(','))}" placeholder="例如：10,11,12"></div>
+      <div class="form-group" data-constraint-types="priority"><label>求解优先级（数字越小越先安排）</label>
         <input type="number" name="rank" value="${params.rank ?? 0}"></div>
       <div class="form-group"><label><input type="checkbox" name="hard" ${rule.hard ? 'checked' : ''}> 硬约束（不勾选即软约束）</label></div>
-      <div class="form-group"><label><input type="checkbox" name="requires_approval_to_relax" ${rule.requires_approval_to_relax ? 'checked' : ''}> 软规则仅在教务明确批准后才可破坏</label>
-        <div style="font-size:12px;color:var(--gray-500);margin-top:4px;">未获批准时，系统会先把它当作硬规则；无解只会报告原因，不会自行放宽。</div></div>
-      <div class="form-group"><label>软约束权重</label>
-        <input type="number" min="1" name="weight" value="${rule.weight || 10}"></div>
-      <div class="form-group"><label>高级筛选（可选 JSON；例：{&quot;grades&quot;:[11,12]}）</label>
-        <textarea name="selector_json" rows="3" placeholder='{"teacher_ids":["T1"]}'>${params.selector ? JSON.stringify(params.selector) : ''}</textarea></div>
+      <p id="constraint-rule-preview" class="constraint-rule-preview" role="status"></p>
+      <details class="constraint-advanced-settings">
+        <summary>高级设置（系统编号、权重与筛选）</summary>
+        <div class="constraint-advanced-settings-body">
+          <div class="form-group"><label>规则编号（创建后通常无需修改）</label>
+            <input name="id" value="${escapeHtml(rule.id)}" ${existing ? 'readonly' : ''} required></div>
+          <div class="form-group"><label>适用对象编号（留空表示该范围全部对象）</label>
+            <input name="target_id" value="${escapeHtml(rule.target_id || '')}" placeholder="如 AP_BIO 或 T_EXP_A"></div>
+          <div class="form-group"><label><input type="checkbox" name="requires_approval_to_relax" ${rule.requires_approval_to_relax ? 'checked' : ''}> 软规则仅在教务明确批准后才可破坏</label>
+            <div class="form-hint">未获批准时，系统会先把它当作硬规则；无解只会报告原因，不会自行放宽。</div></div>
+          <div class="form-group"><label>软约束权重</label>
+            <input type="number" min="1" name="weight" value="${rule.weight || 10}"></div>
+          <div class="form-group"><label>高级筛选（可选 JSON）</label>
+            <textarea name="selector_json" rows="3" placeholder='{"teacher_ids":["T1"]}'>${params.selector ? JSON.stringify(params.selector) : ''}</textarea></div>
+        </div>
+      </details>
       <p style="font-size:12px;color:var(--gray-500);">保存后现有课表会标记为待重排；求解器与独立校验器使用同一条规则。</p>
       <div class="form-actions"><button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button><button type="submit" class="btn btn-primary">保存约束</button></div>
     </form>
   `);
-  document.getElementById('form-constraint').addEventListener('submit', async (event) => {
+  const constraintForm = document.getElementById('form-constraint');
+  const updateConstraintPreview = () => {
+    const selectedType = constraintForm.elements.type.value;
+    const selectedScope = constraintForm.elements.scope.value;
+    const targetId = constraintForm.elements.target_id.value.trim();
+    const ruleName = constraintForm.elements.name.value.trim()
+      || ruleTypeLabels[selectedType]
+      || '这条排课规则';
+    const strength = constraintForm.elements.hard.checked ? '必须满足的硬规则' : '尽量满足的软规则';
+    document.getElementById('constraint-rule-preview').textContent =
+      `将保存“${ruleName}”：对${targetId ? `编号为 ${targetId} 的` : '该范围内全部'}${ruleScopeLabels[selectedScope] || selectedScope}应用“${ruleTypeLabels[selectedType] || selectedType}”，作为${strength}。`;
+  };
+  const refreshConstraintFields = () => {
+    const selectedType = constraintForm.elements.type.value;
+    constraintForm.querySelectorAll('[data-constraint-types]').forEach(field => {
+      field.hidden = !field.dataset.constraintTypes.split(' ').includes(selectedType);
+    });
+    updateConstraintPreview();
+  };
+  constraintForm.elements.type.addEventListener('change', refreshConstraintFields);
+  constraintForm.addEventListener('input', updateConstraintPreview);
+  constraintForm.elements.scope.addEventListener('change', updateConstraintPreview);
+  refreshConstraintFields();
+  constraintForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
       const formData = new FormData(event.target);
       const type = formData.get('type');
       const hard = formData.has('hard');
       const next = {
-        id: formData.get('id').trim(), type, scope: formData.get('scope'), hard,
+        id: formData.get('id').trim(),
+        name: formData.get('name').trim(),
+        type, scope: formData.get('scope'), hard,
         params: constraintParamsFromForm(formData, type),
       };
       const targetId = formData.get('target_id').trim();
@@ -5039,10 +6250,10 @@ function renderConstraintsList(data) {
       <table>
         <thead>
           <tr>
-            <th>ID</th>
+            <th>规则名称 / 编号</th>
             <th>类型</th>
             <th>范围</th>
-            <th>目标</th>
+            <th>对象编号</th>
             <th>硬/软</th>
             <th>权重</th>
             <th>操作</th>
@@ -5051,9 +6262,9 @@ function renderConstraintsList(data) {
         <tbody>
           ${data.map(c => `
             <tr>
-              <td>${escapeHtml(c.id)}</td>
-              <td>${escapeHtml(c.type)}</td>
-              <td>${escapeHtml(c.scope)}</td>
+              <td><strong>${escapeHtml(c.name || ruleTypeLabels[c.type] || '排课规则')}</strong><small>${escapeHtml(c.id)}</small></td>
+              <td>${escapeHtml(ruleTypeLabels[c.type] || c.type)}</td>
+              <td>${escapeHtml(ruleScopeLabels[c.scope] || c.scope)}</td>
               <td>${escapeHtml(c.target_id || '-')}</td>
               <td>${c.hard ? '硬' : (c.requires_approval_to_relax ? '软（需批准）' : '软')}</td>
               <td>${c.weight || '-'}</td>
@@ -5344,6 +6555,7 @@ function wireEntityActions(container) {
     button.addEventListener('click', () => {
       const { entityAction: action, entity, entityId: id } = button.dataset;
       if (action === 'edit') window.editEntity(entity, id);
+      if (action === 'rename-class') window.renameClass(entity, id);
       if (action === 'delete') window.deleteEntity(entity, id);
     });
   });
@@ -5620,9 +6832,9 @@ async function loadOverviewTimetable() {
       items.map(async (item) => {
         try {
           const data = await api(`/timetable/${viewType}/${item.id}`);
-          return { id: item.id, name: item.name, data };
+          return { item, id: item.id, name: item.name, data };
         } catch {
-          return { id: item.id, name: item.name, data: null };
+          return { item, id: item.id, name: item.name, data: null };
         }
       })
     );
@@ -5636,7 +6848,8 @@ async function loadOverviewTimetable() {
       </div>
     ` : '';
     let html = `${legend}<div class="overview-grid">`;
-    timetables.forEach(({ id, name, data }) => {
+    timetables.forEach(({ item, id, name, data }) => {
+      const summary = overviewCardSummary({ item, data, viewType });
       html += `
         <div class="overview-card" role="button" tabindex="0"
              data-overview-type="${viewType}"
@@ -5644,8 +6857,8 @@ async function loadOverviewTimetable() {
              data-overview-name="${encodeURIComponent(name || '')}"
              aria-label="查看${safeDataAttribute(name)}的完整课表">
           <div class="overview-card-header">
-            <h4>${escapeHtml(name)}</h4>
-            <span class="badge">${escapeHtml(id)}</span>
+            <h4>${escapeHtml(summary.title)}</h4>
+            <span class="overview-card-summary">${escapeHtml(summary.capacity_text)}</span>
           </div>
           <div class="overview-card-body">
             ${renderMiniTimetable(data)}
@@ -5705,6 +6918,66 @@ function renderMiniTimetable(data) {
   return html;
 }
 
+window.renameClass = async function(entity, id) {
+  const classTypeLabel = entity === 'admin_classes'
+    ? '行政班'
+    : entity === 'teaching_classes'
+      ? '教学班'
+      : '';
+  if (!classTypeLabel) return showToast('只支持修改行政班或教学班名称', 'error');
+  try {
+    const classes = await api(`/${entity}`);
+    const item = classes.find(classItem => classItem.id === id);
+    if (!item) return showToast(`未找到班级 ${id}`, 'error');
+    if (!Number.isSafeInteger(window._classesRevision)) {
+      window._classesRevision = Number((await api('/status')).revision);
+    }
+    showModal(`修改${classTypeLabel}名称`, `
+      <form id="form-rename-class">
+        <div class="class-rename-context">
+          <span>${escapeHtml(classTypeLabel)} ID</span>
+          <strong>${escapeHtml(item.id)}</strong>
+          <p>只修改显示名称；班级 ID、学生归属、教师分工和现有课表都会保持不变。</p>
+        </div>
+        <div class="form-group">
+          <label for="class-rename-name">新班级名称</label>
+          <input id="class-rename-name" type="text" name="name" maxlength="80" value="${safeDataAttribute(item.name)}" required autofocus>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+          <button type="submit" class="btn btn-primary">保存新名称</button>
+        </div>
+      </form>
+    `);
+    const form = document.getElementById('form-rename-class');
+    const nameInput = document.getElementById('class-rename-name');
+    nameInput.focus();
+    nameInput.select();
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const submit = form.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        const result = await api(`/class-names/${encodeURIComponent(entity)}/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            expected_revision: window._classesRevision,
+            name: nameInput.value,
+          }),
+        });
+        window._classesRevision = Number(result.revision);
+        hideModal();
+        await loadClasses();
+        showToast(`已将${classTypeLabel}改名为“${result.class.name}”`);
+      } catch {
+        submit.disabled = false;
+      }
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
 // 编辑实体（全局函数，供 onclick 调用）
 window.editEntity = async function(entity, id) {
   try {
@@ -5752,6 +7025,10 @@ window.editEntity = async function(entity, id) {
             <div class="form-group">
               <label>每天上限</label>
               <input type="number" name="max_per_day" min="0" step="1" value="${item.max_per_day ?? 6}">
+            </div>
+            <div class="form-group">
+              <label>可排课时段</label>
+              ${teacherAvailabilityEditor({ availableSlots: item.available_slots || [] })}
             </div>
             <div class="form-group">
               <label>周课时上限</label>
@@ -5839,7 +7116,7 @@ window.editEntity = async function(entity, id) {
               ${renderCourseDeliveryOptions(item)}
             </div>
             <div class="form-group" data-high-two-class-scope>
-              <label>适用班级（Senior 2）</label>
+              <label>适用班级（高二）</label>
               ${renderCourseClassOptions(item)}
             </div>
             <div class="form-group">
@@ -5899,7 +7176,7 @@ window.editEntity = async function(entity, id) {
         break;
 
       case 'admin_classes':
-        title = '编辑行政班';
+        title = '编辑行政班资料';
         formHtml = `
           <form id="form-edit-admin-class">
             <div class="form-group">
@@ -5907,15 +7184,16 @@ window.editEntity = async function(entity, id) {
               <input type="text" name="id" value="${item.id}" readonly style="background-color: var(--gray-100);">
             </div>
             <div class="form-group">
-              <label>名称</label>
-              <input type="text" name="name" value="${item.name}" required>
+              <label>当前名称</label>
+              <input type="text" name="name" value="${item.name}" readonly style="background-color: var(--gray-100);">
+              <small>班级名称请使用列表中的“修改名称”功能。</small>
             </div>
             <div class="form-group">
               <label>年级</label>
               <select name="grade">
-                <option value="1" ${item.grade === 1 ? 'selected' : ''}>高一</option>
-                <option value="2" ${item.grade === 2 ? 'selected' : ''}>高二</option>
-                <option value="3" ${item.grade === 3 ? 'selected' : ''}>高三</option>
+                <option value="10" ${item.grade === 10 ? 'selected' : ''}>高一</option>
+                <option value="11" ${item.grade === 11 ? 'selected' : ''}>高二</option>
+                <option value="12" ${item.grade === 12 ? 'selected' : ''}>高三</option>
               </select>
             </div>
             <div class="form-group">
@@ -5931,7 +7209,7 @@ window.editEntity = async function(entity, id) {
         break;
 
       case 'teaching_classes':
-        title = '编辑教学班';
+        title = '编辑教学班资料';
         formHtml = `
           <form id="form-edit-teaching-class">
             <div class="form-group">
@@ -5939,15 +7217,16 @@ window.editEntity = async function(entity, id) {
               <input type="text" name="id" value="${item.id}" readonly style="background-color: var(--gray-100);">
             </div>
             <div class="form-group">
-              <label>名称</label>
-              <input type="text" name="name" value="${item.name}" required>
+              <label>当前名称</label>
+              <input type="text" name="name" value="${item.name}" readonly style="background-color: var(--gray-100);">
+              <small>班级名称请使用列表中的“修改名称”功能。</small>
             </div>
             <div class="form-group">
               <label>年级</label>
               <select name="grade">
-                <option value="1" ${item.grade === 1 ? 'selected' : ''}>高一</option>
-                <option value="2" ${item.grade === 2 ? 'selected' : ''}>高二</option>
-                <option value="3" ${item.grade === 3 ? 'selected' : ''}>高三</option>
+                <option value="10" ${item.grade === 10 ? 'selected' : ''}>高一</option>
+                <option value="11" ${item.grade === 11 ? 'selected' : ''}>高二</option>
+                <option value="12" ${item.grade === 12 ? 'selected' : ''}>高三</option>
               </select>
             </div>
             <div class="form-group">
@@ -6010,7 +7289,12 @@ window.editEntity = async function(entity, id) {
           if (key === 'id') continue; // 跳过 ID 字段
 
           // 特殊处理 can_teach（复选框）
-          if (key === 'can_teach' || key === 'grade_scope' || key === 'class_scope' || key.startsWith('delivery_class_type_')) {
+          if (key === 'can_teach'
+            || key === 'available_slots'
+            || key === 'availability_mode'
+            || key === 'grade_scope'
+            || key === 'class_scope'
+            || key.startsWith('delivery_class_type_')) {
             // 跳过，后面单独处理
             continue;
           } else if (key === 'grade' || key === 'max_per_day' || key === 'max_per_week' || key === 'weekly_hours' || key === 'capacity') {
@@ -6025,6 +7309,12 @@ window.editEntity = async function(entity, id) {
         // 单独处理 can_teach（复选框多选）
         if (entity === 'teachers') {
           updateData.can_teach = formData.getAll('can_teach');
+          try {
+            updateData.available_slots = teacherAvailableSlotsFromForm(formData);
+          } catch (error) {
+            showToast(error.message, 'error');
+            return;
+          }
         }
         if (entity === 'courses') {
           const grades = formData.getAll('grade_scope').map(Number);
@@ -6041,7 +7331,7 @@ window.editEntity = async function(entity, id) {
           if (grades.includes(11) && updateData.delivery_class_type_by_grade?.[11] === 'teaching') {
             const classIds = formData.getAll('class_scope');
             if (!classIds.length) {
-              showToast('Senior 2 课程请至少选择一个适用教学班', 'error');
+              showToast('高二课程请至少选择一个适用教学班', 'error');
               return;
             }
             updateData.applicable_class_ids = classIds;
@@ -6921,6 +8211,8 @@ function setMobileSidebarOpen(open) {
 function updateAdminShellContext(viewName = getCurrentView()) {
   const meta = ADMIN_SHELL_VIEW_META[viewName] || { title: '排课系统', section: '教务工作台' };
   if (viewName !== 'manual-timetable') setManualFocusMode(false);
+  const primary = document.getElementById('btn-solve');
+  primary?.classList.toggle('hidden', ['manual-timetable', 'exam-scheduling'].includes(viewName));
   setDashboardText('page-title', meta.title);
   setDashboardText('page-section', meta.section);
   document.title = `${meta.title} · 排课系统`;
@@ -7042,20 +8334,22 @@ function initAdminShell() {
   const commandPalette = document.getElementById('command-palette');
   const commandInput = document.getElementById('command-search-input');
   const workspaceModeSwitch = document.getElementById('sidebar-mode-switch');
+  const mobileSidebarBreakpoint = window.matchMedia('(max-width: 980px)');
   const storedTheme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY);
   const initialTheme = storedTheme || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   applyAdminTheme(initialTheme);
   applyWorkspaceMode(localStorage.getItem(ADMIN_WORKSPACE_MODE_STORAGE_KEY), { persist: false });
   setMobileSidebarOpen(false);
+  mobileSidebarBreakpoint.addEventListener('change', () => setMobileSidebarOpen(false));
 
-  if (!window.matchMedia('(max-width: 980px)').matches && localStorage.getItem(ADMIN_SIDEBAR_STORAGE_KEY) === 'true') {
+  if (!mobileSidebarBreakpoint.matches && localStorage.getItem(ADMIN_SIDEBAR_STORAGE_KEY) === 'true') {
     app?.classList.add('sidebar-collapsed');
     sidebarToggle?.setAttribute('aria-expanded', 'false');
     sidebarToggle?.setAttribute('aria-label', '展开侧栏');
   }
 
   sidebarToggle?.addEventListener('click', () => {
-    if (window.matchMedia('(max-width: 980px)').matches) {
+    if (mobileSidebarBreakpoint.matches) {
       setMobileSidebarOpen(!app?.classList.contains('sidebar-mobile-open'));
       return;
     }
@@ -7209,7 +8503,7 @@ async function executeAiAssistantAction(action, card, confirmButton) {
     : isScheduleMove
       ? `确认将“${action.course_name}”从${action.from_label}调整到${action.to_label}吗？`
       : isClearUnlocked
-        ? '确认清除全部未锁定课时吗？系统会原位保留金框必要条件及其他已锁定课时。'
+        ? '确认清除全部未锁定课时吗？系统会原位保留金框锁定课程及其他已锁定课时。'
         : `确认通过 CLI 执行“${action.title || action.operation}”吗？`;
   if (!confirm(confirmation)) return;
   confirmButton.disabled = true;
@@ -7247,7 +8541,7 @@ async function executeAiAssistantAction(action, card, confirmButton) {
     card.appendChild(title);
     appendAiAssistantActionLine(card, result.message || '操作已执行。');
     renderAiAssistantMessage('assistant', isTeacherSwap
-      ? '教师分工已更新。现有课表已标记为待重排，请重新确认必要条件后再运行 AI 排课。'
+      ? '教师分工已更新。现有课表已标记为待重排，请重新锁定课程后再运行智能排课。'
       : isScheduleMove
         ? '课程时段已调整并通过硬约束校验，当前课表已刷新。'
         : isClearUnlocked
@@ -7402,7 +8696,7 @@ function initAiAssistant() {
   });
   toggle.addEventListener('click', () => setAiAssistantCollapsed(true));
   open.addEventListener('click', () => setAiAssistantCollapsed(false));
-  if (window.matchMedia('(max-width: 768px)').matches) setAiAssistantCollapsed(true);
+  setAiAssistantCollapsed(shouldAutoCollapseAiAssistant(window.innerWidth));
 }
 
 // 初始化应用
@@ -7419,28 +8713,29 @@ function init() {
         return;
       }
 
-      const examTarget = link.dataset.examTarget;
-      if (examTarget) {
+      const examStage = link.dataset.examStage;
+      if (examStage) {
         await switchView('exam-scheduling');
-        const target = document.getElementById(examTarget);
-        if (!target || target.classList.contains('hidden')) {
-          showToast(examTarget === 'exam-result-card' ? '请先生成排考方案' : '暂时无法定位这一部分', 'error');
-          return;
-        }
-        document.querySelectorAll('#exam-sidebar-navigation a').forEach(item => item.classList.remove('active'));
-        link.classList.add('active');
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        window.goToExamStage(examStage);
         return;
       }
 
-      if (link.dataset.examAction === 'export') {
-        const exportButton = document.getElementById('exam-export-button');
-        if (exportButton?.disabled) {
-          showToast('请先生成排考方案，再导出考试时间表', 'error');
-          return;
-        }
-        await window.exportExamPlan?.();
+      const examOutput = link.dataset.examOutput;
+      if (examOutput) {
+        await switchView('exam-scheduling');
+        window.setExamOutputPanel(examOutput);
+        return;
       }
+
+      if (link.dataset.examAction === 'rooms') {
+        await switchView('exam-scheduling');
+        const manager = document.getElementById('exam-room-manager');
+        if (manager) manager.open = true;
+        manager?.querySelector('summary')?.focus({ preventScroll: true });
+        manager?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+
     });
   });
 
@@ -7522,6 +8817,12 @@ function init() {
   // 总课表控制事件
   document.getElementById('select-grade').addEventListener('change', loadOverviewTimetable);
   document.getElementById('select-view-type').addEventListener('change', loadOverviewTimetable);
+  document.getElementById('overview-focus-mode').addEventListener('click', event => {
+    setOverviewFocusMode(event.currentTarget.getAttribute('aria-pressed') !== 'true');
+  });
+  document.getElementById('overview-layout-toggle').addEventListener('click', event => {
+    setOverviewSingleColumn(event.currentTarget.getAttribute('aria-pressed') !== 'true');
+  });
   document.getElementById('overview-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
   document.getElementById('overview-open-archives').addEventListener('click', () => switchView('past-timetables'));
   document.getElementById('manual-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
@@ -7555,18 +8856,18 @@ function init() {
     ]);
     const teacherOptions = [...teachers]
       .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id), 'zh-CN'))
-      .map(teacher => `<option value="${safeDataAttribute(teacher.id)}">${escapeHtml(teacher.name || teacher.id)} · ${escapeHtml(teacher.id)}</option>`)
+      .map(teacher => `<option value="${safeDataAttribute(teacher.id)}">${escapeHtml(teacher.name || teacher.id)}</option>`)
       .join('');
     const courseOptions = [...courses]
       .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id), 'zh-CN'))
-      .map(course => `<option value="${safeDataAttribute(course.id)}">${escapeHtml(course.name || course.id)} · ${escapeHtml(course.id)}</option>`)
+      .map(course => `<option value="${safeDataAttribute(course.id)}">${escapeHtml(course.name || course.id)}</option>`)
       .join('');
     const renderClassChoices = (items, classType) => items
       .sort((left, right) => String(left.id).localeCompare(String(right.id), 'zh-CN', { numeric: true }))
       .map(item => `
         <label class="assignment-class-choice">
           <input type="checkbox" name="class_ids" value="${safeDataAttribute(item.id)}" data-assignment-class-type="${classType}">
-          <span><strong>${escapeHtml(item.name || item.id)}</strong><small>${escapeHtml(item.id)} · Senior ${Number(item.grade) - 9}</small></span>
+          <span><strong>${escapeHtml(item.name || item.id)}</strong><small>高${['一', '二', '三'][Number(item.grade) - 10] || Number(item.grade) - 9}</small></span>
         </label>
       `).join('');
 
@@ -7574,19 +8875,19 @@ function init() {
       <form id="form-add-assignment">
         <div class="assignment-form-grid">
           <label class="form-group">
-            <span>教师</span>
-            <select name="teacher_id" required>
-              <option value="">请选择教师</option>
-              ${teacherOptions}
-            </select>
-            <small id="assignment-teacher-qualification-note">选择课程后，只显示可教授该课程的教师。</small>
-          </label>
-          <label class="form-group">
             <span>课程</span>
             <select name="course_id" required>
               <option value="">请选择课程</option>
               ${courseOptions}
             </select>
+          </label>
+          <label class="form-group">
+            <span>教师</span>
+            <select name="teacher_id" required disabled>
+              <option value="">请先选择课程</option>
+              ${teacherOptions}
+            </select>
+            <small id="assignment-teacher-qualification-note">选择课程后，只显示可教授该课程的教师。</small>
           </label>
           <label class="form-group">
             <span>班级类型</span>
@@ -7609,10 +8910,13 @@ function init() {
             ${renderClassChoices(teachingClasses, 'teaching')}
           </div>
         </fieldset>
-        <label class="form-group">
-          <span>分工 ID <small>系统已自动生成，也可以修改</small></span>
-          <input type="text" name="id" required>
-        </label>
+        <details class="assignment-advanced">
+          <summary>系统信息（通常无需修改）</summary>
+          <label class="form-group">
+            <span>分工 ID <small>系统自动生成</small></span>
+            <input type="text" name="id" required>
+          </label>
+        </details>
         <p class="assignment-form-note">保存后会自动定位到新增行。已有教学任务不会自动改写，请保存后重新生成。</p>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" id="btn-cancel-add-assignment">取消</button>
@@ -7651,6 +8955,8 @@ function init() {
     const syncQualifiedTeachers = () => {
       const qualified = teachersQualifiedForCourse(teachers, courseSelect.value);
       const qualifiedIds = new Set(qualified.map(teacher => teacher.id));
+      teacherSelect.disabled = !courseSelect.value;
+      teacherSelect.options[0].textContent = courseSelect.value ? '请选择教师' : '请先选择课程';
       [...teacherSelect.options].forEach(option => {
         if (option.value) option.disabled = Boolean(courseSelect.value) && !qualifiedIds.has(option.value);
       });
@@ -7700,7 +9006,7 @@ function init() {
         const teacher = teachers.find(item => item.id === saved.teacher_id);
         const course = courses.find(item => item.id === saved.course_id);
         showAssignmentFeedback(
-          `已添加分工 ${saved.id}：${teacher?.name || saved.teacher_id} · ${course?.name || saved.course_id} · ${saved.class_ids.join('、')}。新增行已定位；请重新生成教学任务。`,
+          `已添加分工：${teacher?.name || saved.teacher_id} · ${course?.name || saved.course_id} · ${saved.class_ids.join('、')}。新增行已定位；请重新生成教学任务。`,
           'success',
         );
         showToast('教师分工已添加并定位');
@@ -7767,6 +9073,10 @@ function init() {
           <input type="number" name="max_per_day" min="0" step="1" value="8">
         </div>
         <div class="form-group">
+          <label>可排课时段</label>
+          ${teacherAvailabilityEditor()}
+        </div>
+        <div class="form-group">
           <label>周课时上限</label>
           <input type="number" name="max_per_week" min="0" step="1" value="30" required>
           <small>这是上限，实际排课可以低于该数字。</small>
@@ -7786,12 +9096,19 @@ function init() {
     document.getElementById('form-add-teacher').addEventListener('submit', async (e) => {
       e.preventDefault();
       const formData = new FormData(e.target);
+      let availableSlots;
+      try {
+        availableSlots = teacherAvailableSlotsFromForm(formData);
+      } catch (error) {
+        showToast(error.message, 'error');
+        return;
+      }
       const data = {
         id: formData.get('id'),
         name: formData.get('name'),
         can_teach: formData.get('can_teach') ? formData.get('can_teach').split(',').filter(Boolean) : [],
         exam_staff_group: formData.get('exam_staff_group') || 'ansheng',
-        available_slots: [],
+        available_slots: availableSlots,
         max_per_day: parseInt(formData.get('max_per_day')),
         max_per_week: parseInt(formData.get('max_per_week')),
       };
@@ -7883,7 +9200,7 @@ function init() {
           ${renderCourseDeliveryOptions()}
         </div>
         <div class="form-group" data-high-two-class-scope>
-          <label>适用班级（Senior 2）</label>
+          <label>适用班级（高二）</label>
           ${renderCourseClassOptions()}
         </div>
         <div class="form-group">
@@ -7928,7 +9245,7 @@ function init() {
       const classIds = formData.getAll('class_scope');
       const deliveryClassTypes = courseDeliveryMapFromForm(formData, grades, formData.get('type'));
       if (grades.includes(11) && deliveryClassTypes?.[11] === 'teaching' && !classIds.length) {
-        showToast('Senior 2 课程请至少选择一个适用教学班', 'error');
+        showToast('高二课程请至少选择一个适用教学班', 'error');
         return;
       }
       const data = {
@@ -8014,13 +9331,15 @@ function init() {
 
   // 初始化拖拽功能
   initDragAndDrop();
+  initComputationJobCenter();
 
   // 恢复上一次使用的工作模式；考试周与日常排课使用彼此独立的工作区。
   switchView(adminWorkspaceMode === 'exam' ? 'exam-scheduling' : 'welcome');
+  restoreComputationJobCenter();
 }
 
-// 页面加载完成后初始化
-document.addEventListener('DOMContentLoaded', init);
+// 页面加载完成后先确认安全边界，再初始化业务页面。
+document.addEventListener('DOMContentLoaded', bootstrapApplication);
 
 // ==================== 高三 A/B/C 其他选课导入 ====================
 
@@ -8788,13 +10107,86 @@ window.confirmStudentImports = async function() {
 
 let currentImportData = null;
 
+function renderImportReadiness(model) {
+  const summary = document.getElementById('import-readiness-summary');
+  const grid = document.getElementById('import-readiness-grid');
+  if (!summary || !grid) return;
+  summary.textContent = model.core_ready
+    ? `核心数据 ${model.core_ready_count}/${model.core_total} 项已就绪`
+    : `核心数据 ${model.core_ready_count}/${model.core_total} 项已就绪，请先补齐标红项目`;
+  summary.className = model.core_ready ? 'is-ready' : 'needs-attention';
+  grid.innerHTML = model.items.map(item => `
+    <article class="import-readiness-card is-${item.status}">
+      <div><strong>${escapeHtml(item.label)}</strong><span>${item.core ? '排课核心数据' : '按实际工作流补充'}</span></div>
+      <p>${escapeHtml(item.status_label)}</p>
+      <button class="btn btn-secondary btn-sm" type="button" data-import-readiness-view="${safeDataAttribute(item.view)}">查看 / 管理</button>
+    </article>
+  `).join('');
+  grid.querySelectorAll('[data-import-readiness-view]').forEach(button => {
+    button.addEventListener('click', () => switchView(button.dataset.importReadinessView));
+  });
+}
+
+window.downloadImportTemplate = function(type) {
+  try {
+    const csv = importTemplateCsv(type);
+    const filenames = { students: '学生导入模板.csv', teachers: '教师导入模板.csv', courses: '课程导入模板.csv' };
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filenames[type];
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showToast(`${filenames[type]}已下载`, 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
 // 初始化导入页面
-function initImportPage() {
+async function initImportPage() {
   // 重置状态
   currentImportData = null;
   pendingFiles = [];
   document.getElementById('import-files-list').classList.add('hidden');
   document.getElementById('file-input').value = '';
+  try {
+    const results = await Promise.allSettled([
+      api('/status'),
+      api('/teaching_tasks'),
+      api('/ap_selections'),
+      api('/students'),
+      api('/exams'),
+    ]);
+    const valueOr = (index, fallback) => results[index].status === 'fulfilled'
+      ? results[index].value
+      : fallback;
+    const status = valueOr(0, { counts: {} });
+    const tasks = valueOr(1, []);
+    const apSelections = valueOr(2, []);
+    const students = valueOr(3, []);
+    const exams = valueOr(4, { plan: { exams: [] } });
+    renderImportReadiness(importReadinessModel({
+      students: status.counts?.students,
+      teachers: status.counts?.teachers,
+      courses: status.counts?.courses,
+      teaching_tasks: tasks.length,
+      ap_selections: apSelections.length,
+      elective_selections: countElectiveSelections(students),
+      exams: exams.plan?.exams?.length || 0,
+    }));
+    const failedCount = results.filter(result => result.status === 'rejected').length;
+    const summary = document.getElementById('import-readiness-summary');
+    if (failedCount && summary) summary.textContent += `；${failedCount} 项暂时无法读取`;
+  } catch (error) {
+    const summary = document.getElementById('import-readiness-summary');
+    if (summary) {
+      summary.className = 'needs-attention';
+      summary.textContent = `暂时无法读取准备度：${error.message}`;
+    }
+  }
 }
 
 // 待导入文件列表
@@ -10956,6 +12348,73 @@ window.printTempTimetable = function() {
 
 // ==================== 设置功能 ====================
 
+function renderStateBackups(data, currentCounts = {}) {
+  const status = document.getElementById('settings-backup-status');
+  const list = document.getElementById('settings-backup-list');
+  if (!status || !list) return;
+  const labels = { students: '学生', teachers: '教师', courses: '课程', rooms: '教室' };
+  const backups = data.backups || [];
+  status.textContent = backups.length
+    ? `当前数据版本 r${data.revision}；已保留最近 ${backups.length} 个写入前版本。`
+    : `当前数据版本 r${data.revision}；还没有可恢复的旧版本。`;
+  list.innerHTML = backups.length ? backups.map(backup => {
+    const comparison = Object.entries(labels).map(([key, label]) => {
+      const value = Number(backup.counts?.[key] || 0);
+      const delta = value - Number(currentCounts[key] || 0);
+      return `${label} ${value}${delta ? `（${delta > 0 ? '+' : ''}${delta}）` : ''}`;
+    }).join(' · ');
+    return `<article class="settings-backup-card">
+      <div>
+        <strong>数据版本 r${Number(backup.revision)}</strong>
+        <span>${escapeHtml(new Date(backup.updated_at || backup.created_at).toLocaleString('zh-CN'))}</span>
+        <small>与当前相比：${escapeHtml(comparison)}</small>
+      </div>
+      <div>
+        <span class="status-badge status-badge-neutral">${escapeHtml(backup.solve_status === 'valid' ? '含有效课表' : '未完成排课')}</span>
+        <button class="btn btn-secondary btn-sm" type="button" data-restore-backup-id="${safeDataAttribute(backup.id)}">恢复此版本</button>
+      </div>
+    </article>`;
+  }).join('') : '<div class="empty-state"><p>首次修改数据后，写入前版本会自动显示在这里。</p></div>';
+  list.querySelectorAll('[data-restore-backup-id]').forEach(button => {
+    button.addEventListener('click', () => window.restoreStateBackup(button.dataset.restoreBackupId, data.revision));
+  });
+}
+
+window.loadStateBackups = async function(currentCounts = window._stateBackupCurrentCounts || {}) {
+  const status = document.getElementById('settings-backup-status');
+  if (status) status.textContent = '正在读取自动备份…';
+  try {
+    const data = await api('/state-backups', { computation: false });
+    window._stateBackupRevision = data.revision;
+    renderStateBackups(data, currentCounts);
+  } catch (error) {
+    if (status) status.textContent = `自动备份读取失败：${error.message}`;
+  }
+};
+
+window.restoreStateBackup = async function(backupId, revision) {
+  if (!confirm('恢复旧版本会让当前学生、教师、课程、选课和课表回到当时状态。当前版本会先自动备份，是否继续？')) return;
+  if (prompt('请输入“恢复此版本”确认操作：') !== '恢复此版本') {
+    showToast('确认词不正确，未恢复任何数据', 'warning');
+    return;
+  }
+  const status = document.getElementById('settings-backup-status');
+  document.querySelectorAll('[data-restore-backup-id]').forEach(button => { button.disabled = true; });
+  try {
+    const result = await api(`/state-backups/${encodeURIComponent(backupId)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_revision: revision, confirmation: '恢复此版本' }),
+      computation: false,
+    });
+    if (status) status.textContent = `已恢复为新的数据版本 r${result.revision}，正在重新载入系统…`;
+    showToast('版本恢复成功，正在重新载入', 'success');
+    setTimeout(() => window.location.reload(), 700);
+  } catch (error) {
+    if (status) status.textContent = `恢复失败：${error.message}`;
+    document.querySelectorAll('[data-restore-backup-id]').forEach(button => { button.disabled = false; });
+  }
+};
+
 // 加载设置页面
 async function loadSettingsPage() {
   try {
@@ -10970,6 +12429,8 @@ async function loadSettingsPage() {
 
     document.getElementById('settings-student-count').textContent = status.counts?.students || 0;
     document.getElementById('settings-task-count').textContent = tasks.length || 0;
+    window._stateBackupCurrentCounts = status.counts || {};
+    await window.loadStateBackups(status.counts || {});
 
     // 检查 AI 状态
     checkAIStatus();
@@ -11083,7 +12544,7 @@ async function loadGraduationArchives() {
   search.oninput = renderGraduationArchive;
   if (!archives.length) {
     window._graduationArchiveDetail = null;
-    document.getElementById('graduation-archives-content').innerHTML = '<div class="empty-state">暂无毕业学生选课信息。完成“系统设置 → 学生毕业”后，原 Senior 3 学生的选课快照会出现在这里。</div>';
+    document.getElementById('graduation-archives-content').innerHTML = '<div class="empty-state">暂无毕业学生选课信息。完成“系统设置 → 学生毕业”后，原高三学生的选课快照会出现在这里。</div>';
     return;
   }
   const selected = archives.some(archive => archive.id === previous) ? previous : archives[0].id;
@@ -11103,9 +12564,9 @@ window.openStudentGraduationConfirmation = async function() {
       <div class="graduation-confirmation">
         <p class="graduation-danger-copy"><strong>请管理员确认：</strong>这是每学年一次的操作，确认后会立即变更当前学生库。</p>
         <div class="graduation-confirmation-counts">
-          <span>归档 Senior 3：<strong>${Number(preview.graduating_students) || 0} 人</strong></span>
-          <span>Senior 1 → Senior 2：<strong>${Number(preview.promoted_students?.senior_1_to_senior_2) || 0} 人</strong></span>
-          <span>Senior 2 → Senior 3：<strong>${Number(preview.promoted_students?.senior_2_to_senior_3) || 0} 人</strong></span>
+          <span>归档高三：<strong>${Number(preview.graduating_students) || 0} 人</strong></span>
+          <span>高一 → 高二：<strong>${Number(preview.promoted_students?.senior_1_to_senior_2) || 0} 人</strong></span>
+          <span>高二 → 高三：<strong>${Number(preview.promoted_students?.senior_2_to_senior_3) || 0} 人</strong></span>
         </div>
         <p>毕业学生选课会保存 ${Number(selectionTotals.ap_course_entries) || 0} 条 AP 记录、${Number(selectionTotals.elective_course_entries) || 0} 条其他选修记录和 ${Number(selectionTotals.elective_choice_entries) || 0} 条高三选修选择。</p>
         <p class="graduation-danger-copy"><strong>新学年重新选课：</strong>继续在校学生的全部选修信息将清空（${Number(activeSelectionTotals.ap_course_entries) || 0} 条 AP、${Number(activeSelectionTotals.elective_course_entries) || 0} 条其他选修、${Number(activeSelectionTotals.elective_choice_entries) || 0} 条 A/B/C 选课组）。</p>
@@ -11135,7 +12596,7 @@ window.openStudentGraduationConfirmation = async function() {
           }),
         });
         hideModal();
-        showToast(`${result.message} 已保留 ${result.incoming_senior_1_slots?.admin || 0} 个 Senior 1 行政班槽位和 ${result.incoming_senior_1_slots?.teaching || 0} 个教学班槽位。`, 'success');
+        showToast(`${result.message} 已保留 ${result.incoming_senior_1_slots?.admin || 0} 个高一行政班槽位和 ${result.incoming_senior_1_slots?.teaching || 0} 个教学班槽位。`, 'success');
         await switchView('graduation-archives');
       } catch {
         confirmButton.disabled = false;
@@ -11348,3 +12809,15 @@ window.toggleApiKeyVisibility = function() {
     input.type = 'password';
   }
 }
+
+// Compatibility adapter for legacy templates that still use inline event
+// attributes. ES modules do not publish local function declarations on
+// `window`, so each inline entry point must be exposed deliberately until
+// those templates are migrated to delegated event listeners.
+window.applySuggestion = applySuggestion;
+window.executeSchedule = executeSchedule;
+window.hideModal = hideModal;
+window.removeCourse = removeCourse;
+window.selectSolution = selectSolution;
+window.switchView = switchView;
+window.viewScheduleDetails = viewScheduleDetails;

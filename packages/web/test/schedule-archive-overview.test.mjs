@@ -13,7 +13,10 @@ function sourceBetween(startMarker, endMarker) {
   return appSource.slice(start, end);
 }
 
-function archiveControls({ review = { required: false } } = {}) {
+function archiveControls({
+  review = { required: false },
+  promptValues = ['2026–2027 学年秋季正式课表', '教务处已完成核对'],
+} = {}) {
   const elements = {
     'overview-save-schedule': { disabled: true },
     'overview-archive-status': { textContent: '', className: '' },
@@ -52,12 +55,38 @@ function archiveControls({ review = { required: false } } = {}) {
       throw new Error(`unexpected API path ${path}`);
     },
     () => true,
-    () => null,
+    () => promptValues.shift() ?? null,
     () => '质量分析',
     (message, type) => toasts.push({ message, type }),
   );
   return { ...controls, elements, requests, toasts };
 }
+
+test('legacy timestamp archive names are translated into a readable history title', () => {
+  const archiveSource = sourceBetween(
+    'function formatArchiveDateTime',
+    '\nfunction setScheduleArchiveStatus',
+  );
+  const { scheduleArchiveDisplayName } = new Function(
+    `${archiveSource}; return { scheduleArchiveDisplayName };`,
+  )();
+
+  assert.match(scheduleArchiveDisplayName({
+    name: '课表存档 · 2026-08-04T17:27:07.752Z',
+    saved_at: '2026-08-04T17:27:07.752Z',
+  }), /^历史课表 · /);
+  assert.equal(scheduleArchiveDisplayName({
+    name: '2026–2027 学年秋季正式课表',
+    saved_at: '2026-08-04T17:27:07.752Z',
+  }), '2026–2027 学年秋季正式课表');
+});
+
+test('legacy archives explain missing metadata and isolate deletion from restore', () => {
+  assert.match(appSource, /旧版存档未记录学年、用途或保存人/);
+  assert.match(appSource, /恢复前会自动备份当前课表/);
+  assert.match(appSource, /<details class="schedule-archive-danger">/);
+  assert.match(appSource, /<summary>更多操作<\/summary>/);
+});
 
 test('the complete-schedule archive action is available from both review surfaces', () => {
   const manualView = html.slice(
@@ -108,7 +137,10 @@ test('saving from either surface archives the backend complete schedule', async 
     '/schedule-archives',
   ]);
   assert.equal(requests[1].options.method, 'POST');
-  assert.deepEqual(JSON.parse(requests[1].options.body), {});
+  assert.deepEqual(JSON.parse(requests[1].options.body), {
+    name: '2026–2027 学年秋季正式课表',
+    notes: '教务处已完成核对',
+  });
   assert.equal(elements['overview-save-schedule'].disabled, false);
   assert.equal(elements['manual-save-schedule'].disabled, false);
   assert.match(elements['overview-archive-status'].textContent, /保存为独立快照/);

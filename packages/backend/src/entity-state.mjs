@@ -1,5 +1,11 @@
+import { validateTeacherSchedulingSettings } from './teacher-scheduling-policy.mjs';
+
 const COURSE_TYPES = new Set(['required', 'ap', 'required_elective', 'other']);
 const GRADE_VALUES = new Set([10, 11, 12]);
+const TIMETABLE_SLOT_IDS = new Set(Array.from(
+  { length: 50 },
+  (_, index) => `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`,
+));
 
 function asList(value) {
   return Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
@@ -44,15 +50,7 @@ export function validateEntityInput(entity, item) {
     if (!Array.isArray(item.can_teach || [])) {
       throw new Error(`教师 ${item.id} 的可授课程必须是数组`);
     }
-    for (const [field, label] of [
-      ['max_per_day', '每天上限'],
-      ['max_per_week', '每周上限'],
-    ]) {
-      if (item[field] === undefined || item[field] === null) continue;
-      if (!Number.isInteger(Number(item[field])) || Number(item[field]) < 0) {
-        throw new Error(`教师 ${item.id} 的${label}必须是非负整数`);
-      }
-    }
+    validateTeacherSchedulingSettings(item, { allowedSlotIds: TIMETABLE_SLOT_IDS });
   }
   if (entity === 'students' && !GRADE_VALUES.has(Number(item.grade))) {
     throw new Error(`学生 ${item.id} 的年级必须是 Senior 1–3`);

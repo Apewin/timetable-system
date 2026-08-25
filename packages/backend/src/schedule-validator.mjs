@@ -1,3 +1,5 @@
+import { teacherSchedulingViolations } from './teacher-scheduling-policy.mjs';
+
 function indexById(items = []) {
   return new Map(items.map(item => [item.id, item]));
 }
@@ -391,26 +393,12 @@ export function validateSchedule(problem, solution) {
   for (const [key, collisions] of byResourceSlot) if (collisions.length > 1) {
     hard.push(violation('kernel.resource_no_overlap', `${key} 同时有 ${collisions.length} 个 section`, { meetings: collisions }));
   }
-  const teacherWeeklyHours = new Map();
-  for (const meeting of meetings) {
-    const teacherId = sections.get(meeting.section_id)?.teacher_id;
-    if (!teacherId) continue;
-    teacherWeeklyHours.set(teacherId, (teacherWeeklyHours.get(teacherId) || 0) + 1);
-  }
-  for (const limit of problem.teacher_limits || []) {
-    const maximum = Number(limit.max_per_week);
-    if (!Number.isInteger(maximum) || maximum < 0) continue;
-    const assigned = teacherWeeklyHours.get(limit.teacher_id) || 0;
-    if (assigned > maximum) hard.push(violation(
-      'kernel.teacher_max_per_week',
-      `教师 ${limit.teacher_name || limit.teacher_id} 实际排课 ${assigned} 节/周，超过上限 ${maximum} 节/周`,
-      {
-        teacher_id: limit.teacher_id,
-        actual: assigned,
-        maximum,
-      },
-    ));
-  }
+  hard.push(...teacherSchedulingViolations({
+    slots: problem.slots,
+    limits: problem.teacher_limits,
+    sections: [...sections.values()],
+    meetings,
+  }));
   const meetingsBySection = new Map();
   for (const meeting of meetings) { const list = meetingsBySection.get(meeting.section_id) || []; list.push(meeting); meetingsBySection.set(meeting.section_id, list); }
   const studentEvents = allStudentEvents(sections, meetingsBySection);

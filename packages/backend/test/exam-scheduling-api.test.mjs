@@ -36,11 +36,30 @@ test('saves, solves, retrieves, and exports one exam plan through the public API
   });
   const base = `http://127.0.0.1:${server.address().port}/api/exams`;
 
-  const saveResponse = await fetch(base, {
+  const roomCatalogResponse = await fetch(`${base.replace(/\/exams$/, '')}/exam-rooms`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       expected_revision: 1,
+      rooms: [
+        { id: 'HALL', name: '报告厅', capacity: 60 },
+        { id: 'ROOM_A', name: '考场 A', capacity: 30 },
+      ],
+    }),
+  });
+  const roomCatalog = await roomCatalogResponse.json();
+  assert.equal(roomCatalogResponse.status, 200, JSON.stringify(roomCatalog));
+  assert.equal(roomCatalog.data.revision, 2);
+  assert.deepEqual(roomCatalog.data.rooms.map(room => room.name), ['报告厅', '考场 A']);
+
+  const readRoomCatalog = await (await fetch(`${base.replace(/\/exams$/, '')}/exam-rooms`)).json();
+  assert.deepEqual(readRoomCatalog.data.rooms, roomCatalog.data.rooms);
+
+  const saveResponse = await fetch(base, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      expected_revision: 2,
       plan: {
         config: {
           timetable_only: true,
@@ -50,6 +69,7 @@ test('saves, solves, retrieves, and exports one exam plan through the public API
           breaks: [],
           room_count: 1,
           room_capacity: 30,
+          rooms: [{ id: 'STALE_ROOM', name: '不应使用的考场', capacity: 30 }],
           require_every_teacher_invigilates: false,
         },
         exams: [
@@ -67,18 +87,19 @@ test('saves, solves, retrieves, and exports one exam plan through the public API
   assert.equal(saveResponse.status, 200);
   assert.equal(savedPlan.data.plan.exams[0].student_count, 2);
   assert.equal(savedPlan.data.plan.exams[1].student_count, 0);
-  assert.equal(savedPlan.data.revision, 2);
+  assert.deepEqual(savedPlan.data.plan.config.rooms, roomCatalog.data.rooms);
+  assert.equal(savedPlan.data.revision, 3);
 
   const solveResponse = await fetch(`${base}/solve`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ expected_revision: 2 }),
+    body: JSON.stringify({ expected_revision: 3 }),
   });
   const solved = await solveResponse.json();
   assert.equal(solveResponse.status, 200, JSON.stringify(solved));
   assert.equal(solved.data.schedule.ok, true);
   assert.equal(solved.data.schedule.validation.ok, true);
-  assert.equal(solved.data.revision, 3);
+  assert.equal(solved.data.revision, 4);
 
   const readPayload = await (await fetch(base)).json();
   assert.deepEqual(
@@ -95,6 +116,7 @@ test('saves, solves, retrieves, and exports one exam plan through the public API
   assert.ok(workbook.getWorksheet('高一考试时间表'));
 
   const persisted = JSON.parse(readFileSync(stateFile, 'utf8'));
+  assert.deepEqual(persisted.exam_rooms, roomCatalog.data.rooms);
   assert.equal(persisted.exam_solve_status, 'valid');
   assert.equal(persisted.exam_schedule.sessions.length, 2);
 

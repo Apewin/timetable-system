@@ -42,3 +42,8 @@ pnpm-debug.log*
 /grade-*.json
 /integer-*.json
 /backups/
+/*.json.backups/
+/*.audit.jsonl
+/*.jobs.json
+/test-results/
+/playwright-report/

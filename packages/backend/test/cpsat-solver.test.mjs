@@ -1206,6 +1206,105 @@ test('does not fill a teacher workload up to the weekly upper limit', async () =
   assert.equal(solution.meetings.length, 2);
 });
 
+test('rejects a teacher day above the configured daily upper limit', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [{
+      id: 'monday-double',
+      type: 'fixed_slots',
+      hard: true,
+      scope: 'section',
+      target_ids: ['MATH'],
+      section_target_ids: ['MATH'],
+      params: { slots: ['D1P1', 'D1P2'], mode: 'exact' },
+    }],
+    teacher_limits: [{ teacher_id: 'T1', teacher_name: '数学教师', max_per_day: 1 }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, false);
+  assert.equal(solution.status, 'INFEASIBLE_BY_TEACHER_DAILY_LIMIT');
+});
+
+test('explains when a teacher daily upper limit cannot cover the weekly workload', async () => {
+  const weekSlots = Array.from({ length: 50 }, (_, index) => ({
+    id: `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`,
+    day: Math.floor(index / 10) + 1,
+    period: index % 10 + 1,
+  }));
+  const problem = {
+    slots: weekSlots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{ teacher_id: 'T1', teacher_name: '数学教师', max_per_day: 1 }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 6, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, false);
+  assert.equal(solution.status, 'INFEASIBLE_BY_TEACHER_DAILY_LIMIT');
+  assert.match(solution.reason, /数学教师.*6.*每天上限 1.*最多.*5/);
+});
+
+test('rejects a lesson outside the teacher configured available slots', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [{
+      id: 'fixed-unavailable-time',
+      type: 'fixed_slots',
+      hard: true,
+      scope: 'section',
+      target_ids: ['MATH'],
+      section_target_ids: ['MATH'],
+      params: { slots: ['D1P2'], mode: 'exact' },
+    }],
+    teacher_limits: [{
+      teacher_id: 'T1', teacher_name: '数学教师', available_slot_ids: ['D1P1'],
+    }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 1, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, false);
+  assert.equal(solution.status, 'INFEASIBLE');
+});
+
+test('explains when teacher availability cannot cover the weekly workload', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{
+      teacher_id: 'T1', teacher_name: '数学教师', available_slot_ids: ['D1P1'],
+    }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, { maxTimeSeconds: 5 });
+
+  assert.equal(solution.ok, false);
+  assert.equal(solution.status, 'INFEASIBLE_BY_TEACHER_AVAILABILITY');
+  assert.match(solution.reason, /数学教师.*2.*可用时段.*1/);
+});
+
 test('independently validates a teacher weekly upper limit', () => {
   const problem = {
     slots,
@@ -1230,6 +1329,57 @@ test('independently validates a teacher weekly upper limit', () => {
   assert.equal(validation.ok, false);
   assert.equal(validation.hard_violations[0]?.rule_id, 'kernel.teacher_max_per_week');
   assert.match(validation.hard_violations[0]?.message || '', /数学教师.*2.*上限 1/);
+});
+
+test('independently validates a teacher daily upper limit', () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{ teacher_id: 'T1', teacher_name: '数学教师', max_per_day: 1 }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 2, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+  const candidate = {
+    sections: problem.sections,
+    meetings: [
+      { section_id: 'MATH', slot_id: 'D1P1' },
+      { section_id: 'MATH', slot_id: 'D1P2' },
+    ],
+  };
+
+  const validation = validateSchedule(problem, candidate);
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.hard_violations[0]?.rule_id, 'kernel.teacher_max_per_day');
+  assert.match(validation.hard_violations[0]?.message || '', /数学教师.*第 1 天.*2.*上限 1/);
+});
+
+test('independently validates a teacher available-slot list', () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{
+      teacher_id: 'T1', teacher_name: '数学教师', available_slot_ids: ['D1P1'],
+    }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 1, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+  const candidate = {
+    sections: problem.sections,
+    meetings: [{ section_id: 'MATH', slot_id: 'D1P2' }],
+  };
+
+  const validation = validateSchedule(problem, candidate);
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.hard_violations[0]?.rule_id, 'kernel.teacher_available_slots');
+  assert.match(validation.hard_violations[0]?.message || '', /数学教师.*D1P2/);
 });
 
 test('optimizes a soft time preference after satisfying hard constraints', async () => {

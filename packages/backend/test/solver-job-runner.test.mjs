@@ -15,6 +15,26 @@ test('reports a native solver worker exit without terminating the backend proces
   );
 });
 
+test('cancels the isolated solver process through an AbortSignal', async () => {
+  const controller = new AbortController();
+  const progress = [];
+  const running = runSolverJob(
+    { solver: 'exact', problem: {}, options: {} },
+    {
+      workerUrl: new URL('./fixtures/solver-wait-worker.mjs', import.meta.url),
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      onProgress: item => {
+        progress.push(item);
+        controller.abort();
+      },
+    },
+  );
+
+  await assert.rejects(running, error => error.code === 'SOLVER_JOB_CANCELLED');
+  assert.equal(progress[0].stage, 'waiting');
+});
+
 test('returns a validated solver result through the worker process seam', async () => {
   const result = await runSolverJob({
     solver: 'exact',

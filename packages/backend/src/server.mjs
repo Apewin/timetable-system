@@ -52,7 +52,12 @@ import {
   mergedMeetingLocks,
   resolveManualPlan,
 } from './manual-plan.mjs';
-import { archiveSummary, createScheduleArchive, stateForScheduleArchive } from './schedule-archive.mjs';
+import {
+  archiveSummary,
+  createScheduleArchive,
+  restoreStateFromScheduleArchive,
+  stateForScheduleArchive,
+} from './schedule-archive.mjs';
 import {
   approveScheduleQualityException,
   qualityExceptionReview,
@@ -92,8 +97,24 @@ import {
   normalizeExamPlan,
   validateExamSchedule,
 } from './exam-scheduling.mjs';
+import {
+  examPlanUsingRoomCatalog,
+  examRoomCatalogForState,
+  stateWithExamRoomCatalog,
+} from './exam-room-catalog.mjs';
+import {
+  normalizeSchedulingRoomRenames,
+  normalizeSchedulingRooms,
+  renameSchedulingRoomReferences,
+} from './scheduling-room-catalog.mjs';
+import { renameClassDisplayName } from './class-name.mjs';
 import { parseExamDurationBuffer } from './exam-duration-import.mjs';
 import { exportExamScheduleWorkbook } from './exam-export.mjs';
+import { createLoginAttemptLimiter, securityBoundaryFromEnv } from './security-boundary.mjs';
+import { createOperationAudit } from './operation-audit.mjs';
+import { createComputationJobManager } from './computation-job-manager.mjs';
+import { computationJobDescriptor, solverProgressForJob } from './computation-job-policy.mjs';
+import { scheduledWeeklyHoursByTeacher } from './teacher-workload.mjs';
 
 const app = express();
 app.disable('x-powered-by');
@@ -106,15 +127,164 @@ app.use((_req, res, next) => {
   next();
 });
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
-const repository = new StateRepository(
-  process.env.STATE_FILE ? resolve(process.env.STATE_FILE) : defaultStateFile,
-);
+const stateFile = process.env.STATE_FILE ? resolve(process.env.STATE_FILE) : defaultStateFile;
+const repository = new StateRepository(stateFile, {
+  backupDirectory: process.env.STATE_BACKUP_DIR
+    ? resolve(process.env.STATE_BACKUP_DIR)
+    : `${stateFile}.backups`,
+  maxBackups: Number(process.env.STATE_BACKUP_RETENTION || 30),
+});
+const securityBoundary = securityBoundaryFromEnv(process.env);
+const loginAttemptLimiter = createLoginAttemptLimiter({
+  maxFailures: Number(process.env.TIMETABLE_LOGIN_MAX_FAILURES || 5),
+  windowMs: Number(process.env.TIMETABLE_LOGIN_WINDOW_SECONDS || 300) * 1_000,
+});
+const operationAudit = createOperationAudit({
+  file: process.env.TIMETABLE_AUDIT_FILE
+    ? resolve(process.env.TIMETABLE_AUDIT_FILE)
+    : `${repository.file}.audit.jsonl`,
+});
+const computationJobs = createComputationJobManager({
+  file: process.env.TIMETABLE_JOB_FILE
+    ? resolve(process.env.TIMETABLE_JOB_FILE)
+    : `${repository.file}.jobs.json`,
+});
 app.use(express.json({ limit: '2mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+function requestUsesHttps(req) {
+  return req.secure || String(req.headers['x-forwarded-proto'] || '')
+    .split(',').some(value => value.trim().toLowerCase() === 'https');
+}
+
+function authError(res, status, code, msg) {
+  return res.status(status).json({ ok: false, errors: [{ code, msg }] });
+}
+
+app.use('/api', (req, res, next) => {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    res.once('finish', () => {
+      try {
+        operationAudit.record({
+          actor: req.auth?.actor || (securityBoundary.enabled ? 'anonymous' : 'trusted-lan'),
+          method: req.method,
+          path: req.path,
+          status: res.statusCode,
+          ip: req.ip || req.socket.remoteAddress || '',
+        });
+      } catch (error) {
+        console.error(`写操作审计失败: ${error.message}`);
+      }
+    });
+  }
+  next();
+});
+
+app.get('/api/auth/status', (req, res) => {
+  const session = securityBoundary.authenticate(req.headers.cookie);
+  return res.json({
+    ok: true,
+    data: {
+      enabled: securityBoundary.enabled,
+      mode: securityBoundary.mode,
+      authenticated: session.authenticated,
+      actor: session.actor,
+      expires_at: session.expires_at || null,
+    },
+  });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const attemptKey = req.ip || req.socket.remoteAddress || 'unknown';
+  const allowance = loginAttemptLimiter.check(attemptKey);
+  if (!allowance.allowed) {
+    res.setHeader('Retry-After', String(allowance.retry_after_seconds));
+    return authError(res, 429, 'AUTH_RATE_LIMITED', `登录失败次数过多，请在 ${allowance.retry_after_seconds} 秒后重试`);
+  }
+  try {
+    const session = securityBoundary.login(req.body?.password);
+    loginAttemptLimiter.clear(attemptKey);
+    req.auth = { authenticated: true, actor: session.actor };
+    res.setHeader('Set-Cookie', securityBoundary.sessionCookie(session, {
+      secure: requestUsesHttps(req),
+    }));
+    return res.json({
+      ok: true,
+      data: { actor: session.actor, expires_at: session.expires_at },
+    });
+  } catch (error) {
+    loginAttemptLimiter.recordFailure(attemptKey);
+    return authError(res, 401, 'AUTH_FAILED', error.message);
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  req.auth = securityBoundary.authenticate(req.headers.cookie);
+  res.setHeader('Set-Cookie', securityBoundary.clearSessionCookie({
+    secure: requestUsesHttps(req),
+  }));
+  return res.json({ ok: true, data: { authenticated: false } });
+});
+
+app.use('/api', (req, res, next) => {
+  const session = securityBoundary.authenticate(req.headers.cookie);
+  if (!session.authenticated) return authError(res, 401, 'AUTH_REQUIRED', '请先登录后再使用系统');
+  req.auth = session;
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin) {
+    try {
+      const origin = new URL(req.headers.origin);
+      if (origin.host !== req.headers.host) {
+        return authError(res, 403, 'ORIGIN_REJECTED', '请求来源与当前系统地址不一致');
+      }
+    } catch {
+      return authError(res, 403, 'ORIGIN_REJECTED', '请求来源无效');
+    }
+  }
+  return next();
+});
+
+app.get('/api/audit', (req, res) => res.json({
+  ok: true,
+  data: operationAudit.recent(req.query.limit),
+}));
+
+app.get('/api/computation-jobs', (req, res) => res.json({
+  ok: true,
+  data: computationJobs.recent(req.query.limit),
+}));
+
+app.get('/api/computation-jobs/:id', (req, res) => {
+  const job = computationJobs.get(req.params.id);
+  if (!job) return authError(res, 404, 'COMPUTATION_JOB_NOT_FOUND', '没有找到该计算作业');
+  return res.json({ ok: true, data: job });
+});
+
+app.delete('/api/computation-jobs/:id', (req, res) => {
+  const job = computationJobs.cancel(req.params.id);
+  if (!job) return authError(res, 404, 'COMPUTATION_JOB_NOT_FOUND', '没有找到该计算作业');
+  return res.json({ ok: true, data: job });
+});
+
 async function reply(res, action) {
+  const req = res.req;
+  const descriptor = computationJobDescriptor(req.method, req.originalUrl);
+  if (descriptor && req.headers['x-computation-job'] === 'async') {
+    const job = computationJobs.start({
+      ...descriptor,
+      actor: req.auth?.actor,
+      run: context => action(context),
+    });
+    return res.status(202).json({ ok: true, data: { job } });
+  }
   try { return res.json({ ok: true, data: await action() }); }
   catch (error) { return res.status(400).json({ ok: false, errors: [{ code: 'BACKEND_ERROR', msg: error.message }] }); }
+}
+
+function throwIfComputationCancelled(context) {
+  if (!context?.signal?.aborted) return;
+  throw Object.assign(new Error('计算作业已取消；原有有效结果未受影响'), {
+    code: 'SOLVER_JOB_CANCELLED',
+  });
 }
 
 function timetableGrid(state, by, id) {
@@ -828,23 +998,70 @@ app.get('/api/status', (_req, res) => reply(res, () => {
       qualityPassed: storedQualityGate.passed,
       policyRelaxed: (state.schedule?.deferred_rule_ids || []).length > 0,
     });
+  const storedReviewItems = [...(state.schedule?.review_items || []), ...(storedQualityGate.issues || [])]
+    .filter((item, index, items) => items.findIndex(candidate =>
+      candidate.code === item.code && candidate.message === item.message) === index);
   return {
     backend: 'rules-first-v1',
     school: state.meta?.school,
+    revision: repository.revision(state),
     last_stage: state.solve_status === 'stale' ? 'needs_resolve' : state.solve_status === 'valid' ? 'timetable' : state.section_plan ? 'sections' : 'not_run',
-      counts: Object.fromEntries(['teachers', 'rooms', 'courses', 'students', 'admin_classes', 'teaching_classes', 'selection_blocks', 'constraints']
+    counts: Object.fromEntries(['teachers', 'rooms', 'courses', 'students', 'admin_classes', 'teaching_classes', 'selection_blocks', 'constraints']
       .map(key => [key, state[key]?.length || 0]).concat([
         ['assignments', state.schedule?.assignments?.length || state.assignments?.length || 0],
+        ['meetings', state.schedule?.meetings?.length || 0],
         ['schedule_archives', state.schedule_archives?.length || 0],
       ])),
     solve_status: state.solve_status || 'not_run',
     publication_status: state.schedule ? storedPublicationStatus : 'not_ready',
     review_required: state.schedule ? storedPublicationStatus === 'review_required' : false,
+    review_items: state.schedule ? storedReviewItems : [],
+    quality_gate: state.schedule ? storedQualityGate : null,
+    security: {
+      authentication_enabled: securityBoundary.enabled,
+      authentication_mode: securityBoundary.mode,
+      audit_enabled: true,
+    },
   };
 }));
 
+app.get('/api/state-backups', (_req, res) => res.json({
+  ok: true,
+  data: {
+    revision: repository.revision(repository.read()),
+    backups: repository.listBackups(),
+  },
+}));
+
+app.post('/api/state-backups/:id/restore', (req, res) => {
+  if (req.body?.confirmation !== '恢复此版本') {
+    return authError(res, 400, 'BACKUP_CONFIRMATION_REQUIRED', '请输入“恢复此版本”确认操作');
+  }
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    return authError(res, 400, 'INVALID_EXPECTED_REVISION', '恢复备份需要当前数据版本号');
+  }
+  try {
+    const state = repository.restoreBackup(req.params.id, { expectedRevision });
+    return res.json({
+      ok: true,
+      data: {
+        revision: repository.revision(state),
+        restored_backup_id: req.params.id,
+        solve_status: state.solve_status || 'not_run',
+      },
+    });
+  } catch (error) {
+    const status = error.code === 'BACKUP_NOT_FOUND' ? 404
+      : error.code === 'STATE_VERSION_CONFLICT' ? 409 : 400;
+    return authError(res, status, error.code || 'BACKUP_RESTORE_FAILED', error.message);
+  }
+});
+
 function examPlanData(state) {
-  const editable = examPlanForEditing(state, state.exam_plan || { config: {}, exams: [] });
+  const rooms = examRoomCatalogForState(state);
+  const rawPlan = state.exam_plan || { config: {}, exams: [] };
+  const editable = examPlanForEditing(state, examPlanUsingRoomCatalog(rawPlan, rooms));
   let schedule = state.exam_schedule || null;
   let solveStatus = state.exam_solve_status || 'not_run';
   if (schedule && solveStatus === 'valid') {
@@ -872,6 +1089,32 @@ function examPlanData(state) {
   };
 }
 
+app.get('/api/exam-rooms', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  return {
+    rooms: examRoomCatalogForState(state),
+    revision: repository.revision(state),
+  };
+}));
+
+app.put('/api/exam-rooms', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('保存考场名单必须携带有效的数据版本');
+  }
+  const state = repository.read();
+  const saved = repository.write(
+    stateWithExamRoomCatalog(state, req.body?.rooms),
+    { expectedRevision },
+  );
+  return {
+    rooms: examRoomCatalogForState(saved),
+    plan: saved.exam_plan || null,
+    solve_status: saved.exam_solve_status || 'not_run',
+    revision: repository.revision(saved),
+  };
+}));
+
 app.get('/api/exams', (_req, res) => reply(res, () => examPlanData(repository.read())));
 
 app.post('/api/exams/import-durations', upload.single('file'), (req, res) => reply(res, () => {
@@ -887,9 +1130,14 @@ app.put('/api/exams', (req, res) => reply(res, () => {
     throw new Error('保存考试计划必须携带有效的数据版本');
   }
   const state = repository.read();
-  const plan = normalizeExamPlan(state, req.body?.plan);
+  const requestedPlan = req.body?.plan;
+  const existingRooms = examRoomCatalogForState(state);
+  const requestedRooms = requestedPlan?.config?.rooms;
+  const roomCatalog = existingRooms.length ? existingRooms : requestedRooms;
+  const plan = normalizeExamPlan(state, examPlanUsingRoomCatalog(requestedPlan, roomCatalog || []));
   const saved = repository.write({
     ...state,
+    exam_rooms: plan.config.rooms,
     exam_plan: plan,
     exam_schedule: null,
     exam_solve_status: 'not_run',
@@ -897,7 +1145,12 @@ app.put('/api/exams', (req, res) => reply(res, () => {
   return examPlanData(saved);
 }));
 
-app.post('/api/exams/solve', (req, res) => reply(res, async () => {
+app.post('/api/exams/solve', (req, res) => reply(res, async jobContext => {
+  jobContext?.progress({
+    stage: 'validating-input',
+    percent: 8,
+    message: '正在校验考试设置、科目和学生名单',
+  });
   const expectedRevision = Number(req.body?.expected_revision);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
     throw new Error('生成考试安排必须携带有效的数据版本');
@@ -908,12 +1161,21 @@ app.post('/api/exams/solve', (req, res) => reply(res, async () => {
   const maxTimeSeconds = Number.isFinite(requestedMaxTime)
     ? Math.min(120, Math.max(0.1, requestedMaxTime))
     : 20;
+  jobContext?.progress({
+    stage: 'solver',
+    percent: 25,
+    message: '正在安排无冲突的考试时间、考场与教师任务',
+  });
   const result = await runSolverJob({
     solver: 'exam',
     state,
     plan: state.exam_plan,
     options: { maxTimeSeconds },
+  }, {
+    signal: jobContext?.signal,
+    onProgress: progress => jobContext?.progress(solverProgressForJob(progress)),
   });
+  throwIfComputationCancelled(jobContext);
   if (!result.ok) throw new Error(result.reason || `排考失败: ${result.status}`);
   const validation = validateExamSchedule(state, result.plan, result);
   if (!validation.ok) throw new Error(`排考结果未通过独立校验：${validation.violations[0]?.message || '未知错误'}`);
@@ -922,6 +1184,12 @@ app.post('/api/exams/solve', (req, res) => reply(res, async () => {
     generated_at: new Date().toISOString(),
     validation,
   };
+  jobContext?.progress({
+    stage: 'persisting',
+    percent: 94,
+    message: '独立校验通过，正在保存考试安排',
+  });
+  throwIfComputationCancelled(jobContext);
   const saved = repository.write({
     ...state,
     exam_plan: result.plan,
@@ -1190,7 +1458,17 @@ function problemWithAiStrategy(problem, strategy) {
   return { ...problem, rules };
 }
 
-async function solveAndPersist(state, body = {}, { strategy = null, strategyWarnings = [] } = {}) {
+async function solveAndPersist(state, body = {}, {
+  strategy = null,
+  strategyWarnings = [],
+  jobContext = null,
+} = {}) {
+  throwIfComputationCancelled(jobContext);
+  jobContext?.progress({
+    stage: 'building-problem',
+    percent: 18,
+    message: '正在展开课程、教师、教室与规则约束',
+  });
   const expectedRevision = repository.revision(state);
   const rules = body.rules ?? body.constraints ?? state.constraints ?? [];
   validateRules(rules);
@@ -1238,8 +1516,11 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   try {
     solution = await runSolverJob(solverJob, {
       timeoutMs: solverJob.options.maxTimeSeconds * 1_000 + 15_000,
+      signal: jobContext?.signal,
+      onProgress: progress => jobContext?.progress(solverProgressForJob(progress)),
     });
   } catch (error) {
+    if (error.code === 'SOLVER_JOB_CANCELLED') throw error;
     return {
       solved: false,
       status: error.code || 'SOLVER_WORKER_ERROR',
@@ -1252,6 +1533,12 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
     };
   }
   const solveDurationMs = Math.round(performance.now() - solveStartedAt);
+  throwIfComputationCancelled(jobContext);
+  jobContext?.progress({
+    stage: 'independent-validation',
+    percent: 92,
+    message: '求解完成，正在独立校验全部硬约束',
+  });
   const diagnosticFields = {
     solve_duration_ms: solveDurationMs,
     manual_lock_count: lockedMeetings.filter(lock => lock.origin === 'manual').length,
@@ -1373,6 +1660,7 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
       },
     }
     : state.manual_plan;
+  throwIfComputationCancelled(jobContext);
   try {
     repository.write({
       ...state,
@@ -1433,8 +1721,8 @@ async function solveAndPersist(state, body = {}, { strategy = null, strategyWarn
   };
 }
 
-app.post('/api/solve', (req, res) => reply(res, async () =>
-  solveAndPersist(repository.read(), req.body || {})));
+app.post('/api/solve', (req, res) => reply(res, async jobContext =>
+  solveAndPersist(repository.read(), req.body || {}, { jobContext })));
 
 app.get('/api/schedule/clear-unlocked/preview', (_req, res) => reply(res, () => {
   const state = repository.read();
@@ -1614,7 +1902,7 @@ app.post('/api/manual-plan/unlock', (req, res) => reply(res, () => {
   return manualPlanData({ ...state, manual_plan: manualPlan, ...(schedule ? { schedule } : {}) });
 }));
 
-app.post('/api/manual-plan/ai-solve', (req, res) => reply(res, async () => {
+app.post('/api/manual-plan/ai-solve', (req, res) => reply(res, async jobContext => {
   const state = repository.read();
   const manualPlan = state.manual_plan || emptyManualPlan();
   if (manualPlan.status !== 'confirmed' || !(manualPlan.locks || []).length) {
@@ -1624,6 +1912,11 @@ app.post('/api/manual-plan/ai-solve', (req, res) => reply(res, async () => {
   let strategy = null;
   const strategyWarnings = [];
   if (req.body?.use_ai_strategy !== false) {
+    jobContext?.progress({
+      stage: 'ai-strategy',
+      percent: 8,
+      message: 'DeepSeek 正在分析搜索优先级；硬约束仍由求解器执行',
+    });
     try {
       strategy = await planSchedulingStrategy(problem, {
         locks: manualPlan.locks,
@@ -1633,7 +1926,8 @@ app.post('/api/manual-plan/ai-solve', (req, res) => reply(res, async () => {
       strategyWarnings.push(`大模型策略阶段未采用：${error.message}；已自动使用确定性约束求解器继续排课。`);
     }
   }
-  return solveAndPersist(state, req.body || {}, { strategy, strategyWarnings });
+  throwIfComputationCancelled(jobContext);
+  return solveAndPersist(state, req.body || {}, { strategy, strategyWarnings, jobContext });
 }));
 
 app.get('/api/validate', (_req, res) => reply(res, () => {
@@ -1891,6 +2185,22 @@ function nextScheduleArchiveId(archives, savedAt) {
   return id;
 }
 
+function nextScheduleArchiveName(archives, requestedName) {
+  const requested = importText(requestedName);
+  if (requested.length > 80) throw new Error('课表版本名称不能超过 80 个字符');
+  if (requested) return requested;
+  const names = new Set(archives.map(archive => importText(archive.name)));
+  let version = archives.length + 1;
+  while (names.has(`课表版本 ${version}`)) version += 1;
+  return `课表版本 ${version}`;
+}
+
+function scheduleArchiveNotes(value) {
+  const notes = importText(value);
+  if (notes.length > 500) throw new Error('课表版本说明不能超过 500 个字符');
+  return notes;
+}
+
 app.get('/api/schedule-archives', (_req, res) => reply(res, () => {
   const archives = repository.read().schedule_archives || [];
   return archives
@@ -1908,7 +2218,12 @@ app.get('/api/schedule-quality-review', (_req, res) => reply(res, () => {
   return qualityExceptionReview(schedule);
 }));
 
-app.post('/api/schedule-quality-lower-bounds', (req, res) => reply(res, async () => {
+app.post('/api/schedule-quality-lower-bounds', (req, res) => reply(res, async jobContext => {
+  jobContext?.progress({
+    stage: 'quality-model',
+    percent: 12,
+    message: '正在建立课表质量下界模型',
+  });
   const state = repository.read();
   const expectedRevision = repository.revision(state);
   if (!state.schedule || state.solve_status !== 'valid') {
@@ -1936,12 +2251,23 @@ app.post('/api/schedule-quality-lower-bounds', (req, res) => reply(res, async ()
       randomSeed: Number.isInteger(req.body?.random_seed) ? req.body.random_seed : 20260812,
       numSearchWorkers: Math.min(8, Math.max(1, Number(req.body?.num_search_workers || 4))),
     },
-  }, { timeoutMs: maxTimeSeconds * 1_000 + 15_000 });
+  }, {
+    timeoutMs: maxTimeSeconds * 1_000 + 15_000,
+    signal: jobContext?.signal,
+    onProgress: progress => jobContext?.progress(solverProgressForJob(progress)),
+  });
+  throwIfComputationCancelled(jobContext);
   const recorded = {
     ...analysis,
     analyzed_at: new Date().toISOString(),
     schedule_version: state.schedule.version,
   };
+  jobContext?.progress({
+    stage: 'persisting',
+    percent: 95,
+    message: '正在保存质量分析结论',
+  });
+  throwIfComputationCancelled(jobContext);
   repository.write({
     ...state,
     schedule: { ...state.schedule, quality_lower_bound_analysis: recorded },
@@ -1976,6 +2302,8 @@ app.post('/api/schedule-archives', (req, res) => reply(res, () => {
   const archive = createScheduleArchive({ ...state, schedule }, {
     id: nextScheduleArchiveId(archives, savedAt),
     savedAt,
+    name: nextScheduleArchiveName(archives, req.body?.name),
+    notes: scheduleArchiveNotes(req.body?.notes),
   });
   repository.write({ ...state, schedule, schedule_archives: [archive, ...archives] });
   return {
@@ -2017,6 +2345,56 @@ app.delete('/api/schedule-archives/:archiveId', (req, res) => reply(res, () => {
     message: `已删除过往课表“${archive.name || archive.id}”；当前课表没有变化`,
     deleted_archive: archiveSummary(archive),
     remaining_count: remaining.length,
+    revision: repository.revision(saved),
+  };
+}));
+
+app.get('/api/schedule-archives/:archiveId/restore-preview', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const archive = (state.schedule_archives || []).find(item => item.id === req.params.archiveId);
+  if (!archive) throw new Error('未找到该过往课表');
+  const count = (value, key) => Array.isArray(value?.[key]) ? value[key].length : 0;
+  return {
+    archive: archiveSummary(archive),
+    revision: repository.revision(state),
+    creates_safety_snapshot: Boolean(state.schedule),
+    impact: Object.fromEntries(['students', 'teachers', 'courses', 'rooms', 'admin_classes', 'teaching_classes']
+      .map(key => [key, {
+        current: count(state, key),
+        restored: count(archive.context, key),
+      }])),
+  };
+}));
+
+app.post('/api/schedule-archives/:archiveId/restore', (req, res) => reply(res, () => {
+  const archiveId = req.params.archiveId;
+  if (importText(req.body?.confirmation) !== archiveId) {
+    throw new Error('恢复确认与所选过往课表不一致，请刷新页面后重试');
+  }
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('恢复确认缺少有效的数据版本，请重新打开确认窗口');
+  }
+  const state = repository.read();
+  const archives = state.schedule_archives || [];
+  const archive = archives.find(item => item.id === archiveId);
+  if (!archive) throw new Error('未找到该过往课表');
+  const restoredAt = new Date().toISOString();
+  const safetyArchive = state.schedule ? createScheduleArchive(state, {
+    id: nextScheduleArchiveId(archives, restoredAt),
+    savedAt: restoredAt,
+    name: `恢复前自动备份 · ${archive.name || '历史课表'}`,
+    notes: `恢复“${archive.name || archive.id}”前由系统自动保存。`,
+  }) : null;
+  const restored = restoreStateFromScheduleArchive(state, archive, { safetyArchive });
+  if (archive.schedule.validation?.ok === false) {
+    throw new Error('该历史版本保存时未通过硬约束校验，不能恢复为当前课表');
+  }
+  const saved = repository.write(restored, { expectedRevision });
+  return {
+    message: `已恢复“${archive.name || archive.id}”为当前课表；恢复前版本已自动保存`,
+    archive: archiveSummary(archive),
+    safety_archive: safetyArchive ? archiveSummary(safetyArchive) : null,
     revision: repository.revision(saved),
   };
 }));
@@ -2442,11 +2820,12 @@ function changedState(state, entity, items, extra = {}) {
   if (entity === 'courses' || entity === 'teaching_classes' || entity === 'teaching_assignments') {
     validateCourseClassScopes(next);
   }
-  if (state.schedule) next.solve_status = 'stale';
+  const affectsDailySchedule = entity !== 'rooms';
+  if (state.schedule && affectsDailySchedule) next.solve_status = 'stale';
   if (state.exam_schedule && ['courses', 'students', 'teachers', 'teaching_assignments'].includes(entity)) {
     next.exam_solve_status = 'stale';
   }
-  if (state.manual_plan?.status === 'confirmed') {
+  if (state.manual_plan?.status === 'confirmed' && affectsDailySchedule) {
     next.manual_plan = {
       ...state.manual_plan,
       status: 'stale',
@@ -2462,6 +2841,53 @@ function changedState(state, entity, items, extra = {}) {
   }
   return next;
 }
+
+app.put('/api/rooms', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('保存教室名单必须携带有效的数据版本');
+  }
+  const state = repository.read();
+  const rooms = normalizeSchedulingRooms(req.body?.rooms);
+  const renames = normalizeSchedulingRoomRenames(req.body?.renames, {
+    currentRooms: state.rooms || [],
+    nextRooms: rooms,
+  });
+  const stateWithRenamedReferences = renameSchedulingRoomReferences(state, renames);
+  const saved = repository.write(
+    changedState(stateWithRenamedReferences, 'rooms', rooms),
+    { expectedRevision },
+  );
+  return {
+    rooms: saved.rooms || [],
+    renamed_ids: renames,
+    revision: repository.revision(saved),
+    solve_status: saved.solve_status || 'not_run',
+    manual_plan_status: saved.manual_plan?.status || 'draft',
+    room_assignment: 'disabled',
+  };
+}));
+
+app.put('/api/class-names/:entity/:id', (req, res) => reply(res, () => {
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('修改班级名称必须携带有效的数据版本');
+  }
+  const state = repository.read();
+  const renamed = renameClassDisplayName(state, {
+    entity: req.params.entity,
+    id: req.params.id,
+    name: req.body?.name,
+  });
+  const saved = repository.write(renamed.state, { expectedRevision });
+  return {
+    class: saved[renamed.class_type].find(item => item.id === renamed.class.id),
+    class_type: renamed.class_type,
+    revision: repository.revision(saved),
+    solve_status: saved.solve_status || 'not_run',
+    manual_plan_status: saved.manual_plan?.status || 'draft',
+  };
+}));
 
 app.post('/api/:entity', (req, res) => reply(res, () => {
   const entity = req.params.entity;
@@ -2530,12 +2956,16 @@ app.delete('/api/:entity/:id', (req, res) => reply(res, () => {
 // Compatibility CRUD endpoint used by the current web UI. Solver and
 // validation endpoints will be attached only to the new kernel.
 app.get('/api/:entity', (req, res) => reply(res, () => {
-  const value = repository.read()[req.params.entity];
+  const state = repository.read();
+  const value = state[req.params.entity];
   if (!Array.isArray(value)) throw new Error(`不支持的实体: ${req.params.entity}`);
   if (req.params.entity === 'teachers') {
+    const scheduledHours = scheduledWeeklyHoursByTeacher(state);
+    const scheduleAvailable = state.solve_status === 'valid' && Boolean(state.schedule);
     return value.map(teacher => ({
       ...teacher,
       ...examStaffProfileForTeacher(teacher),
+      scheduled_weekly_hours: scheduleAvailable ? Number(scheduledHours[teacher.id] || 0) : null,
     }));
   }
   return value;

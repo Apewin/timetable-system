@@ -14,9 +14,10 @@ test('the top-left brand switches between separate scheduling and exam sidebars'
   const scheduleNavigation = indexSource.match(/id="schedule-sidebar-navigation"[\s\S]*?<\/div>\s*<div id="exam-sidebar-navigation"/)?.[0] || '';
   assert.doesNotMatch(scheduleNavigation, /data-view="exam-scheduling"/);
   assert.match(indexSource, /data-view="exam-scheduling"/);
-  assert.match(indexSource, /data-exam-target="exam-config-card"/);
-  assert.match(indexSource, /data-exam-target="exam-subjects-card"/);
-  assert.match(indexSource, /data-exam-target="exam-result-card"/);
+  assert.match(indexSource, /data-exam-stage="subjects"/);
+  assert.match(indexSource, /data-exam-stage="config"/);
+  assert.match(indexSource, /data-exam-stage="timetable"/);
+  assert.match(indexSource, /data-exam-stage="staffing"/);
 });
 
 test('the mobile sidebar has its own reachable close control', () => {

@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { normalizeExamRoomCatalog } from './exam-room-catalog.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -195,17 +196,6 @@ function secondForeignLanguageStudentIds(state, course, rawExam, componentCourse
     .sort();
 }
 
-function roomName(index) {
-  let value = index + 1;
-  let suffix = '';
-  while (value > 0) {
-    value -= 1;
-    suffix = String.fromCharCode(65 + (value % 26)) + suffix;
-    value = Math.floor(value / 26);
-  }
-  return `考场 ${suffix}`;
-}
-
 function normalizeConfig(raw = {}) {
   const slotMinutes = integer(raw.slot_minutes ?? 30, '最小排考时间单位', { minimum: 5, maximum: 60 });
   if (60 % slotMinutes !== 0) throw new Error('最小排考时间单位必须能整除 60 分钟');
@@ -235,18 +225,10 @@ function normalizeConfig(raw = {}) {
     ? configuredRooms.length
     : integer(raw.room_count ?? 10, '同时可用考场上限', { minimum: 1, maximum: 100 });
   if (roomCount < 1) throw new Error('至少需要一个考场');
-  const rooms = configuredRooms
-    ? configuredRooms.map((room, index) => ({
-      id: text(room?.id) || `EXAM_ROOM_${index + 1}`,
-      name: text(room?.name) || roomName(index),
-      capacity: integer(room?.capacity ?? roomCapacity, `第 ${index + 1} 个考场容量`, { minimum: 1, maximum: 200 }),
-    }))
-    : Array.from({ length: roomCount }, (_, index) => ({
-      id: `EXAM_ROOM_${index + 1}`,
-      name: roomName(index),
-      capacity: roomCapacity,
-    }));
-  if (new Set(rooms.map(room => room.id)).size !== rooms.length) throw new Error('考场 ID 不能重复');
+  const rooms = normalizeExamRoomCatalog(
+    configuredRooms || Array.from({ length: roomCount }, () => ({ capacity: roomCapacity })),
+    { fallbackCapacity: roomCapacity },
+  );
 
   const dayStart = text(raw.day_start || '08:00');
   const dayEnd = text(raw.day_end || '17:30');
@@ -333,6 +315,10 @@ export function normalizeExamPlan(state = {}, raw = {}) {
       } : {}),
       ...(grades.length ? { grades } : {}),
       ...(text(rawExam.source_duration) ? { source_duration: text(rawExam.source_duration) } : {}),
+      ...(Number.isInteger(Number(rawExam.source_row)) && Number(rawExam.source_row) > 0
+        ? { source_row: Number(rawExam.source_row) }
+        : {}),
+      ...(text(rawExam.source_sheet) ? { source_sheet: text(rawExam.source_sheet) } : {}),
       roster_mode: rosterMode,
       duration_minutes: durationMinutes,
       duration_units: durationMinutes / config.slot_minutes,
@@ -896,6 +882,27 @@ export function validateExamSchedule(state = {}, rawPlan = {}, schedule = {}) {
     for (let left = 0; left < duties.length; left += 1) for (let right = left + 1; right < duties.length; right += 1) {
       if (sessionsOverlap(duties[left], duties[right])) {
         violations.push({ code: 'TEACHER_EXAM_DUTY_OVERLAP', message: `教师 ${teachers.get(teacherId)?.name || teacherId} 的考试任务发生冲突` });
+        continue;
+      }
+      const gapUnits = gapUnitsBetweenSessions(duties[left], duties[right], time.unitsPerDay);
+      const precedingDuty = duties[left].global_start_unit <= duties[right].global_start_unit
+        ? duties[left]
+        : duties[right];
+      const followingDuty = precedingDuty === duties[left] ? duties[right] : duties[left];
+      const precedingExam = exams.get(precedingDuty.exam_id);
+      const followingExam = exams.get(followingDuty.exam_id);
+      const requiredGapUnits = precedingExam ? time.gapUnitsForExam(precedingExam) : 0;
+      if (gapUnits < requiredGapUnits) {
+        const actualGapMinutes = Math.max(0, gapUnits * plan.config.slot_minutes);
+        const requiredGapMinutes = requiredGapUnits * plan.config.slot_minutes;
+        violations.push({
+          code: 'TEACHER_EXAM_DUTY_GAP_TOO_SHORT',
+          message: `教师 ${teachers.get(teacherId)?.name || teacherId} 的 ${precedingExam?.course_name || precedingDuty.exam_id} 与 ${followingExam?.course_name || followingDuty.exam_id} 考试任务间隔仅 ${actualGapMinutes} 分钟，不足 ${requiredGapMinutes} 分钟`,
+          teacher_id: teacherId,
+          exam_ids: [precedingDuty.exam_id, followingDuty.exam_id],
+          actual_gap_minutes: actualGapMinutes,
+          required_gap_minutes: requiredGapMinutes,
+        });
       }
     }
   }
@@ -985,6 +992,11 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
       BigInt(exam.duration_units + time.gapUnitsForExam(exam)),
       `EXAM_ATTENDEE_INTERVAL_${exam.id}`,
     );
+    const teacherDutyInterval = model.newFixedSizeIntervalVar(
+      start,
+      BigInt(exam.duration_units + time.gapUnitsForExam(exam)),
+      `EXAM_TEACHER_DUTY_INTERVAL_${exam.id}`,
+    );
     const combinedChiefInvigilator = !timetableOnly && isCombinedChiefInvigilatorExam(exam);
     const actualTeacherIds = timetableOnly ? [] : actualTeacherIdsForExam(state, exam);
     const combinedDutyTeachers = combinedChiefInvigilator
@@ -997,7 +1009,7 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
       const assigned = model.newBoolVar(`EXAM_COMBINED_DUTY_${exam.id}_${teacher.id}`);
       const dutyInterval = model.newOptionalFixedSizeIntervalVar(
         start,
-        BigInt(exam.duration_units),
+        BigInt(exam.duration_units + time.gapUnitsForExam(exam)),
         assigned,
         `EXAM_COMBINED_DUTY_INTERVAL_${exam.id}_${teacher.id}`,
       );
@@ -1019,7 +1031,7 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
     if (!timetableOnly && !combinedChiefInvigilator && teachers.length && !chiefTeacherIds.length) {
       throw new Error(`考试 ${exam.course_name} 没有配置教授课程 ${exam.course_id} 的实际任课教师，无法安排巡考`);
     }
-    for (const teacherId of chiefTeacherIds) intervalsByTeacher.get(teacherId).push(interval);
+    for (const teacherId of chiefTeacherIds) intervalsByTeacher.get(teacherId).push(teacherDutyInterval);
     const roomVars = timetableOnly ? [] : plan.config.rooms.map(room => {
       const selected = model.newBoolVar(`EXAM_ROOM_${exam.id}_${room.id}`);
       const combinedRoom = combinedChiefInvigilator
@@ -1038,7 +1050,7 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
           const assigned = model.newBoolVar(`EXAM_INVIGILATOR_${exam.id}_${room.id}_${teacher.id}`);
           const dutyInterval = model.newOptionalFixedSizeIntervalVar(
             start,
-            BigInt(exam.duration_units),
+            BigInt(exam.duration_units + time.gapUnitsForExam(exam)),
             assigned,
             `EXAM_INVIGILATOR_INTERVAL_${exam.id}_${room.id}_${teacher.id}`,
           );

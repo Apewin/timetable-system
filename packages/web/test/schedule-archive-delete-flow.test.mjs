@@ -27,7 +27,7 @@ test('a confirmed archive-card deletion removes only the selected snapshot and r
     '\nasync function loadPastTimetables',
   );
   const deleteArchive = new Function(
-    'window', 'api', 'confirm', 'showToast', 'loadPastTimetables', 'formatArchiveDateTime',
+    'window', 'api', 'confirm', 'showToast', 'loadPastTimetables', 'formatArchiveDateTime', 'scheduleArchiveDisplayName',
     `${deleteSource}; return deleteScheduleArchive;`,
   )(
     browserWindow,
@@ -53,6 +53,7 @@ test('a confirmed archive-card deletion removes only the selected snapshot and r
     (message, type) => toasts.push({ message, type }),
     async () => { reloadCount += 1; },
     value => value,
+    archive => archive.name || archive.id,
   );
 
   await deleteArchive('ARCHIVE_1', button);

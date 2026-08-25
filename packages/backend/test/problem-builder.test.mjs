@@ -49,6 +49,57 @@ test('carries a teacher weekly upper limit from management data into scheduling'
   assert.equal(solution.teacher_id, 'T1');
 });
 
+test('carries a teacher daily upper limit from management data into scheduling', () => {
+  const problem = buildSchedulingProblem({
+    teachers: [{
+      id: 'T1', name: '数学教师', can_teach: ['MATH'], max_per_day: 2, max_per_week: 5,
+    }],
+    rooms: [],
+    courses: [{ id: 'MATH', type: 'required', grade: 11, weekly_hours: 1 }],
+    students: [],
+    admin_classes: [],
+    teaching_classes: [{ id: 'TC1', grade: 11, student_ids: [] }],
+    teaching_assignments: [{
+      id: 'A1', class_type: 'teaching', class_ids: ['TC1'], course_id: 'MATH',
+      teacher_id: 'T1', weekly_hours: 1,
+    }],
+    selection_blocks: [],
+    constraints: [],
+  });
+
+  assert.deepEqual(problem.teacher_limits, [{
+    teacher_id: 'T1',
+    teacher_name: '数学教师',
+    max_per_day: 2,
+    max_per_week: 5,
+  }]);
+});
+
+test('carries a teacher available-slot list from management data into scheduling', () => {
+  const problem = buildSchedulingProblem({
+    teachers: [{
+      id: 'T1', name: '数学教师', can_teach: ['MATH'], available_slots: ['D1P1', 'D2P2'],
+    }],
+    rooms: [],
+    courses: [{ id: 'MATH', type: 'required', grade: 11, weekly_hours: 1 }],
+    students: [],
+    admin_classes: [],
+    teaching_classes: [{ id: 'TC1', grade: 11, student_ids: [] }],
+    teaching_assignments: [{
+      id: 'A1', class_type: 'teaching', class_ids: ['TC1'], course_id: 'MATH',
+      teacher_id: 'T1', weekly_hours: 1,
+    }],
+    selection_blocks: [],
+    constraints: [],
+  });
+
+  assert.deepEqual(problem.teacher_limits, [{
+    teacher_id: 'T1',
+    teacher_name: '数学教师',
+    available_slot_ids: ['D1P1', 'D2P2'],
+  }]);
+});
+
 test('turns a synchronized multi-class activity into a hard same-slot rule', () => {
   const problem = buildSchedulingProblem({
     teachers: [{ id: 'HOMEROOM_ROLE', can_teach: ['ADVISORY'] }],

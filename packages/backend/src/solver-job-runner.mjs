@@ -19,6 +19,7 @@ export function runSolverJob(job, {
   workerUrl = DEFAULT_WORKER_URL,
   timeoutMs = Math.max(5_000, Number(job?.options?.maxTimeSeconds || 120) * 1_000 + 5_000),
   onProgress,
+  signal,
 } = {}) {
   return new Promise((resolve, reject) => {
     const child = fork(fileURLToPath(workerUrl), [], {
@@ -27,15 +28,24 @@ export function runSolverJob(job, {
     });
     let settled = false;
     let stderr = '';
+    let timeout;
+    const abort = () => {
+      child.kill('SIGTERM');
+      finish(reject, solverJobError(
+        'SOLVER_JOB_CANCELLED',
+        '求解作业已取消；原有有效结果未受影响',
+      ));
+    };
     const finish = (action, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
       child.removeAllListeners();
       child.stderr?.removeAllListeners();
       action(value);
     };
-    const timeout = setTimeout(() => {
+    timeout = setTimeout(() => {
       child.kill('SIGKILL');
       finish(reject, solverJobError(
         'SOLVER_WORKER_TIMEOUT',
@@ -72,6 +82,8 @@ export function runSolverJob(job, {
         { exitCode: code, signal },
       ));
     });
+    if (signal?.aborted) return abort();
+    signal?.addEventListener('abort', abort, { once: true });
     child.send({ type: 'solve', job });
   });
 }

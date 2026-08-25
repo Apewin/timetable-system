@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { constructInitialSchedule } from './initial-schedule.mjs';
+import { teacherWorkloadInfeasibility } from './teacher-scheduling-policy.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -60,25 +61,12 @@ function byId(items) { return new Map(items.map(item => [item.id, item])); }
  * hard "no more than three consecutive lessons" rule cannot be satisfied.
  */
 function workloadInfeasibility(problem) {
-  const teacherHours = new Map();
-  for (const section of problem.sections || []) if (section.teacher_id) {
-    teacherHours.set(
-      section.teacher_id,
-      (teacherHours.get(section.teacher_id) || 0) + Number(section.weekly_hours || 0),
-    );
-  }
-  for (const limit of problem.teacher_limits || []) {
-    const maximum = Number(limit.max_per_week);
-    if (!Number.isInteger(maximum) || maximum < 0) continue;
-    const assigned = teacherHours.get(limit.teacher_id) || 0;
-    if (assigned > maximum) return {
-      status: 'INFEASIBLE_BY_TEACHER_WEEKLY_LIMIT',
-      reason: `教师 ${limit.teacher_name || limit.teacher_id} 已分配 ${assigned} 节/周，超过上限 ${maximum} 节/周；请调整教师分工或提高该教师的每周上限`,
-      teacher_id: limit.teacher_id,
-      assigned_weekly_hours: assigned,
-      max_per_week: maximum,
-    };
-  }
+  const teacherInfeasibility = teacherWorkloadInfeasibility({
+    slots: problem.slots,
+    limits: problem.teacher_limits,
+    sections: problem.sections,
+  });
+  if (teacherInfeasibility) return teacherInfeasibility;
   const periodsPerDay = Math.max(...problem.slots.map(slot => slot.period));
   const totalSlots = problem.slots.length;
   const studentHours = new Map();
@@ -822,6 +810,33 @@ export async function solveSchedule(problem, options = {}) {
     for (let index = 0; index < own.length - 1; index++) model.addLessThan(own[index].time, own[index + 1].time);
     if (dailyCourseRules.has(section.course_id) && own.length > 1) model.addAllDifferent(own.map(occurrence => occurrence.day));
     occurrencesBySection.set(section.id, own);
+  }
+  for (const limit of problem.teacher_limits || []) {
+    const teacherOccurrences = occurrences.filter(occurrence =>
+      occurrence.section.teacher_id === limit.teacher_id);
+    const maximum = Number(limit.max_per_day);
+    if (Number.isInteger(maximum) && maximum >= 0) {
+      for (const [dayIndex, day] of days.entries()) {
+        const onDay = teacherOccurrences.map((occurrence, occurrenceIndex) => addEquals(
+          model,
+          occurrence.day,
+          dayIndex,
+          `TEACHER_DAILY_LIMIT_${limit.teacher_id}_${day}_${occurrenceIndex}`,
+        ));
+        model.addLessOrEqual(sum(onDay), BigInt(maximum));
+      }
+    }
+    const availableSlotIds = [...new Set(limit.available_slot_ids || [])];
+    if (availableSlotIds.length) {
+      for (const occurrence of teacherOccurrences) model.addBoolOr(
+        availableSlotIds.map(slotId => addEquals(
+          model,
+          occurrence.time,
+          slotIndex(problem, slotId),
+          `TEACHER_AVAILABLE_${limit.teacher_id}_${occurrence.section.id}_${occurrence.index}_${slotId}`,
+        )),
+      );
+    }
   }
   for (const lock of options.lockedMeetings || []) {
     const own = occurrencesBySection.get(lock.section_id);

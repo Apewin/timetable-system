@@ -2,6 +2,7 @@ import { compileRules } from './rule-compiler.mjs';
 import { buildSections } from './section-builder.mjs';
 import { validateRules } from './rule-schema.mjs';
 import { schedulingPolicyForState } from './scheduling-policy.mjs';
+import { teacherSchedulingLimits } from './teacher-scheduling-policy.mjs';
 
 function synchronizedSelectionBlockRules(state, sections) {
   return (state.selection_blocks || [])
@@ -236,16 +237,14 @@ export function buildSchedulingProblem(state, rules = state.constraints || []) {
     ...apBlockCompactnessRules(sections, manualFillerCourseIds, policy),
   ];
   validateRules(problemRules);
-  const teacherLimits = (state.teachers || []).flatMap(teacher => {
-    const maxPerWeek = Number(teacher.max_per_week);
-    return Number.isInteger(maxPerWeek) && maxPerWeek >= 0 ? [{
-      teacher_id: teacher.id,
-      teacher_name: teacher.name || teacher.id,
-      max_per_week: maxPerWeek,
-    }] : [];
-  });
+  const slots = Array.from({ length: 50 }, (_, index) => ({
+    id: `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`,
+    day: Math.floor(index / 10) + 1,
+    period: index % 10 + 1,
+  }));
+  const teacherLimits = teacherSchedulingLimits(state.teachers || [], slots);
   return {
-    slots: Array.from({ length: 50 }, (_, index) => ({ id: `D${Math.floor(index / 10) + 1}P${index % 10 + 1}`, day: Math.floor(index / 10) + 1, period: index % 10 + 1 })),
+    slots,
     sections,
     teacher_limits: teacherLimits,
     rooms: [],

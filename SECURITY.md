@@ -2,16 +2,36 @@
 
 ## 支持的部署范围
 
-当前版本面向单校、受信任管理员使用。`pnpm start` 默认只监听 `127.0.0.1`，适合本机运行或由已配置身份认证与 TLS 的反向代理提供访问。
+当前版本面向单校、受信任管理员使用。`pnpm start` 默认只监听 `127.0.0.1`，适合本机运行或由已配置 TLS 的反向代理提供访问。
 
-系统尚未内置多租户、账号权限和公网攻击防护。不要把进程直接暴露到互联网；校园内网部署也应由反向代理限制来源、启用 HTTPS，并由学校统一身份系统负责认证。
+系统提供可选的单管理员密码保护，但没有多租户、细粒度角色权限、密码找回或学校统一身份集成。不要把进程直接暴露到互联网；校园内网部署也应由反向代理限制来源并启用 HTTPS。条件允许时，应优先由学校统一身份系统在反向代理层认证。
+
+## 登录、会话与请求边界
+
+默认 `TIMETABLE_AUTH_MODE=off`，API 请求被标记为 `trusted-lan`。要启用内置保护，必须同时配置：
+
+```bash
+TIMETABLE_AUTH_MODE=password
+TIMETABLE_ADMIN_PASSWORD='强密码'
+TIMETABLE_SESSION_SECRET='至少32字符的高熵随机密钥'
+```
+
+可用 `openssl rand -hex 32` 生成会话密钥。`TIMETABLE_SESSION_TTL_HOURS` 默认为 12，必须大于 0 且不超过 168 小时；`TIMETABLE_LOGIN_MAX_FAILURES` 默认为 5，`TIMETABLE_LOGIN_WINDOW_SECONDS` 默认为 300。登录保护使用 HMAC 签名、HttpOnly、SameSite=Strict Cookie；当反向代理传入 `X-Forwarded-Proto: https` 时会附加 Secure。所有带 `Origin` 的写请求必须与当前 Host 同源。
+
+密码和会话密钥不得写入仓库、命令历史、日志或截图。内置密码模式只有一个管理员身份，不应用于需要按人员追责或分级授权的场景。
+
+## 操作审计
+
+所有非 GET API 操作（包括失败尝试）会追加到 `<状态文件>.audit.jsonl`，可用 `TIMETABLE_AUDIT_FILE` 指定受保护路径。记录仅包含时间、操作者、HTTP 方法、接口路径、状态码和来源 IP，不保存请求正文、密码或学生名单。文件以当前系统用户私有权限创建；“系统状态”页可查看最近记录。
 
 ## 敏感数据
 
-- `timetable.json`、`backups/`、`outputs/` 包含学生、教师或课表信息，已被 Git 忽略。
+- `timetable.json`、`*.json.backups/`、`*.jobs.json`、`*.audit.jsonl`、`backups/`、`outputs/` 包含学生、教师、课表、操作或运行信息，已被 Git 忽略。
 - `.env.local` 包含模型 API Key，文件权限由程序写入时限制为当前用户可读写。
 - 默认 Excel 模板可以提交；由系统生成的已填课表不得提交到代码仓库。
 - 发布前运行 `pnpm check`，并按 `RELEASE_CHECKLIST.md` 检查待提交文件。
+
+状态仓库每次写入前自动复制旧状态，默认保留 30 份。可用 `STATE_BACKUP_DIR` 把备份放到加密或受限目录，用 `STATE_BACKUP_RETENTION` 调整保留数量。设置页只展示后端生成的备份 ID 和数据量摘要，不泄露服务器文件路径；恢复操作要求输入精确确认词并携带当前 revision，且恢复前仍会自动备份当前状态。备份不等于离机容灾；生产环境仍应定期把加密备份复制到另一台受控设备并验证恢复。
 
 ## 模型数据边界
 

@@ -1,6 +1,8 @@
 const ARCHIVE_CONTEXT_KEYS = [
   'meta', 'courses', 'teachers', 'rooms', 'students',
   'admin_classes', 'teaching_classes', 'constraints',
+  'teaching_assignments', 'teaching_tasks', 'selection_blocks',
+  'section_plan', 'ap_block_config', 'scheduling_policy',
 ];
 
 function copy(value) {
@@ -12,6 +14,7 @@ export function archiveSummary(archive) {
   return {
     id: archive.id,
     name: archive.name,
+    notes: archive.notes || '',
     saved_at: archive.saved_at,
     schedule_version: archive.schedule_version ?? schedule.version ?? null,
     solver_status: schedule.solver_status || null,
@@ -27,7 +30,12 @@ export function archiveSummary(archive) {
   };
 }
 
-export function createScheduleArchive(state, { id, savedAt = new Date().toISOString(), name } = {}) {
+export function createScheduleArchive(state, {
+  id,
+  savedAt = new Date().toISOString(),
+  name,
+  notes,
+} = {}) {
   if (!state.schedule) throw new Error('尚未生成课表，无法储存');
   if (!id) throw new Error('课表归档缺少唯一 ID');
   const schedule = copy(state.schedule);
@@ -36,10 +44,13 @@ export function createScheduleArchive(state, { id, savedAt = new Date().toISOStr
   // meetings and dominate archive size. Store the compact source data and
   // reconstruct assignments only when an old timetable is opened.
   delete schedule.assignments;
-  const context = Object.fromEntries(ARCHIVE_CONTEXT_KEYS.map(key => [key, copy(state[key] ?? [])]));
+  const context = Object.fromEntries(ARCHIVE_CONTEXT_KEYS
+    .filter(key => state[key] !== undefined)
+    .map(key => [key, copy(state[key])]));
   return {
     id,
-    name: name || `课表存档 · ${savedAt}`,
+    name: String(name || '').trim() || '未命名课表',
+    notes: String(notes || '').trim(),
     saved_at: savedAt,
     schedule_version: schedule.version ?? null,
     assignments_count: assignmentsCount,
@@ -76,5 +87,22 @@ export function stateForScheduleArchive(archive) {
     // An archive is immutable historical output. It must not inherit the
     // current state's stale flag after courses or enrolments are edited.
     solve_status: 'valid',
+  };
+}
+
+export function restoreStateFromScheduleArchive(state, archive, { safetyArchive = null } = {}) {
+  const archivedState = stateForScheduleArchive(archive);
+  const existingArchives = copy(state.schedule_archives || []);
+  const scheduleArchives = safetyArchive
+    ? [copy(safetyArchive), ...existingArchives.filter(item => item.id !== safetyArchive.id)]
+    : existingArchives;
+  return {
+    ...copy(state),
+    ...archivedState,
+    schedule_archives: scheduleArchives,
+    // A draft belongs to the timetable that was active when it was created.
+    // Keeping it after a restore could silently reapply locks to unrelated
+    // sections, so the restored schedule starts without a mutable draft.
+    manual_plan: null,
   };
 }

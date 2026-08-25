@@ -86,6 +86,20 @@ test('defaults to fifteen-minute breaks and thirty minutes after the longest exa
   assert.equal(plan.config.longest_exam_gap_minutes, 30);
 });
 
+test('rejects duplicate managed exam room names', () => {
+  assert.throws(() => normalizeExamPlan(schoolState(), {
+    config: {
+      day_count: 3,
+      room_capacity: 30,
+      rooms: [
+        { id: 'HALL_1', name: '报告厅', capacity: 30 },
+        { id: 'HALL_2', name: '  报告厅 ', capacity: 30 },
+      ],
+    },
+    exams: [{ id: 'EXAM_MATH', course_id: 'MATH', duration_minutes: 60 }],
+  }), /考场名称不能重复/);
+});
+
 test('normalizes separate exam-day limits for senior one, two, and three', () => {
   const state = {
     courses: [{ id: 'MATH', name: '数学', type: 'required', grade: 10 }],
@@ -945,6 +959,69 @@ test('independent validation rejects a timetable that violates the dynamic rest 
   assert.equal(validation.ok, false);
   assert.equal(validation.violations.some(item => item.code === 'GRADE_EXAM_GAP_TOO_SHORT'), true);
   assert.equal(validation.violations.some(item => item.message.includes('不足 30 分钟')), true);
+});
+
+test('independent validation rejects exam duties without the dynamic teacher transition gap', async () => {
+  const courses = [
+    { id: 'PSY_G11', name: '高二心理', type: 'required', grade: 11 },
+    { id: 'PSY_G12', name: '高三心理', type: 'required', grade: 12 },
+  ];
+  const state = {
+    courses,
+    students: [
+      { id: 'S11', name: '高二学生', grade: 11 },
+      { id: 'S12', name: '高三学生', grade: 12 },
+    ],
+    teachers: [
+      { id: 'T_PSY', name: '付晓萌' },
+      { id: 'T_INV_A', name: '监考教师甲' },
+      { id: 'T_INV_B', name: '监考教师乙' },
+    ],
+    teaching_assignments: [
+      { id: 'TA_PSY_G11', teacher_id: 'T_PSY', course_id: 'PSY_G11' },
+      { id: 'TA_PSY_G12', teacher_id: 'T_PSY', course_id: 'PSY_G12' },
+    ],
+  };
+  const solved = await solveExamSchedule(state, {
+    config: {
+      day_count: 3,
+      day_start: '08:00',
+      day_end: '12:30',
+      slot_minutes: 5,
+      breaks: [],
+      room_count: 1,
+      room_capacity: 30,
+      invigilators_per_room: 1,
+      require_every_teacher_invigilates: false,
+    },
+    exams: courses.map(course => ({
+      id: `EXAM_${course.id}`,
+      course_id: course.id,
+      duration_minutes: 110,
+    })),
+  });
+  const solvedDuties = [...solved.sessions].sort((left, right) =>
+    left.global_start_unit - right.global_start_unit);
+  const solvedGapMinutes = (solvedDuties[1].global_start_unit - solvedDuties[0].end_unit)
+    * solved.plan.config.slot_minutes;
+  assert.equal(solved.validation.ok, true);
+  assert.ok(solvedGapMinutes >= 30);
+  const invalid = structuredClone(solved);
+  const [first, second] = invalid.sessions;
+  const durationUnits = first.duration_minutes / solved.plan.config.slot_minutes;
+  second.day_index = first.day_index;
+  second.global_start_unit = first.global_start_unit + durationUnits;
+  second.start_unit = first.start_unit + durationUnits;
+  second.end_unit = second.start_unit + durationUnits;
+
+  const validation = validateExamSchedule(state, solved.plan, invalid);
+  const transitionViolation = validation.violations.find(item =>
+    item.code === 'TEACHER_EXAM_DUTY_GAP_TOO_SHORT' && item.teacher_id === 'T_PSY');
+
+  assert.equal(validation.ok, false);
+  assert.ok(transitionViolation);
+  assert.match(transitionViolation.message, /付晓萌/);
+  assert.match(transitionViolation.message, /不足 30 分钟/);
 });
 
 test('independent validation rejects an exam beyond its grade-specific day limit', async () => {
