@@ -13,7 +13,10 @@ test('settings exposes automatic state versions with comparison and safe restore
   assert.match(appSource, /api\('\/state-backups'/);
   assert.match(appSource, /function renderStateBackups/);
   assert.match(appSource, /与当前相比/);
-  assert.match(appSource, /prompt\('请输入“恢复此版本”/);
+  assert.match(appSource, /id="form-restore-state-backup"/);
+  assert.match(appSource, /确认词尚未匹配，系统不会执行恢复/);
+  assert.match(appSource, /正在创建当前版本备份并恢复所选数据/);
+  assert.doesNotMatch(appSource, /prompt\(/);
   assert.match(appSource, /confirmation: '恢复此版本'/);
   assert.match(appSource, /expected_revision: revision/);
 });

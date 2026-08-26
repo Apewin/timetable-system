@@ -3291,6 +3291,14 @@ async function renderScheduleEditorTimetable() {
       '拖动单门课程到空格会进行完整硬约束校验；分流格和上下行政班格请保留原位。',
       { editorMode: true, compact: true },
     );
+    grid.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
+      cell.setAttribute('role', 'button');
+      cell.setAttribute('tabindex', '0');
+      const slotLabel = cell.dataset.slotId || '目标时段';
+      cell.setAttribute('aria-label', cell.classList.contains('has-class')
+        ? `选择${cell.textContent.trim() || '课程'}，当前时段 ${slotLabel}`
+        : `把已选择项目放入 ${slotLabel}`);
+    });
     grid.querySelectorAll('[data-schedule-overlay-id]').forEach(button => {
       button.addEventListener('click', async () => {
         if (!confirm('删除这个自习或特殊事件标注吗？')) return;
@@ -8103,6 +8111,97 @@ let draggedTeacherId = null;
 let draggedTeacherContainer = null;
 let teacherDropCandidates = new Map();
 let teacherCandidateRequestId = 0;
+let selectedScheduleEditorTask = null;
+let selectedScheduleEditorFromSlot = null;
+let selectedScheduleEditorTemplate = null;
+
+function clearScheduleEditorClickState() {
+  document.querySelectorAll('#view-schedule-editor .is-click-selected').forEach(element => {
+    element.classList.remove('is-click-selected');
+    if (element.matches('.schedule-editor-tool')) element.setAttribute('aria-pressed', 'false');
+  });
+  selectedScheduleEditorTask = null;
+  selectedScheduleEditorFromSlot = null;
+  selectedScheduleEditorTemplate = null;
+}
+
+function setScheduleEditorSelectionStatus(message) {
+  const status = document.getElementById('schedule-editor-status');
+  if (status) status.textContent = message;
+}
+
+async function moveScheduleEditorCourse(taskId, fromSlot, toSlot) {
+  const result = await api('/swap', {
+    method: 'POST',
+    body: JSON.stringify({ task_id: taskId, from_slot: fromSlot, to_slot: toSlot }),
+  });
+  clearScheduleEditorClickState();
+  showToast(result.message, 'success');
+  await refreshCurrentTimetable();
+  setScheduleEditorSelectionStatus(`${result.message}；可以继续选择课程或编辑工具。`);
+}
+
+async function handleScheduleEditorClick(target) {
+  if (!target.closest('#view-schedule-editor')) return;
+  if (target.closest('[data-schedule-overlay-id]')) return;
+  const templateCard = target.closest('.schedule-editor-tool[data-schedule-template]');
+  if (templateCard) {
+    try {
+      const selectedTemplate = scheduleEditorTemplateFromCard(templateCard);
+      const alreadySelected = templateCard.classList.contains('is-click-selected');
+      clearScheduleEditorClickState();
+      if (alreadySelected) {
+        setScheduleEditorSelectionStatus('已取消编辑工具选择；可以重新选择课程或工具。');
+        return;
+      }
+      selectedScheduleEditorTemplate = selectedTemplate;
+      templateCard.classList.add('is-click-selected');
+      templateCard.setAttribute('aria-pressed', 'true');
+      setScheduleEditorSelectionStatus(`已选择“${selectedTemplate.title}”；现在点击课表中的目标空格。`);
+    } catch (error) {
+      showToast(error.message, 'warning');
+      setScheduleEditorSelectionStatus(error.message);
+    }
+    return;
+  }
+
+  const slotCell = target.closest('.slot-cell[data-slot-id]');
+  if (!slotCell) return;
+  if (slotCell.classList.contains('has-class')) {
+    if (!slotCell.dataset.taskId) {
+      showToast('这个组合课程格不能单独移动', 'warning');
+      return;
+    }
+    const alreadySelected = slotCell.classList.contains('is-click-selected');
+    clearScheduleEditorClickState();
+    if (alreadySelected) {
+      setScheduleEditorSelectionStatus('已取消课程选择；可以重新选择课程或编辑工具。');
+      return;
+    }
+    selectedScheduleEditorTask = slotCell.dataset.taskId;
+    selectedScheduleEditorFromSlot = slotCell.dataset.slotId;
+    slotCell.classList.add('is-click-selected');
+    setScheduleEditorSelectionStatus(`已选择“${slotCell.textContent.trim() || '课程'}”；现在点击一个目标空格，系统会先校验再调整。`);
+    return;
+  }
+  if (slotCell.classList.contains('has-schedule-overlay')) return;
+  if (selectedScheduleEditorTemplate) {
+    const template = selectedScheduleEditorTemplate;
+    clearScheduleEditorClickState();
+    await addScheduleEditorOverlay(template, slotCell.dataset.slotId);
+    return;
+  }
+  if (selectedScheduleEditorTask && selectedScheduleEditorFromSlot) {
+    await moveScheduleEditorCourse(
+      selectedScheduleEditorTask,
+      selectedScheduleEditorFromSlot,
+      slotCell.dataset.slotId,
+    );
+    return;
+  }
+  showToast('请先选择一门课程或右侧编辑工具', 'info');
+  setScheduleEditorSelectionStatus('请先选择一门课程、自习或特殊事件，再点击目标空格。');
+}
 
 function clearTimetableDragState() {
   document.querySelectorAll('.slot-cell.dragging, .schedule-editor-tool.dragging').forEach(element => {
@@ -8183,6 +8282,7 @@ function initDragAndDrop() {
   // Keeping dragend here (rather than inside a successful refresh callback)
   // guarantees that cancelled or rejected drops restore the course color.
   document.addEventListener('dragstart', (e) => {
+    clearScheduleEditorClickState();
     const templateCard = e.target.closest('.schedule-editor-tool[data-schedule-template]');
     if (templateCard) {
       try {
@@ -8288,6 +8388,16 @@ function initDragAndDrop() {
   });
 
   document.addEventListener('dragend', clearTimetableDragState);
+  document.addEventListener('click', event => {
+    void handleScheduleEditorClick(event.target).catch(() => {});
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const interactive = event.target.closest('#view-schedule-editor .slot-cell[data-slot-id], #view-schedule-editor .schedule-editor-tool[data-schedule-template]');
+    if (!interactive) return;
+    event.preventDefault();
+    interactive.click();
+  });
 }
 
 // 刷新当前课表视图
@@ -8928,9 +9038,17 @@ function setAiAssistantCollapsed(collapsed) {
 
 async function sendAiAssistantMessage(rawMessage) {
   const message = String(rawMessage || '').trim();
-  if (!message || aiAssistantBusy) return;
   const input = document.getElementById('ai-assistant-input');
   const sendButton = document.getElementById('btn-ai-assistant-send');
+  if (!message) {
+    setAiAssistantStatus('请先输入问题，或选择一个快捷提问。');
+    input?.focus();
+    return;
+  }
+  if (aiAssistantBusy) {
+    setAiAssistantStatus('上一条问题仍在分析，请稍候。');
+    return;
+  }
   const context = aiAssistantContext();
   const contextKey = aiAssistantContextKey(context);
   const history = aiAssistantConversation
@@ -11152,6 +11270,12 @@ async function updateExportTargets() {
   target.innerHTML = options;
 }
 
+function timetableScheduledCellCount(data) {
+  return (data?.rows || []).reduce((total, row) => (
+    total + (Array.isArray(row) ? row.slice(1).filter(Boolean).length : 0)
+  ), 0);
+}
+
 // 预览导出内容
 window.previewExport = async function() {
   const dimension = document.getElementById('export-dimension').value;
@@ -11215,9 +11339,10 @@ window.previewExport = async function() {
       return;
     }
 
+    const scheduledCount = timetableScheduledCellCount(data);
     let html = `
       <div style="margin-bottom: 12px; color: var(--gray-600);">
-        ${data.title} | 共 ${data.rows.length} 节课
+        ${data.title} | 已排 ${scheduledCount} 节课${data.stale ? ' · 当前课表需要重排' : ''}
       </div>
       <div class="export-preview-content">
         <table>
@@ -11320,8 +11445,8 @@ window.exportTimetable = async function() {
     // 获取课表数据
     const data = await api(`/timetable/${dimension}/${target || 'all'}`);
 
-    if (!data || !data.rows || data.rows.length === 0) {
-      showToast('无排课数据可导出', 'warning');
+    if (!data || !data.rows || data.rows.length === 0 || data.stale || timetableScheduledCellCount(data) === 0) {
+      showToast(data?.stale ? '当前没有有效排课结果，请先完成排课再导出' : '无排课数据可导出', 'warning');
       return;
     }
 
@@ -12735,26 +12860,73 @@ window.loadStateBackups = async function(currentCounts = window._stateBackupCurr
 };
 
 window.restoreStateBackup = async function(backupId, revision) {
-  if (!confirm('恢复旧版本会让当前学生、教师、课程、选课和课表回到当时状态。当前版本会先自动备份，是否继续？')) return;
-  if (prompt('请输入“恢复此版本”确认操作：') !== '恢复此版本') {
-    showToast('确认词不正确，未恢复任何数据', 'warning');
+  const status = document.getElementById('settings-backup-status');
+  if (!backupId) {
+    showToast('没有找到要恢复的数据版本', 'warning');
     return;
   }
-  const status = document.getElementById('settings-backup-status');
-  document.querySelectorAll('[data-restore-backup-id]').forEach(button => { button.disabled = true; });
-  try {
-    const result = await api(`/state-backups/${encodeURIComponent(backupId)}/restore`, {
-      method: 'POST',
-      body: JSON.stringify({ expected_revision: revision, confirmation: '恢复此版本' }),
-      computation: false,
-    });
-    if (status) status.textContent = `已恢复为新的数据版本 r${result.revision}，正在重新载入系统…`;
-    showToast('版本恢复成功，正在重新载入', 'success');
-    setTimeout(() => window.location.reload(), 700);
-  } catch (error) {
-    if (status) status.textContent = `恢复失败：${error.message}`;
-    document.querySelectorAll('[data-restore-backup-id]').forEach(button => { button.disabled = false; });
-  }
+  let restoreSubmitted = false;
+  showModal('恢复数据版本', `
+    <form id="form-restore-state-backup">
+      <div class="validation-result warning">
+        <strong>这会恢复整套业务数据</strong>
+        <p>当前学生、教师、课程、选课和课表将回到所选版本。执行前系统会自动备份当前版本。</p>
+      </div>
+      <div class="form-group">
+        <label for="state-backup-confirmation">请输入“恢复此版本”确认操作</label>
+        <input id="state-backup-confirmation" name="confirmation" autocomplete="off" required autofocus>
+      </div>
+      <p id="state-backup-restore-feedback" class="form-hint" role="status">尚未执行任何恢复操作。</p>
+      <div class="form-actions">
+        <button type="button" id="state-backup-restore-cancel" class="btn btn-secondary">取消</button>
+        <button type="submit" id="state-backup-restore-submit" class="btn btn-danger" disabled>恢复此版本</button>
+      </div>
+    </form>
+  `, {
+    onClose: () => {
+      if (!restoreSubmitted && status) status.textContent = '已取消恢复；当前数据没有变化。';
+    },
+  });
+  if (status) status.textContent = '请在弹窗中输入确认词；当前数据尚未改变。';
+  const form = document.getElementById('form-restore-state-backup');
+  const confirmation = document.getElementById('state-backup-confirmation');
+  const submit = document.getElementById('state-backup-restore-submit');
+  const feedback = document.getElementById('state-backup-restore-feedback');
+  document.getElementById('state-backup-restore-cancel').addEventListener('click', hideModal);
+  confirmation.addEventListener('input', () => {
+    submit.disabled = confirmation.value.trim() !== '恢复此版本';
+    feedback.textContent = submit.disabled ? '确认词尚未匹配，系统不会执行恢复。' : '确认词正确；提交后开始恢复。';
+  });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (confirmation.value.trim() !== '恢复此版本') {
+      feedback.textContent = '确认词不正确，未恢复任何数据。';
+      showToast('确认词不正确，未恢复任何数据', 'warning');
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = '正在恢复…';
+    feedback.textContent = '正在创建当前版本备份并恢复所选数据，请勿关闭窗口…';
+    document.querySelectorAll('[data-restore-backup-id]').forEach(button => { button.disabled = true; });
+    try {
+      const result = await api(`/state-backups/${encodeURIComponent(backupId)}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ expected_revision: revision, confirmation: '恢复此版本' }),
+        computation: false,
+      });
+      restoreSubmitted = true;
+      if (status) status.textContent = `已恢复为新的数据版本 r${result.revision}，正在重新载入系统…`;
+      hideModal();
+      showToast('版本恢复成功，正在重新载入', 'success');
+      setTimeout(() => window.location.reload(), 700);
+    } catch (error) {
+      feedback.textContent = `恢复失败：${error.message}`;
+      if (status) status.textContent = `恢复失败：${error.message}`;
+      submit.disabled = false;
+      submit.textContent = '恢复此版本';
+      document.querySelectorAll('[data-restore-backup-id]').forEach(button => { button.disabled = false; });
+    }
+  });
 };
 
 // 加载设置页面

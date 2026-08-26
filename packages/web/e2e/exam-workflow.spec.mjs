@@ -47,6 +47,7 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
   const savedExamPlan = await (await page.request.get('/api/exams')).json();
   expect(savedExamPlan.data.plan.config.rooms.map(room => room.name)).toContain('报告厅');
   expect(savedExamPlan.data.plan.config.rooms.map(room => room.name)).toEqual(['报告厅']);
+  expect(savedExamPlan.data.plan.config.breaks).toEqual([]);
   const timetableAccepted = page.waitForResponse(response =>
     response.url().endsWith('/api/exams/solve') && response.status() === 202);
   await page.getByRole('button', { name: '生成考试时间表' }).click();

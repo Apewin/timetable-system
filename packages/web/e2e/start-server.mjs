@@ -5,6 +5,13 @@ import process from 'node:process';
 
 const directory = mkdtempSync(join(tmpdir(), 'timetable-browser-e2e-'));
 const stateFile = join(directory, 'state.json');
+const aiConfigFile = join(directory, 'ai.env');
+writeFileSync(aiConfigFile, [
+  'DEEPSEEK_API_KEY=browser-e2e-placeholder',
+  'DEEPSEEK_API_URL=http://127.0.0.1:9',
+  'DEEPSEEK_MODEL=browser-e2e',
+  '',
+].join('\n'), { encoding: 'utf8', mode: 0o600 });
 writeFileSync(stateFile, `${JSON.stringify({
   schema_version: 1,
   version: '0.1.0',
@@ -35,6 +42,7 @@ writeFileSync(stateFile, `${JSON.stringify({
     id: 'TA_MATH', teacher_id: 'T_MATH', course_id: 'MATH',
     class_id: 'G10T', class_ids: ['G10T'], class_type: 'teaching', weekly_hours: 1,
   }],
+  teaching_tasks: [],
   selection_blocks: [],
   constraints: [],
 }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -44,6 +52,13 @@ process.env.STATE_BACKUP_DIR = join(directory, 'backups');
 process.env.TIMETABLE_JOB_FILE = join(directory, 'jobs.json');
 process.env.TIMETABLE_AUDIT_FILE = join(directory, 'audit.jsonl');
 process.env.TIMETABLE_AUTH_MODE = 'off';
+process.env.TIMETABLE_ENV_FILE = aiConfigFile;
+// Environment variables take precedence over the temporary config file in
+// production. Override them as well so browser tests can never contact a
+// developer's real model endpoint or use their API key.
+process.env.DEEPSEEK_API_KEY = 'browser-e2e-placeholder';
+process.env.DEEPSEEK_API_URL = 'http://127.0.0.1:9';
+process.env.DEEPSEEK_MODEL = 'browser-e2e';
 
 const { startServer } = await import('../../backend/src/server.mjs');
 const server = startServer({ port: 4177, host: '127.0.0.1' });

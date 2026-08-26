@@ -14,7 +14,8 @@ import {
 } from './assistant-cli-tools.mjs';
 import { previewClearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
 
-const envFile = fileURLToPath(new URL('../../../.env.local', import.meta.url));
+const envFile = process.env.TIMETABLE_ENV_FILE
+  || fileURLToPath(new URL('../../../.env.local', import.meta.url));
 const DEFAULT_API_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const supportedTypes = new Set(['students', 'generic', 'ap_selections', 'elective_selections']);

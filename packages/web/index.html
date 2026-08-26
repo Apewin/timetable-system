@@ -756,8 +756,8 @@
             </section>
             <aside class="schedule-editor-toolbox" aria-label="课表编辑工具">
               <h3>编辑工具</h3>
-              <p class="schedule-editor-tool-hint">拖动卡片到空白格。特殊事件长度表示同一天连续占用的节数。</p>
-              <div class="schedule-editor-tool self-study" draggable="true" data-schedule-template="self_study">
+              <p class="schedule-editor-tool-hint">可以拖动卡片，也可以先点击卡片再点击目标空格。特殊事件长度表示同一天连续占用的节数。</p>
+              <div class="schedule-editor-tool self-study" role="button" tabindex="0" aria-pressed="false" draggable="true" data-schedule-template="self_study">
                 <strong>自习</strong>
                 <span>拖入一个空白格</span>
               </div>
@@ -772,7 +772,7 @@
                   <input id="schedule-editor-event-color" type="color" value="#7e57c2">
                 </label>
               </div>
-              <div id="schedule-editor-special-template" class="schedule-editor-tool special-event" draggable="true" data-schedule-template="special_event">
+              <div id="schedule-editor-special-template" class="schedule-editor-tool special-event" role="button" tabindex="0" aria-pressed="false" draggable="true" data-schedule-template="special_event">
                 <strong>特殊事件</strong>
                 <span>填写名称后拖入起始空格</span>
               </div>

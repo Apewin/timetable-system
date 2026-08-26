@@ -272,7 +272,7 @@ body {
 
 .ai-assistant-messages {
   flex: 1;
-  min-height: 180px;
+  min-height: 0;
   padding: 14px;
   overflow-y: auto;
   background: #fcfdff;
@@ -325,6 +325,7 @@ body {
 .ai-assistant-action-complete { border-color: #a5d6a7; background: #f1f8e9; }
 
 .ai-assistant-composer {
+  flex: 0 0 auto;
   padding: 12px;
   border-top: 1px solid var(--gray-200);
   background: var(--white);
@@ -1184,6 +1185,17 @@ tr:hover {
 
 .schedule-editor-tool:active { cursor: grabbing; }
 .schedule-editor-tool.dragging { opacity: .5; }
+.schedule-editor-tool.is-click-selected,
+#view-schedule-editor .slot-cell.is-click-selected {
+  outline: 3px solid color-mix(in srgb, var(--primary) 42%, transparent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--white), 0 5px 14px rgba(24, 24, 27, .14);
+}
+.schedule-editor-tool:focus-visible,
+#view-schedule-editor .slot-cell:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 34%, transparent);
+  outline-offset: 2px;
+}
 .schedule-editor-tool strong { font-size: 16px; }
 .schedule-editor-tool span { color: var(--gray-600); font-size: 12px; }
 .schedule-editor-tool.self-study { --schedule-editor-tool-color: #546e7a; --schedule-editor-tool-surface: #eceff1; }
@@ -7295,6 +7307,8 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
   .ai-assistant-sidebar {
     position: fixed;
     inset: 64px 0 0 auto;
+    height: auto;
+    min-height: 0;
     z-index: 140;
     width: min(380px, 94vw);
     min-width: 0;
