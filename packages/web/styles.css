@@ -7159,6 +7159,14 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
   box-shadow: 0 6px 18px rgba(24, 24, 27, .08);
   transform: translateY(-1px);
 }
+.manual-course-card.is-selected {
+  border-color: color-mix(in srgb, var(--primary) 72%, var(--manual-course-accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent), 0 8px 20px rgba(24, 24, 27, .1);
+}
+.manual-course-card:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  outline-offset: 2px;
+}
 .manual-course-card.is-dragging { opacity: .45; transform: scale(.985); }
 .manual-course-card.is-disabled { background: var(--shell-background); filter: saturate(.45); opacity: .76; }
 .manual-course-card.is-bundle { border-left-width: 3px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--manual-course-accent) 8%, transparent); }

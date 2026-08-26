@@ -282,10 +282,13 @@ function finishAiProcessing(runId, { error = false } = {}) {
   }, error ? 1500 : 800);
 }
 
-function showModal(title, content) {
+let activeModalOnClose = null;
+
+function showModal(title, content, { onClose = null } = {}) {
   const modal = document.getElementById('modal');
   const modalTitle = document.getElementById('modal-title');
   const modalBody = document.getElementById('modal-body');
+  activeModalOnClose = typeof onClose === 'function' ? onClose : null;
   modalTitle.textContent = title;
   modalBody.innerHTML = content;
   modal.classList.remove('hidden');
@@ -293,6 +296,9 @@ function showModal(title, content) {
 
 function hideModal() {
   document.getElementById('modal').classList.add('hidden');
+  const onClose = activeModalOnClose;
+  activeModalOnClose = null;
+  onClose?.();
 }
 
 // 生成课程选择界面（下拉菜单方式）
@@ -1585,6 +1591,7 @@ const MANUAL_TIMETABLE_STORAGE_KEY = 'timetable.manual-drafts.v1';
 const MANUAL_COURSE_PANEL_STORAGE_KEY = 'timetable.manual-course-panel-expanded.v1';
 const MANUAL_DRAFT_UNDO_LIMIT = 20;
 let manualDraftUndoStack = [];
+let manualSelectedItemId = '';
 
 function readManualDrafts() {
   try { return JSON.parse(localStorage.getItem(MANUAL_TIMETABLE_STORAGE_KEY) || '{}'); }
@@ -2120,7 +2127,7 @@ function renderManualCoursePool() {
         `${escapeHtml(progress.className)}：${progress.remaining ? `剩 ${progress.remaining} 节` : '已排完'}`).join(' · ')}</span>`
       : '';
     return `
-    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${disabled ? 'is-disabled' : ''}" role="listitem" aria-disabled="${disabled ? 'true' : 'false'}" draggable="${disabled ? 'false' : 'true'}" data-manual-item-id="${safeDataAttribute(item.id)}" data-manual-placement-scope="${safeDataAttribute(item.placement_scope || 'class')}" title="${safeDataAttribute(technicalLabel)}">
+    <div class="manual-course-card category-${category} ${item.kind === 'bundle' ? 'is-bundle' : ''} ${disabled ? 'is-disabled' : ''} ${manualSelectedItemId === item.id ? 'is-selected' : ''}" role="button" tabindex="${disabled ? '-1' : '0'}" aria-disabled="${disabled ? 'true' : 'false'}" aria-pressed="${manualSelectedItemId === item.id ? 'true' : 'false'}" draggable="${disabled ? 'false' : 'true'}" data-manual-item-id="${safeDataAttribute(item.id)}" data-manual-placement-scope="${safeDataAttribute(item.placement_scope || 'class')}" title="${safeDataAttribute(technicalLabel)}">
       <div class="manual-course-card-header">
         <span class="manual-course-drag-handle" aria-hidden="true">⠿</span>
         <div class="manual-course-name">${escapeHtml(item.name)}</div>
@@ -2133,6 +2140,22 @@ function renderManualCoursePool() {
   }).join('') || '<div class="empty-state"><p>没有符合当前筛选条件的课程</p><small>可以清除搜索词或切换筛选条件</small></div>';
   if (locked) return;
   pool.querySelectorAll('.manual-course-card').forEach(card => {
+    const selectCard = () => {
+      manualSelectedItemId = manualSelectedItemId === card.dataset.manualItemId
+        ? ''
+        : card.dataset.manualItemId;
+      renderManualCoursePool();
+      renderManualPlanControls(manualSelectedItemId
+        ? `已选择“${manualStoredItem(manualSelectedItemId, manualCurrentClassId())?.name || manualSelectedItemId}”；现在点击课表中的目标时段即可放入，也可以直接拖动。`
+        : '已取消课程选择；可以重新选择课程或直接拖动。');
+    };
+    card.addEventListener('click', selectCard);
+    card.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectCard();
+      }
+    });
     card.addEventListener('dragstart', event => {
       event.dataTransfer.effectAllowed = 'copy';
       event.dataTransfer.setData('application/x-manual-item', card.dataset.manualItemId);
@@ -2333,6 +2356,23 @@ function openManualAdminPlacementDialog(teachingClassId, slotId, itemId) {
       hideModal();
     });
   });
+}
+
+function placeManualItemOnTarget(target, itemId) {
+  if (!itemId) {
+    showToast('请先从右侧选择一门课程，或把课程卡拖到这里', 'info');
+    return;
+  }
+  manualSelectedItemId = '';
+  const targetClass = window._manualClassesById?.get(target.dataset.targetClassId);
+  const item = manualStoredItem(itemId, target.dataset.targetClassId);
+  if (target.dataset.manualPlacementMode === 'teaching-or-admin'
+    && targetClass?.class_type === 'teaching'
+    && item?.placement_scope === 'admin') {
+    openManualAdminPlacementDialog(target.dataset.targetClassId, target.dataset.slotId, itemId);
+    return;
+  }
+  saveManualCourseToSlot(target.dataset.slotId, itemId, target.dataset.targetClassId);
 }
 
 function manualCourseSlotMarkup({ item, slotId, targetClassId, conflictReasons = [], label = '', placeholder = '拖入课程' }) {
@@ -2549,15 +2589,11 @@ function renderManualTimetableGrid() {
       const itemId = event.dataTransfer.getData('application/x-manual-item')
         || event.dataTransfer.getData('application/x-manual-course')
         || event.dataTransfer.getData('text/plain');
-      const targetClass = window._manualClassesById?.get(target.dataset.targetClassId);
-      const item = manualStoredItem(itemId, target.dataset.targetClassId);
-      if (target.dataset.manualPlacementMode === 'teaching-or-admin'
-        && targetClass?.class_type === 'teaching'
-        && item?.placement_scope === 'admin') {
-        openManualAdminPlacementDialog(target.dataset.targetClassId, target.dataset.slotId, itemId);
-        return;
-      }
-      saveManualCourseToSlot(target.dataset.slotId, itemId, target.dataset.targetClassId);
+      placeManualItemOnTarget(target, itemId);
+    });
+    target.addEventListener('click', event => {
+      if (event.target.closest('.manual-slot-remove')) return;
+      placeManualItemOnTarget(target, manualSelectedItemId);
     });
   });
   grid.querySelectorAll('.manual-slot-remove').forEach(button => {
@@ -2587,6 +2623,7 @@ const SCHEDULING_ROOM_TYPES = Object.freeze([
   ['art', '美术'],
   ['music', '音乐'],
 ]);
+let manualRoomIdCommitTimer = null;
 
 function schedulingRoomTypeOptions(selectedType = 'general') {
   const selected = String(selectedType || 'general');
@@ -2736,18 +2773,41 @@ function bindManualRoomManager() {
   const save = document.getElementById('manual-room-save');
   if (!list || !form || !save) return;
 
+  const commitRoomRow = (row, { render = false, commitId = false } = {}) => {
+    if (!row) return;
+    applyManualRoomChange({
+      type: 'update',
+      id: row.dataset.manualRoomId,
+      newId: commitId
+        ? row.querySelector('[data-manual-room-field="id"]').value
+        : row.dataset.manualRoomId,
+      name: row.querySelector('[data-manual-room-field="name"]').value,
+      roomType: row.querySelector('[data-manual-room-field="type"]').value,
+      capacity: row.querySelector('[data-manual-room-field="capacity"]').value,
+    }, { render });
+  };
+
+  list.oninput = event => {
+    const field = event.target.dataset.manualRoomField;
+    const row = event.target.closest('[data-manual-room-id]');
+    if (!field || !row || field === 'type') return;
+    if (field === 'id') {
+      clearTimeout(manualRoomIdCommitTimer);
+      const nextId = event.target.value.trim();
+      if (!nextId || nextId === row.dataset.manualRoomId) return;
+      manualRoomIdCommitTimer = setTimeout(() => commitRoomRow(row, { render: true, commitId: true }), 600);
+      renderManualRoomSaveState();
+      return;
+    }
+    commitRoomRow(row);
+  };
+
   list.onchange = event => {
     const field = event.target.dataset.manualRoomField;
     const row = event.target.closest('[data-manual-room-id]');
     if (!field || !row) return;
-    applyManualRoomChange({
-      type: 'update',
-      id: row.dataset.manualRoomId,
-      newId: row.querySelector('[data-manual-room-field="id"]').value,
-      name: row.querySelector('[data-manual-room-field="name"]').value,
-      roomType: row.querySelector('[data-manual-room-field="type"]').value,
-      capacity: row.querySelector('[data-manual-room-field="capacity"]').value,
-    }, { render: field === 'id' });
+    clearTimeout(manualRoomIdCommitTimer);
+    commitRoomRow(row, { render: field === 'id', commitId: field === 'id' });
   };
 
   list.onclick = event => {
@@ -2797,6 +2857,7 @@ async function loadManualTimetable() {
   window._manualGeneratedTimetables = new Map();
   window._manualGeneratedTimetableRequests = new Map();
   manualDraftUndoStack = [];
+  manualSelectedItemId = '';
   renderManualActionFeedback('');
   setManualFocusMode(false);
   setManualCoursePanelExpanded(
@@ -3000,8 +3061,9 @@ async function loadManualTimetable() {
       renderManualPlanControls(`${optimize ? '继续优化' : '快速生成'}失败：${error.message}。金框锁定课程和原有效课表仍然保留，可以修正数据后重试。`);
     } finally {
       clearInterval(timer);
+      const finalStatus = document.getElementById('manual-plan-status')?.textContent || '';
       window._manualAiRunning = false;
-      button.disabled = !manualPlanIsConfirmed();
+      renderManualPlanControls(finalStatus);
     }
   };
   document.getElementById('manual-ai-solve').onclick = () => runManualAiSolve();
@@ -3410,75 +3472,119 @@ async function saveCurrentScheduleArchive() {
   if (window._scheduleArchiveAvailable !== true || window._scheduleArchiveSaving === true) return;
   window._scheduleArchiveSaving = true;
   syncScheduleArchiveControls();
-  setScheduleArchiveStatus('正在校验并保存当前完整课表…');
+  setScheduleArchiveStatus('正在检查当前课表是否需要质量例外审批…');
   try {
-    const requestedName = prompt('请给这个历史版本命名（以后可按名称查找）：', suggestedScheduleArchiveName());
-    if (requestedName === null) {
-      setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
-      return;
-    }
-    const requestedNotes = prompt('可填写版本说明（选填，例如执行日期、核对人或调整原因）：', '');
-    if (requestedNotes === null) {
-      setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
-      return;
-    }
     const review = await api('/schedule-quality-review');
-    const body = {
-      name: requestedName.trim() || suggestedScheduleArchiveName(),
-      notes: requestedNotes.trim(),
-    };
+    if (review.required && !review.allowed) {
+      throw new Error(review.blocked_reason || '当前课表不能通过质量例外审批归档');
+    }
+
+    let exceptionMarkup = '';
     if (review.required) {
-      if (!review.allowed) throw new Error(review.blocked_reason || '当前课表不能通过质量例外审批归档');
       const diagnosis = review.quality_gate?.diagnosis;
       const recommendations = (diagnosis?.recommendations || [])
         .filter(item => item.action !== 'approve_quality_exception')
-        .map((item, index) => `${index + 1}. ${item.label}：${item.reason}`)
-        .join('\n');
-      const issues = (review.quality_gate?.issues || []).map(item => item.message).join('\n');
+        .map(item => `<li><strong>${escapeHtml(item.label)}</strong>：${escapeHtml(item.reason)}</li>`)
+        .join('');
+      const issues = (review.quality_gate?.issues || [])
+        .map(item => `<li>${escapeHtml(item.message)}</li>`).join('');
       const bounds = review.lower_bound_analysis;
-      const boundSummary = bounds
-        ? `\n\n已记录的单目标质量极限分析：\n- AP 空堂日：${qualityMetricSummary(bounds.ap_student_gap_days)}\n- 上午空节：${qualityMetricSummary(bounds.ap_morning_empty_student_periods)}\n- 分析范围：${bounds.analysis_scope?.note || '冻结当前分班，只优化一个指标'}`
-        : '\n\n尚未运行单目标质量极限分析；建议先在“系统设置 → 排课策略”运行分析。';
-      if (!confirm(`当前课表已通过全部硬约束，但质量门槛未通过：\n${issues}${boundSummary}\n\n建议先进行结构调整：\n${recommendations}\n\n如果学校本学期决定接受当前结果，可继续进入管理员质量例外审批。是否继续？`)) {
-        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
-        return;
-      }
-      const reason = prompt('请输入批准质量例外的具体原因（至少 10 个字符，将永久记录在课表存档中）：');
-      if (reason === null) {
-        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
-        return;
-      }
-      const approvedBy = prompt('请输入审批人姓名或管理员账号：');
-      if (approvedBy === null) {
-        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
-        return;
-      }
-      const confirmation = prompt(`最后请输入“${review.confirmation_phrase}”完成确认：`);
-      if (confirmation === null) {
-        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
-        return;
-      }
-      body.quality_exception = {
-        reason,
-        approved_by: approvedBy,
-        confirmation,
-      };
+      exceptionMarkup = `
+        <div class="validation-result warning">
+          <strong>当前课表通过硬约束，但需要质量例外审批</strong>
+          ${issues ? `<ul>${issues}</ul>` : ''}
+          ${bounds ? `<p>已记录质量极限分析：AP 空堂日 ${escapeHtml(qualityMetricSummary(bounds.ap_student_gap_days))}；上午空节 ${escapeHtml(qualityMetricSummary(bounds.ap_morning_empty_student_periods))}。</p>` : '<p>尚未运行单目标质量极限分析，建议先在系统设置中运行。</p>'}
+          ${recommendations ? `<p>建议先考虑：</p><ul>${recommendations}</ul>` : ''}
+        </div>
+        <div class="form-group">
+          <label for="archive-quality-reason">批准原因（至少 10 个字符）</label>
+          <textarea id="archive-quality-reason" name="quality_reason" rows="3" minlength="10" required></textarea>
+        </div>
+        <div class="form-group">
+          <label for="archive-approved-by">审批人</label>
+          <input id="archive-approved-by" name="approved_by" required>
+        </div>
+        <div class="form-group">
+          <label for="archive-confirmation">确认词：请输入“${escapeHtml(review.confirmation_phrase)}”</label>
+          <input id="archive-confirmation" name="confirmation" autocomplete="off" required>
+        </div>
+      `;
     }
-    const result = await api('/schedule-archives', {
-      method: 'POST',
-      body: JSON.stringify(body),
+
+    let archiveSubmitted = false;
+    showModal('保存当前完整课表', `
+      <form id="form-save-schedule-archive">
+        <div class="form-group">
+          <label for="archive-name">历史版本名称</label>
+          <input id="archive-name" name="name" maxlength="120" value="${escapeHtml(suggestedScheduleArchiveName())}" required autofocus>
+          <small>以后可以按这个名称查找和恢复。</small>
+        </div>
+        <div class="form-group">
+          <label for="archive-notes">版本说明（选填）</label>
+          <textarea id="archive-notes" name="notes" rows="3" maxlength="500" placeholder="例如：执行日期、核对人或调整原因"></textarea>
+        </div>
+        ${exceptionMarkup}
+        <p id="archive-save-feedback" class="form-hint" role="status"></p>
+        <div class="form-actions">
+          <button type="button" id="archive-save-cancel" class="btn btn-secondary">取消</button>
+          <button type="submit" class="btn btn-primary">保存历史版本</button>
+        </div>
+      </form>
+    `, {
+      onClose: () => {
+        if (archiveSubmitted) return;
+        window._scheduleArchiveSaving = false;
+        syncScheduleArchiveControls();
+        setScheduleArchiveStatus('已取消保存；当前完整课表没有变化。');
+      },
     });
-    const savedAt = formatArchiveDateTime(result.archive?.saved_at);
-    const exceptionNote = result.archive?.publication_status === 'ready_with_quality_exception'
-      ? '，已记录管理员质量例外审批'
-      : '';
-    setScheduleArchiveStatus(`当前完整课表已于 ${savedAt} 保存为独立快照${exceptionNote}。`, exceptionNote ? 'warning' : 'success');
-    showToast(`课表已储存（${savedAt}）${exceptionNote}`, exceptionNote ? 'warning' : 'success');
+    setScheduleArchiveStatus('请在弹窗中填写版本名称和说明，然后确认保存。');
+    const form = document.getElementById('form-save-schedule-archive');
+    const submit = form.querySelector('button[type="submit"]');
+    const feedback = document.getElementById('archive-save-feedback');
+    document.getElementById('archive-save-cancel').addEventListener('click', hideModal);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const body = {
+        name: String(formData.get('name') || '').trim() || suggestedScheduleArchiveName(),
+        notes: String(formData.get('notes') || '').trim(),
+      };
+      if (review.required) {
+        body.quality_exception = {
+          reason: String(formData.get('quality_reason') || '').trim(),
+          approved_by: String(formData.get('approved_by') || '').trim(),
+          confirmation: String(formData.get('confirmation') || '').trim(),
+        };
+      }
+      submit.disabled = true;
+      submit.textContent = '正在保存…';
+      feedback.textContent = '正在保存服务器快照，请勿关闭窗口…';
+      try {
+        const result = await api('/schedule-archives', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        archiveSubmitted = true;
+        window._scheduleArchiveSaving = false;
+        syncScheduleArchiveControls();
+        hideModal();
+        const savedAt = formatArchiveDateTime(result.archive?.saved_at);
+        const exceptionNote = result.archive?.publication_status === 'ready_with_quality_exception'
+          ? '，已记录管理员质量例外审批'
+          : '';
+        setScheduleArchiveStatus(`当前完整课表已于 ${savedAt} 保存为独立快照${exceptionNote}。`, exceptionNote ? 'warning' : 'success');
+        showToast(`课表已储存（${savedAt}）${exceptionNote}`, exceptionNote ? 'warning' : 'success');
+      } catch (error) {
+        feedback.textContent = `保存失败：${error.message}`;
+        submit.disabled = false;
+        submit.textContent = '保存历史版本';
+      }
+    });
   } catch (error) {
-    setScheduleArchiveStatus(`保存失败：${error.message}`, 'error');
-  } finally {
     window._scheduleArchiveSaving = false;
     syncScheduleArchiveControls();
+    setScheduleArchiveStatus(`保存失败：${error.message}`, 'error');
   }
 }
 
@@ -4398,7 +4504,7 @@ function renderCoursesList(data, { grade = '', classId = '', total = data.length
 }
 
 // 加载学生列表
-async function loadStudents() {
+async function loadStudents({ focusStudentId = '' } = {}) {
   const [students, courses, adminClasses, teachingClasses] = await Promise.all([
     api('/students'),
     api('/courses'),
@@ -4450,6 +4556,21 @@ async function loadStudents() {
 
   // 初始化筛选
   initStudentFilters(enhancedStudents, adminClasses, teachingClasses);
+
+  // Keep the user's current filter after add/edit/delete refreshes.  When a
+  // new or edited student is supplied, narrow the list to that record so the
+  // success feedback also shows where the saved data landed.
+  const gradeFilter = document.getElementById('filter-student-grade');
+  const classFilter = document.getElementById('filter-student-class');
+  const searchInput = document.getElementById('search-students');
+  if (focusStudentId) {
+    gradeFilter.value = '';
+    classFilter.value = '';
+    searchInput.value = focusStudentId;
+  }
+  if (focusStudentId || gradeFilter.value || classFilter.value || searchInput.value.trim()) {
+    applyStudentFilters(enhancedStudents);
+  }
 }
 
 function initStudentFilters(data, adminClasses, teachingClasses) {
@@ -4663,8 +4784,74 @@ function renderStudentsList(data, hasFilter = false) {
   wireEntityActions(content);
 }
 
+function openAddClassDialog(entity) {
+  const classTypeLabel = entity === 'admin_classes'
+    ? '行政班'
+    : entity === 'teaching_classes'
+      ? '教学班'
+      : '';
+  if (!classTypeLabel) {
+    showToast('只支持添加行政班或教学班', 'error');
+    return;
+  }
+
+  showModal(`添加${classTypeLabel}`, `
+    <form id="form-add-class">
+      <div class="form-group">
+        <label for="class-add-id">ID（建议使用稳定编号）</label>
+        <input id="class-add-id" type="text" name="id" maxlength="80" required autofocus>
+      </div>
+      <div class="form-group">
+        <label for="class-add-name">班级名称</label>
+        <input id="class-add-name" type="text" name="name" maxlength="80" required>
+      </div>
+      <div class="form-group">
+        <label for="class-add-grade">年级</label>
+        <select id="class-add-grade" name="grade">
+          <option value="10">高一</option>
+          <option value="11">高二</option>
+          <option value="12">高三</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="class-add-room">固定教室 ID（可稍后设置）</label>
+        <input id="class-add-room" type="text" name="fixed_room_id" maxlength="80">
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+        <button type="submit" class="btn btn-primary">添加${classTypeLabel}</button>
+      </div>
+    </form>
+  `);
+
+  const form = document.getElementById('form-add-class');
+  const idInput = document.getElementById('class-add-id');
+  idInput.focus();
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    const formData = new FormData(form);
+    const item = {
+      id: String(formData.get('id') || '').trim(),
+      name: String(formData.get('name') || '').trim(),
+      grade: Number(formData.get('grade')),
+      student_ids: [],
+      fixed_room_id: String(formData.get('fixed_room_id') || '').trim(),
+    };
+    submit.disabled = true;
+    try {
+      await api(`/${entity}`, { method: 'POST', body: JSON.stringify(item) });
+      hideModal();
+      await loadClasses({ focusClassId: item.id });
+      showToast(`${classTypeLabel}添加成功，已定位新增记录`);
+    } catch {
+      submit.disabled = false;
+    }
+  });
+}
+
 // 加载班级列表
-async function loadClasses() {
+async function loadClasses({ focusClassId = '' } = {}) {
   const [adminClasses, teachingClasses, status] = await Promise.all([
     api('/admin_classes'),
     api('/teaching_classes'),
@@ -4677,6 +4864,9 @@ async function loadClasses() {
     ...teachingClasses.map(c => ({ ...c, classType: 'teaching' }))
   ];
   window._classesData = allClasses;
+
+  const searchInput = document.getElementById('search-classes');
+  if (focusClassId) searchInput.value = focusClassId;
 
   renderClassesList(adminClasses, teachingClasses);
 
@@ -4996,7 +5186,7 @@ function renderAssignmentsList(data, { highlightId = null } = {}) {
 }
 
 // 加载AP选课列表（以课程为主，包括选修课和AP类型的必修课）
-async function loadSelections() {
+async function loadSelections({ focusCourseId = '' } = {}) {
   const [selections, students, courses] = await Promise.all([
     api('/ap_selections'),
     api('/students'),
@@ -5117,6 +5307,8 @@ async function loadSelections() {
 
   const data = Object.values(courseGroups);
   window._selectionsData = data;
+  const searchInput = document.getElementById('search-selections');
+  if (focusCourseId) searchInput.value = focusCourseId;
   renderSelectionsList(data);
 
   initEntitySearch('search-selections', data, renderSelectionsList, (item, keyword) => {
@@ -5127,6 +5319,105 @@ async function loadSelections() {
              s.student_name.toLowerCase().includes(keyword)
            );
   });
+
+  if (focusCourseId && document.getElementById(`course-body-${focusCourseId}`)?.classList.contains('hidden')) {
+    window.toggleCourseExpand(focusCourseId);
+  }
+}
+
+async function openAddSelectionDialog() {
+  try {
+    const [students, selections, courses] = await Promise.all([
+      api('/students'),
+      api('/ap_selections'),
+      api('/courses'),
+    ]);
+    const apCourses = courses.filter(course => course.type === 'ap');
+    if (!apCourses.length) {
+      showToast('请先在“课程管理”中添加 AP 课程，再手工添加选课', 'warning');
+      return;
+    }
+    if (!students.length) {
+      showToast('请先添加学生，再手工添加 AP 选课', 'warning');
+      return;
+    }
+
+    showModal('添加 AP 选课', `
+      <form id="form-add-ap-selection">
+        <div class="form-group">
+          <label for="ap-selection-course">AP 课程</label>
+          <select id="ap-selection-course" name="course_id" required>
+            <option value="">选择 AP 课程</option>
+            ${apCourses.map(course => `<option value="${escapeHtml(course.id)}">${escapeHtml(course.name)}（${escapeHtml(course.id)}）</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="ap-selection-student">学生</label>
+          <select id="ap-selection-student" name="student_id" required disabled>
+            <option value="">请先选择课程</option>
+          </select>
+          <small id="ap-selection-help">只显示课程适用年级中尚未选择该课程的学生。</small>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="hideModal()">取消</button>
+          <button type="submit" class="btn btn-primary" disabled>保存选课</button>
+        </div>
+      </form>
+    `);
+
+    const form = document.getElementById('form-add-ap-selection');
+    const courseSelect = document.getElementById('ap-selection-course');
+    const studentSelect = document.getElementById('ap-selection-student');
+    const help = document.getElementById('ap-selection-help');
+    const submit = form.querySelector('button[type="submit"]');
+    const refreshStudents = () => {
+      const course = apCourses.find(item => item.id === courseSelect.value);
+      const available = course ? students.filter(student => {
+        const selection = selections.find(item => item.student_id === student.id);
+        return courseAppliesToGrade(course, student.grade)
+          && !selection?.course_ids?.includes(course.id);
+      }) : [];
+      studentSelect.innerHTML = available.length
+        ? '<option value="">选择学生</option>' + available.map(student => `<option value="${escapeHtml(student.id)}">${escapeHtml(student.name)}（${escapeHtml(student.id)}，${escapeHtml(seniorGradeLabel(student.grade))}）</option>`).join('')
+        : '<option value="">没有符合条件的学生</option>';
+      studentSelect.disabled = !course || !available.length;
+      submit.disabled = !course || !available.length;
+      help.textContent = available.length
+        ? `可选择 ${available.length} 名学生。`
+        : course
+          ? '这门课没有尚未选课且年级匹配的学生。'
+          : '只显示课程适用年级中尚未选择该课程的学生。';
+    };
+    courseSelect.addEventListener('change', refreshStudents);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const courseId = String(formData.get('course_id') || '');
+      const studentId = String(formData.get('student_id') || '');
+      const existing = selections.find(item => item.student_id === studentId);
+      submit.disabled = true;
+      try {
+        if (existing) {
+          await api(`/ap_selections/${encodeURIComponent(studentId)}`, {
+            method: 'PUT',
+            body: JSON.stringify({ course_ids: [...new Set([...(existing.course_ids || []), courseId])] }),
+          });
+        } else {
+          await api('/ap_selections', {
+            method: 'POST',
+            body: JSON.stringify({ student_id: studentId, course_ids: [courseId] }),
+          });
+        }
+        hideModal();
+        await loadSelections({ focusCourseId: courseId });
+        showToast('AP 选课已保存，已定位对应课程');
+      } catch {
+        submit.disabled = false;
+      }
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
 }
 
 function renderSelectionsList(data) {
@@ -5277,8 +5568,8 @@ window.removeStudentFromCourse = async function(studentId, courseId) {
         });
       }
 
-      showToast('已移除', 'success');
-      loadSelections();
+      await loadSelections({ focusCourseId: courseId });
+      showToast('已移除，已定位对应课程', 'success');
     }
   } catch (error) {
     showToast(error.message, 'error');
@@ -5353,8 +5644,8 @@ window.addStudentToCourse = async function(courseId) {
       }
 
       hideModal();
-      showToast('已添加', 'success');
-      loadSelections();
+      await loadSelections({ focusCourseId: courseId });
+      showToast('已添加，已定位对应课程', 'success');
     });
   } catch (error) {
     showToast(error.message, 'error');
@@ -7347,7 +7638,13 @@ window.editEntity = async function(entity, id) {
           });
           hideModal();
           showToast('保存成功', 'success');
-          loadViewData(getCurrentView());
+          if (entity === 'students') {
+            await loadStudents({ focusStudentId: id });
+          } else if (entity === 'admin_classes' || entity === 'teaching_classes') {
+            await loadClasses({ focusClassId: id });
+          } else {
+            await loadViewData(getCurrentView());
+          }
         } catch (error) {
           showToast(error.message, 'error');
         }
@@ -8831,8 +9128,14 @@ function init() {
 
   // 校验按钮
   document.getElementById('btn-validate-input').addEventListener('click', async () => {
-    const data = await api('/validate-input');
+    const button = document.getElementById('btn-validate-input');
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = '正在校验…';
     const content = document.getElementById('validate-content');
+    content.innerHTML = '<div class="loading">正在校验输入数据…</div>';
+    try {
+    const data = await api('/validate-input');
     if (data.ok) {
       content.innerHTML = '<div class="validation-result success">✓ 数据校验通过</div>';
     } else {
@@ -8842,6 +9145,35 @@ function init() {
           ${data.errors.map(e => `<li>${e.msg}</li>`).join('')}
         </ul>
       `;
+    }
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  });
+
+  document.getElementById('btn-validate-timetable').addEventListener('click', async () => {
+    const button = document.getElementById('btn-validate-timetable');
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = '正在校验…';
+    const content = document.getElementById('validate-content');
+    content.innerHTML = '<div class="loading">正在校验当前排课结果…</div>';
+    try {
+      const violations = await api('/validate');
+      if (!violations.length) {
+        content.innerHTML = '<div class="validation-result success">✓ 当前排课结果通过全部硬约束校验</div>';
+      } else {
+        content.innerHTML = `
+          <div class="validation-result error">✗ 当前排课结果有 ${violations.length} 个问题</div>
+          <ul class="violations-list">
+            ${violations.map(violation => `<li>${escapeHtml(violation.message || violation.msg || JSON.stringify(violation))}</li>`).join('')}
+          </ul>
+        `;
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
     }
   });
 
@@ -9040,6 +9372,16 @@ function init() {
   });
 
   document.getElementById('btn-add-constraint').addEventListener('click', () => window.openConstraintDialog());
+
+  document.getElementById('btn-add-admin-class').addEventListener('click', () => {
+    openAddClassDialog('admin_classes');
+  });
+  document.getElementById('btn-add-teaching-class').addEventListener('click', () => {
+    openAddClassDialog('teaching_classes');
+  });
+  document.getElementById('btn-add-selection').addEventListener('click', () => {
+    openAddSelectionDialog();
+  });
 
   // 添加教师按钮
   document.getElementById('btn-add-teacher').addEventListener('click', async () => {
@@ -9319,7 +9661,7 @@ function init() {
       await api('/students', { method: 'POST', body: JSON.stringify(data) });
       hideModal();
       showToast('学生添加成功');
-      loadStudents();
+      await loadStudents({ focusStudentId: data.id });
     });
   });
 

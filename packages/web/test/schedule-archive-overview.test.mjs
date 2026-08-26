@@ -15,7 +15,6 @@ function sourceBetween(startMarker, endMarker) {
 
 function archiveControls({
   review = { required: false },
-  promptValues = ['2026–2027 学年秋季正式课表', '教务处已完成核对'],
 } = {}) {
   const elements = {
     'overview-save-schedule': { disabled: true },
@@ -25,6 +24,25 @@ function archiveControls({
   };
   const requests = [];
   const toasts = [];
+  const formValues = {};
+  const formListeners = {};
+  const submitButton = { disabled: false, textContent: '保存历史版本' };
+  const feedback = { textContent: '' };
+  const cancelButton = {
+    addEventListener(type, listener) {
+      formListeners[`cancel:${type}`] = listener;
+    },
+  };
+  const archiveForm = {
+    querySelector: selector => selector === 'button[type="submit"]' ? submitButton : null,
+    addEventListener(type, listener) {
+      formListeners[type] = listener;
+    },
+  };
+  let modalOnClose = null;
+  elements['form-save-schedule-archive'] = archiveForm;
+  elements['archive-save-feedback'] = feedback;
+  elements['archive-save-cancel'] = cancelButton;
   const archiveSource = sourceBetween(
     'function formatArchiveDateTime',
     '\nasync function loadPastTimetables',
@@ -34,9 +52,12 @@ function archiveControls({
     'document',
     'api',
     'confirm',
-    'prompt',
     'qualityMetricSummary',
     'showToast',
+    'showModal',
+    'hideModal',
+    'escapeHtml',
+    'FormData',
     `${archiveSource}; return { applyScheduleArchiveStatus, saveCurrentScheduleArchive };`,
   )(
     {},
@@ -55,11 +76,33 @@ function archiveControls({
       throw new Error(`unexpected API path ${path}`);
     },
     () => true,
-    () => promptValues.shift() ?? null,
     () => '质量分析',
     (message, type) => toasts.push({ message, type }),
+    (_title, _content, options = {}) => {
+      modalOnClose = options.onClose || null;
+    },
+    () => {
+      const onClose = modalOnClose;
+      modalOnClose = null;
+      onClose?.();
+    },
+    value => String(value),
+    class FakeFormData {
+      get(name) {
+        return formValues[name] ?? null;
+      }
+    },
   );
-  return { ...controls, elements, requests, toasts };
+  return {
+    ...controls,
+    elements,
+    requests,
+    toasts,
+    async submitArchive(values) {
+      Object.assign(formValues, values);
+      await formListeners.submit({ preventDefault() {} });
+    },
+  };
 }
 
 test('legacy timestamp archive names are translated into a readable history title', () => {
@@ -127,10 +170,19 @@ test('saving from either surface archives the backend complete schedule', async 
     elements,
     requests,
     toasts,
+    submitArchive,
   } = archiveControls();
   applyScheduleArchiveStatus({ solve_status: 'valid', review_required: false });
 
   await saveCurrentScheduleArchive();
+  assert.deepEqual(requests.map(request => request.path), ['/schedule-quality-review']);
+  assert.equal(elements['overview-save-schedule'].disabled, true);
+  assert.match(elements['overview-archive-status'].textContent, /弹窗中填写/);
+
+  await submitArchive({
+    name: '2026–2027 学年秋季正式课表',
+    notes: '教务处已完成核对',
+  });
 
   assert.deepEqual(requests.map(request => request.path), [
     '/schedule-quality-review',
