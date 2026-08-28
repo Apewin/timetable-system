@@ -77,7 +77,7 @@ test('deletes exactly one confirmed schedule archive without changing the curren
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ expected_revision: 20, confirmation: targetId }),
   });
-  assert.equal(staleResponse.status, 400);
+  assert.equal(staleResponse.status, 409);
   assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).schedule_archives.length, 2);
 
   const response = await fetch(base, {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -151,6 +151,30 @@ test('lists private backups as safe metadata and restores one as a new revision'
   assert.equal(repository.listBackups().some(item => item.revision === 4), true);
 });
 
+test('lists and restores a daily production backup from the shared backup directory', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'timetable-state-daily-restore-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'timetable.json');
+  const backups = join(directory, 'backups');
+  mkdirSync(backups, { mode: 0o700 });
+  writeFileSync(file, '{"meta":{"revision":8},"value":"current"}\n');
+  writeFileSync(
+    join(backups, 'timetable-20260829T032000Z.json'),
+    '{"meta":{"revision":6,"updated_at":"2026-08-29T03:20:00.000Z"},"value":"daily"}\n',
+    { mode: 0o600 },
+  );
+  const repository = new StateRepository(file, { backupDirectory: backups, maxBackups: 5 });
+
+  const [daily] = repository.listBackups();
+  assert.equal(daily.id, 'timetable-20260829T032000Z.json');
+  assert.equal(daily.kind, 'daily');
+  assert.equal(daily.revision, 6);
+
+  const restored = repository.restoreBackup(daily.id, { expectedRevision: 8 });
+  assert.equal(restored.meta.revision, 9);
+  assert.equal(restored.value, 'daily');
+});
+
 test('backup restore rejects unknown or path-like ids without changing state', t => {
   const directory = mkdtempSync(join(tmpdir(), 'timetable-state-restore-safe-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -173,4 +197,26 @@ test('refuses a state created by a newer unsupported schema', t => {
   writeFileSync(file, '{"schema_version":999,"meta":{"revision":1}}\n');
   const repository = new StateRepository(file);
   assert.throws(() => repository.read(), /高于当前程序支持/);
+});
+
+test('repairs state and backup permissions before exposing school data', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'timetable-state-permissions-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'state.json');
+  const backups = join(directory, 'backups');
+  const backup = join(backups, 'state.json.r1.2026-08-29.json');
+  writeFileSync(file, '{"meta":{"revision":1}}\n', { mode: 0o644 });
+  mkdirSync(backups, { mode: 0o755 });
+  writeFileSync(backup, '{"meta":{"revision":1}}\n', { mode: 0o644 });
+  chmodSync(file, 0o644);
+  chmodSync(backups, 0o755);
+  chmodSync(backup, 0o644);
+
+  const repository = new StateRepository(file, { backupDirectory: backups });
+  repository.read();
+  repository.listBackups();
+
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.equal(statSync(backups).mode & 0o777, 0o700);
+  assert.equal(statSync(backup).mode & 0o777, 0o600);
 });

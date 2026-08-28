@@ -1,5 +1,5 @@
 import express from 'express';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import multer from 'multer';
@@ -68,6 +68,7 @@ import {
   deleteEntityFromState,
   entityDependencies,
   validateEntityInput,
+  validateEntityReferences,
 } from './entity-state.mjs';
 import { applyTeacherAssignmentSwap } from './assistant-actions.mjs';
 import {
@@ -128,6 +129,14 @@ app.use((_req, res, next) => {
 });
 const defaultStateFile = fileURLToPath(new URL('../../../timetable.json', import.meta.url));
 const stateFile = process.env.STATE_FILE ? resolve(process.env.STATE_FILE) : defaultStateFile;
+const releaseCommit = (() => {
+  const marker = resolve('RELEASE_COMMIT');
+  const raw = String(
+    process.env.TIMETABLE_RELEASE_COMMIT
+      || (existsSync(marker) ? readFileSync(marker, 'utf8') : ''),
+  ).trim();
+  return /^[0-9a-f]{7,64}$/i.test(raw) ? raw.toLowerCase() : null;
+})();
 const repository = new StateRepository(stateFile, {
   backupDirectory: process.env.STATE_BACKUP_DIR
     ? resolve(process.env.STATE_BACKUP_DIR)
@@ -152,6 +161,25 @@ const computationJobs = createComputationJobManager({
 app.use(express.json({ limit: '2mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+function normalizedHostname(rawHost) {
+  const value = String(rawHost || '').trim();
+  if (!value) return '';
+  try {
+    return new URL(`http://${value}`).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function allowedApiHosts(rawValue) {
+  const configured = String(rawValue || '').split(',')
+    .map(value => normalizedHostname(value))
+    .filter(Boolean);
+  return new Set(configured.length ? configured : ['localhost', '127.0.0.1', '::1']);
+}
+
+const apiHostAllowlist = allowedApiHosts(process.env.TIMETABLE_ALLOWED_HOSTS);
+
 function requestUsesHttps(req) {
   return req.secure || String(req.headers['x-forwarded-proto'] || '')
     .split(',').some(value => value.trim().toLowerCase() === 'https');
@@ -160,6 +188,14 @@ function requestUsesHttps(req) {
 function authError(res, status, code, msg) {
   return res.status(status).json({ ok: false, errors: [{ code, msg }] });
 }
+
+app.use('/api', (req, res, next) => {
+  const hostname = normalizedHostname(req.headers.host);
+  if (!hostname || !apiHostAllowlist.has(hostname)) {
+    return authError(res, 421, 'HOST_REJECTED', '请求地址不在本系统允许的主机名单中');
+  }
+  return next();
+});
 
 app.use('/api', (req, res, next) => {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
@@ -274,10 +310,32 @@ async function reply(res, action) {
       actor: req.auth?.actor,
       run: context => action(context),
     });
+    res.setHeader('X-State-Revision', String(repository.revision(repository.read())));
     return res.status(202).json({ ok: true, data: { job } });
   }
-  try { return res.json({ ok: true, data: await action() }); }
-  catch (error) { return res.status(400).json({ ok: false, errors: [{ code: 'BACKEND_ERROR', msg: error.message }] }); }
+  try {
+    const data = await action();
+    res.setHeader('X-State-Revision', String(repository.revision(repository.read())));
+    return res.json({ ok: true, data });
+  } catch (error) {
+    const status = {
+      STATE_VERSION_REQUIRED: 428,
+      STATE_VERSION_CONFLICT: 409,
+      ENTITY_ALREADY_EXISTS: 409,
+      ENTITY_IN_USE: 409,
+      ENTITY_NOT_FOUND: 404,
+      BACKUP_NOT_FOUND: 404,
+      ENTITY_REFERENCE_INVALID: 422,
+      TEACHER_NOT_QUALIFIED: 422,
+    }[error.code] || 400;
+    const code = error.code || 'VALIDATION_ERROR';
+    try {
+      res.setHeader('X-State-Revision', String(repository.revision(repository.read())));
+    } catch {
+      // If the state itself is unreadable, the structured error below remains usable.
+    }
+    return res.status(status).json({ ok: false, errors: [{ code, msg: error.message }] });
+  }
 }
 
 function throwIfComputationCancelled(context) {
@@ -1003,6 +1061,7 @@ app.get('/api/status', (_req, res) => reply(res, () => {
       candidate.code === item.code && candidate.message === item.message) === index);
   return {
     backend: 'rules-first-v1',
+    release_commit: releaseCommit,
     school: state.meta?.school,
     revision: repository.revision(state),
     last_stage: state.solve_status === 'stale' ? 'needs_resolve' : state.solve_status === 'valid' ? 'timetable' : state.section_plan ? 'sections' : 'not_run',
@@ -2801,6 +2860,45 @@ const editableEntities = new Set([
   'teaching_classes', 'teaching_assignments', 'selection_blocks', 'constraints',
 ]);
 
+function stateVersionError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function parseRevisionHeader(value) {
+  if (value === undefined) return undefined;
+  const normalized = String(value).trim().replace(/^W\//, '').replace(/^"|"$/g, '');
+  const revision = Number(normalized);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
+}
+
+function expectedRevisionFromRequest(req) {
+  const headerRevision = parseRevisionHeader(req.headers['if-match']);
+  const bodyRevision = req.body?.expected_revision === undefined
+    ? undefined
+    : Number(req.body.expected_revision);
+  if (headerRevision === null
+    || (bodyRevision !== undefined && (!Number.isSafeInteger(bodyRevision) || bodyRevision < 0))) {
+    throw stateVersionError('STATE_VERSION_REQUIRED', '写入操作必须携带有效的数据版本');
+  }
+  if (headerRevision !== undefined && bodyRevision !== undefined && headerRevision !== bodyRevision) {
+    throw stateVersionError('STATE_VERSION_CONFLICT', '请求头和请求内容携带的数据版本不一致');
+  }
+  const revision = headerRevision ?? bodyRevision;
+  if (revision === undefined) {
+    throw stateVersionError('STATE_VERSION_REQUIRED', '写入操作必须携带数据版本；请刷新页面后重试');
+  }
+  return revision;
+}
+
+function entityPayload(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const item = { ...body };
+  delete item.expected_revision;
+  return item;
+}
+
 function changedState(state, entity, items, extra = {}) {
   const normalizedItems = entity === 'courses'
     ? items.map(normalizeCourseScope)
@@ -2892,34 +2990,43 @@ app.put('/api/class-names/:entity/:id', (req, res) => reply(res, () => {
 app.post('/api/:entity', (req, res) => reply(res, () => {
   const entity = req.params.entity;
   if (!editableEntities.has(entity)) throw new Error(`不支持写入实体: ${entity}`);
-  const item = req.body;
+  const expectedRevision = expectedRevisionFromRequest(req);
+  const item = entityPayload(req.body);
   if (!item?.id || typeof item.id !== 'string') throw new Error('新实体必须有字符串 id');
   validateEntityInput(entity, item);
   const state = repository.read();
   const current = state[entity] || [];
-  if (current.some(existing => existing.id === item.id)) throw new Error(`ID 已存在: ${item.id}`);
-  repository.write(changedState(state, entity, [...current, item]));
+  if (current.some(existing => existing.id === item.id)) {
+    throw stateVersionError('ENTITY_ALREADY_EXISTS', `ID 已存在: ${item.id}`);
+  }
+  validateEntityReferences(state, entity, item);
+  repository.write(changedState(state, entity, [...current, item]), { expectedRevision });
   return item;
 }));
 
 app.put('/api/:entity/:id', (req, res) => reply(res, () => {
   const entity = req.params.entity;
   if (!editableEntities.has(entity)) throw new Error(`不支持写入实体: ${entity}`);
+  const expectedRevision = expectedRevisionFromRequest(req);
   const state = repository.read();
   const current = state[entity] || [];
   const index = current.findIndex(item => item.id === req.params.id);
-  if (index < 0) throw new Error(`实体不存在: ${req.params.id}`);
-  const updated = { ...current[index], ...req.body, id: current[index].id };
+  if (index < 0) throw stateVersionError('ENTITY_NOT_FOUND', `实体不存在: ${req.params.id}`);
+  const updated = { ...current[index], ...entityPayload(req.body), id: current[index].id };
   validateEntityInput(entity, updated);
+  validateEntityReferences(state, entity, updated);
   const items = [...current]; items[index] = updated;
   if (entity === 'courses') {
     const normalized = normalizeCourseScope(updated);
     items[index] = normalized;
     const teachingAssignments = synchronizeCourseDeliveryAssignments(state, current[index], normalized);
-    repository.write(changedState(state, entity, items, { teaching_assignments: teachingAssignments }));
+    repository.write(
+      changedState(state, entity, items, { teaching_assignments: teachingAssignments }),
+      { expectedRevision },
+    );
     return normalized;
   }
-  repository.write(changedState(state, entity, items));
+  repository.write(changedState(state, entity, items), { expectedRevision });
   return updated;
 }));
 
@@ -2928,7 +3035,7 @@ app.get('/api/entity-dependencies/:entity/:id', (req, res) => reply(res, () => {
   if (!editableEntities.has(entity)) throw new Error(`不支持读取实体依赖: ${entity}`);
   const state = repository.read();
   if (!(state[entity] || []).some(item => item.id === req.params.id)) {
-    throw new Error(`实体不存在: ${req.params.id}`);
+    throw stateVersionError('ENTITY_NOT_FOUND', `实体不存在: ${req.params.id}`);
   }
   return entityDependencies(state, entity, req.params.id);
 }));
@@ -2936,16 +3043,15 @@ app.get('/api/entity-dependencies/:entity/:id', (req, res) => reply(res, () => {
 app.delete('/api/:entity/:id', (req, res) => reply(res, () => {
   const entity = req.params.entity;
   if (!editableEntities.has(entity)) throw new Error(`不支持写入实体: ${entity}`);
+  const expectedRevision = expectedRevisionFromRequest(req);
   const state = repository.read();
   const deletion = deleteEntityFromState(state, entity, req.params.id, {
     cascade: req.query.cascade === 'true',
   });
-  repository.write(changedState(
-    state,
-    entity,
-    deletion.state[entity],
-    deletion.state,
-  ));
+  repository.write(
+    changedState(state, entity, deletion.state[entity], deletion.state),
+    { expectedRevision },
+  );
   return {
     removed: deletion.removed,
     cascaded: deletion.dependencies.length > 0,
@@ -2970,6 +3076,20 @@ app.get('/api/:entity', (req, res) => reply(res, () => {
   }
   return value;
 }));
+
+app.use((error, req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next(error);
+  if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+    return authError(res, 413, 'REQUEST_TOO_LARGE', '上传文件超过 10 MB 限制');
+  }
+  if (error?.type === 'entity.too.large' || error?.status === 413) {
+    return authError(res, 413, 'REQUEST_TOO_LARGE', '请求内容超过系统允许的大小');
+  }
+  if (error instanceof SyntaxError && error?.type === 'entity.parse.failed') {
+    return authError(res, 400, 'INVALID_JSON', '请求中的 JSON 格式无效');
+  }
+  return authError(res, 400, error?.code || 'INVALID_REQUEST', error?.message || '请求格式无效');
+});
 
 const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url));
 if (existsSync(webDist)) {

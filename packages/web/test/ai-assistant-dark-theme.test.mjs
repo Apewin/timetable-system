@@ -37,6 +37,8 @@ test('dark-theme AI messages and action cards keep readable text contrast', () =
     ':root[data-theme="dark"] .ai-assistant-message.error',
     ':root[data-theme="dark"] .ai-assistant-action',
     ':root[data-theme="dark"] .ai-assistant-action-complete',
+    ':root[data-theme="dark"] .ai-test-result.error',
+    ':root[data-theme="dark"] .manual-course-category-badge',
   ];
 
   for (const selector of selectors) {

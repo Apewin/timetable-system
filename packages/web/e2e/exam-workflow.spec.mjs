@@ -37,6 +37,10 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
   await page.locator('#exam-course-select').selectOption('BIO');
   await page.getByRole('button', { name: '添加考试' }).click();
   await expect(page.locator('[data-exam-workflow-status="subjects"]')).toContainText('2 门已添加');
+  const mathDuration = page.locator('[data-exam-course-row="EXAM_MATH"] [data-exam-duration]');
+  await mathDuration.fill('65');
+  await mathDuration.press('Tab');
+  await expect(mathDuration).toHaveValue('65');
   const mathPriority = page.locator('[data-exam-course-row="EXAM_MATH"] [data-exam-marking-priority]');
   const biologyPriority = page.locator('[data-exam-course-row="EXAM_BIO"] [data-exam-marking-priority]');
   await expect(mathPriority).toHaveValue('normal');
@@ -58,6 +62,7 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
   expect(savedExamPlan.data.plan.config.rooms.map(room => room.name)).toContain('报告厅');
   expect(savedExamPlan.data.plan.config.rooms.map(room => room.name)).toEqual(['报告厅']);
   expect(savedExamPlan.data.plan.config.breaks).toEqual([]);
+  expect(savedExamPlan.data.plan.exams.find(exam => exam.course_id === 'MATH').duration_minutes).toBe(65);
   const timetableAccepted = page.waitForResponse(response =>
     response.url().endsWith('/api/exams/solve') && response.status() === 202);
   await page.getByRole('button', { name: '生成考试时间表' }).click();
@@ -71,6 +76,8 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
   await expect(scheduleRows.first()).toContainText('生物');
   await expect(scheduleRows.nth(1)).toContainText('数学');
   await expect(page.locator('#exam-review-validation')).toContainText('校验通过');
+  await expect(page.locator('#exam-review-validation')).toContainText('学生冲突将在第 4 步');
+  await expect(scheduleRows.first().locator('td').nth(7)).toContainText('第 4 步校验');
   await expect(page.locator('#computation-progress-note')).toContainText('结果位置：排考试 → 安排结果');
 
   await page.getByRole('button', { name: '审核通过，继续安排考场' }).click();

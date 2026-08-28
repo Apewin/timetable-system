@@ -134,3 +134,39 @@ test('rejects an AP course imported for a student outside its grade scope', () =
     /不适用于/,
   );
 });
+
+test('parses a headerless AP course grid and preserves the Block above each column group', () => {
+  const gridState = {
+    courses: [
+      { id: 'AP_BIO', name: 'AP Biology', type: 'ap', grade: 11 },
+      { id: 'AP_CS', name: 'AP Computer Science', type: 'ap', grade: 11 },
+    ],
+    students: [
+      { id: 'S1', name: '张三', grade: 11, ap_courses: [] },
+      { id: 'S2', name: '李四', grade: 11, ap_courses: [] },
+    ],
+  };
+  const grid = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(grid, XLSX.utils.aoa_to_sheet([
+    ['新高二 Block 1', '', '', '', '', '', '', '新高二 Block 2'],
+    ['', 'AP生物', 'AP CS', '', '', '', '', '', 'AP生物'],
+    [1, '张三', '李四', '', '', '', '', 1, '李四'],
+  ]), '选课分班终稿');
+
+  const preview = parseApSelectionWorkbook(grid, gridState, 'headerless-ap.xlsx');
+
+  assert.equal(preview.recognized_sheet_count, 1);
+  assert.equal(preview.matched_rows, 3);
+  assert.deepEqual(
+    preview.changes.find(change => change.student_id === 'S1').block_assignments,
+    [{ course_id: 'AP_BIO', block_id: 'AP_BLOCK_1' }],
+  );
+  assert.equal(preview.block_conflicts.length, 0);
+  assert.deepEqual(
+    preview.changes.find(change => change.student_id === 'S2').block_assignments,
+    [
+      { course_id: 'AP_BIO', block_id: 'AP_BLOCK_2' },
+      { course_id: 'AP_CS', block_id: 'AP_BLOCK_1' },
+    ],
+  );
+});

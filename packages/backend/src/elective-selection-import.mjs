@@ -51,9 +51,16 @@ function electiveCourses(state) {
     && ['A', 'B', 'C'].includes(text(course.elective_group).toUpperCase()));
 }
 
+function courseTitleKey(value) {
+  return key(text(value)
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/(?:学生)?名单/g, '')
+    .replace(/[-—–]?\s*\d+\s*(?:号)?教室.*$/i, '')
+    .replace(/\d+人.*$/i, ''));
+}
+
 function courseFor(value, courses, expectedGroup) {
-  const normalized = key(value)
-    .replace(/\d+人.*$/, '')
+  const normalized = courseTitleKey(value)
     .replace(/^ap/, '')
     .replace(/andcomposition$/, '')
     .replace(/英美文学史及选读$/, '英美文学');
@@ -140,6 +147,53 @@ function rosterHeader(matrix) {
   return undefined;
 }
 
+function headerlessRosterGrid(matrix, courses) {
+  const rosters = [];
+  const used = new Set();
+  for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 10); rowIndex++) {
+    const values = matrix[rowIndex] || [];
+    for (let column = 0; column < values.length; column++) {
+      const title = text(values[column]);
+      const course = title ? courseFor(title, courses) : undefined;
+      if (!course || used.has(`${rowIndex}:${column}`)) continue;
+      const probe = matrix.slice(rowIndex + 1, rowIndex + 8);
+      const nextColumnLooksLikeNames = probe.some(row => {
+        const ordinal = text(row?.[column]);
+        const candidate = text(row?.[column + 1]);
+        return /^\d+(?:\.0+)?$/.test(ordinal) && candidate && !/^\d+(?:\.0+)?$/.test(candidate);
+      });
+      const nameColumn = nextColumnLooksLikeNames ? column + 1 : column;
+      rosters.push({ rowIndex, title, course, nameColumn });
+      used.add(`${rowIndex}:${column}`);
+    }
+  }
+  if (!rosters.length) return undefined;
+  const rows = [];
+  for (const roster of rosters) {
+    for (let rowIndex = roster.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
+      const chineseName = text(matrix[rowIndex]?.[roster.nameColumn]);
+      if (!chineseName || /^\d+(?:\.0+)?$/.test(chineseName)) continue;
+      if (courseFor(chineseName, courses)) continue;
+      if (/^(?:合计|总计|人数|备注|教室)/.test(chineseName)) continue;
+      rows.push({
+        student_id: '',
+        chinese_name: chineseName,
+        english_name: '',
+        pinyin_name: '',
+        group: roster.course.elective_group,
+        course_title: roster.course.name,
+        excel_row: rowIndex + 1,
+      });
+    }
+  }
+  return {
+    status: 'recognized',
+    layout: 'roster-grid',
+    rows,
+    header_row: Math.min(...rosters.map(roster => roster.rowIndex)) + 1,
+  };
+}
+
 function identity(values, columns) {
   return {
     student_id: columns.studentId === undefined ? '' : text(values[columns.studentId]),
@@ -174,19 +228,22 @@ function rowsForSheet(matrix, sheetName, courses) {
 
   const roster = rosterHeader(matrix);
   const course = roster && rosterCourse(matrix, sheetName, roster.rowIndex, courses);
-  if (!roster || !course) return { status: 'ignored', layout: 'unknown', rows: [], reason: '未找到 A/B/C 选课表头或可识别的课程名单标题' };
-  for (let rowIndex = roster.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
-    const values = matrix[rowIndex] || [];
-    const person = identity(values, roster.columns);
-    if (!person.student_id && !person.chinese_name) continue;
-    rows.push({
-      ...person,
-      group: course.elective_group,
-      course_title: course.name,
-      excel_row: rowIndex + 1,
-    });
+  if (roster && course) {
+    for (let rowIndex = roster.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
+      const values = matrix[rowIndex] || [];
+      const person = identity(values, roster.columns);
+      if (!person.student_id && !person.chinese_name) continue;
+      rows.push({
+        ...person,
+        group: course.elective_group,
+        course_title: course.name,
+        excel_row: rowIndex + 1,
+      });
+    }
+    return { status: 'recognized', layout: 'roster', rows, header_row: roster.rowIndex + 1 };
   }
-  return { status: 'recognized', layout: 'roster', rows, header_row: roster.rowIndex + 1 };
+  return headerlessRosterGrid(matrix, courses)
+    || { status: 'ignored', layout: 'unknown', rows: [], reason: '未找到 A/B/C 选课表头或可识别的课程名单标题' };
 }
 
 export function parseElectiveSelectionWorkbook(workbook, state, filename = '') {

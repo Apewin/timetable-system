@@ -6246,7 +6246,25 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
   .workflow-step { width: 32px; height: 32px; }
   .workflow-arrow { display: none; }
   .ai-assistant-sidebar { position: fixed; inset: 58px 0 0 auto; z-index: 140; width: min(380px, 94vw); min-width: 0; }
+  .ai-assistant-open { min-height: 44px; bottom: 76px; }
+  .shell-icon-button,
+  .command-trigger { width: 44px; height: 44px; min-width: 44px; flex-basis: 44px; }
+  .sidebar-mobile-close { width: 44px; height: 44px; }
 }
+
+.manual-slot-placeholder { color: var(--gray-600); }
+.manual-course-category-badge { color: var(--gray-800); }
+:root[data-theme="dark"] .ai-test-result.error {
+  color: #fecaca;
+  background: #450a0a;
+  border-color: #991b1b;
+}
+:root[data-theme="dark"] .manual-course-category-badge {
+  color: #f9fafb;
+  background: #1f2937;
+  border-color: #6b7280;
+}
+:root[data-theme="dark"] .btn-danger { color: #fff; }
 
 @media (max-width: 440px) {
   .header-page-copy { display: none; }
@@ -6881,6 +6899,7 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
 }
 
 @media (max-width: 480px) {
+  #view-exam-scheduling .btn:not(.btn-sm) { min-height: 44px; }
   .exam-config-grid,
   .exam-metrics { grid-template-columns: 1fr; }
   .exam-config-wide { grid-column: span 1; }

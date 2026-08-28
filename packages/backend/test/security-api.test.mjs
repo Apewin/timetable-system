@@ -59,7 +59,7 @@ test('password mode protects the API and accepts a signed login session', async 
 
   const mutation = await fetch(`${base}/api/teachers`, {
     method: 'POST',
-    headers: { cookie, 'content-type': 'application/json' },
+    headers: { cookie, 'content-type': 'application/json', 'if-match': '"1"' },
     body: JSON.stringify({
       id: 'T1', name: '数学教师', can_teach: [], available_slots: [],
       max_per_day: 5, max_per_week: 20,

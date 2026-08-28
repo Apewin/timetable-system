@@ -347,8 +347,8 @@
                 </div>
               </div>
               <div class="exam-add-row">
-                <select id="exam-course-select" class="select"><option value="">选择课程</option></select>
-                <select id="exam-duration-select" class="select">
+                <select id="exam-course-select" class="select" aria-label="考试课程"><option value="">选择课程</option></select>
+                <select id="exam-duration-select" class="select" aria-label="考试时长">
                   <option value="30">30 分钟</option><option value="60">1 小时</option>
                   <option value="90" selected>1.5 小时</option><option value="120">2 小时</option>
                 </select>
@@ -669,7 +669,7 @@
               <div class="manual-course-filters">
                 <label class="manual-course-search" for="manual-course-search">
                   <span aria-hidden="true">⌕</span>
-                  <input id="manual-course-search" class="input" placeholder="搜索课程名称" autocomplete="off">
+                  <input id="manual-course-search" class="input" placeholder="搜索课程名称" autocomplete="off" aria-label="搜索待排课程">
                 </label>
                 <div class="manual-course-filter-row">
                   <label for="manual-course-category-filter">
@@ -1098,13 +1098,13 @@
           </div>
           <div class="toolbar">
             <div class="filter-group">
-              <select id="filter-student-grade" class="select">
+              <select id="filter-student-grade" class="select" aria-label="按年级筛选学生">
                 <option value="">全部年级</option>
                 <option value="10">高一</option>
                 <option value="11">高二</option>
                 <option value="12">高三</option>
               </select>
-              <select id="filter-student-class" class="select">
+              <select id="filter-student-class" class="select" aria-label="按班级筛选学生">
                 <option value="">全部班级</option>
               </select>
               <input type="text" id="search-students" class="search-input" placeholder="🔍 搜索中文名、英文名、Student ID或选修课...">
@@ -1191,7 +1191,7 @@
           <div class="toolbar">
             <div class="control-group">
               <label>选择年级：</label>
-              <select id="filter-elective-grade" class="select">
+              <select id="filter-elective-grade" class="select" aria-label="按年级筛选其他选课">
                 <option value="">全部年级</option>
                 <option value="10">高一</option>
                 <option value="11">高二</option>
@@ -1200,7 +1200,7 @@
             </div>
             <div class="control-group">
               <label>选择组别：</label>
-              <select id="filter-elective-group" class="select">
+              <select id="filter-elective-group" class="select" aria-label="按选课组筛选其他选课">
                 <option value="">全部组别</option>
                 <option value="A">A组</option>
                 <option value="B">B组</option>
@@ -1239,7 +1239,7 @@
           <div class="toolbar">
             <div class="search-select-group">
               <input type="text" id="search-student" class="search-input" placeholder="🔍 搜索中文名、英文名或Student ID...">
-              <select id="select-student" class="select">
+              <select id="select-student" class="select" aria-label="选择学生课表">
                 <option value="">选择学生</option>
               </select>
             </div>
@@ -1252,7 +1252,7 @@
           <div class="toolbar">
             <div class="search-select-group">
               <input type="text" id="search-ap-group" class="search-input" placeholder="🔍 搜索 AP 课程、分流组或教师...">
-              <select id="select-ap-group" class="select">
+              <select id="select-ap-group" class="select" aria-label="选择 AP 分流组">
                 <option value="">选择 AP 分流组</option>
               </select>
             </div>
@@ -1265,7 +1265,7 @@
           <div class="toolbar">
             <div class="search-select-group">
               <input type="text" id="search-teacher" class="search-input" placeholder="🔍 搜索教师姓名或ID...">
-              <select id="select-teacher" class="select">
+              <select id="select-teacher" class="select" aria-label="选择教师课表">
                 <option value="">选择教师</option>
               </select>
             </div>
@@ -1278,7 +1278,7 @@
           <div class="toolbar">
             <div class="search-select-group">
               <input type="text" id="search-class" class="search-input" placeholder="🔍 搜索班级名称或ID...">
-              <select id="select-class" class="select">
+              <select id="select-class" class="select" aria-label="选择班级课表">
                 <option value="">选择班级</option>
               </select>
             </div>
@@ -1291,7 +1291,7 @@
           <div class="toolbar">
             <div class="search-select-group">
               <input type="text" id="search-room" class="search-input" placeholder="🔍 搜索教室名称或ID...">
-              <select id="select-room" class="select">
+              <select id="select-room" class="select" aria-label="选择教室课表">
                 <option value="">选择教室</option>
               </select>
             </div>
@@ -1415,7 +1415,7 @@
               <div class="settings-backup-heading">
                 <div>
                   <h3>🕘 自动备份与版本恢复</h3>
-                  <p class="settings-hint">系统每次写入前都会保存旧版本。这里显示最近版本及其与当前数据量的差异；恢复不会覆盖备份链，当前版本也会先自动备份。</p>
+                  <p class="settings-hint">系统每次写入前都会保存旧版本，服务器也会每天备份。这里显示可恢复版本及其与当前数据量的差异；恢复不会覆盖备份链，当前版本也会先自动备份。</p>
                 </div>
                 <button class="btn btn-secondary btn-sm" type="button" onclick="loadStateBackups()">刷新版本</button>
               </div>
@@ -1509,7 +1509,7 @@
               <div class="export-options">
                 <div class="form-group">
                   <label>导出维度</label>
-                  <select id="export-dimension" class="select">
+                  <select id="export-dimension" class="select" aria-label="导出课表维度">
                     <option value="class">按班级</option>
                     <option value="teacher">按教师</option>
                     <option value="student">按学生</option>
@@ -1519,13 +1519,13 @@
                 </div>
                 <div class="form-group">
                   <label>选择对象</label>
-                  <select id="export-target" class="select">
+                  <select id="export-target" class="select" aria-label="导出对象">
                     <option value="">请先选择维度</option>
                   </select>
                 </div>
                 <div class="form-group">
                   <label>导出格式</label>
-                  <select id="export-format" class="select">
+                  <select id="export-format" class="select" aria-label="导出格式">
                     <option value="html">HTML 网页</option>
                     <option value="csv">CSV 表格</option>
                     <option value="json">JSON 数据</option>

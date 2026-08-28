@@ -202,7 +202,9 @@ test('template export fills timetable cells while preserving template styles', a
   });
   assert.equal(result.files.length, 2);
   assert.equal(result.summary.class_filled_cells, 2);
-  assert.equal(result.summary.teacher_filled_cells, 1);
+  assert.equal(result.summary.teacher_filled_cells, 2);
+  assert.equal(result.summary.teacher_sheet_count, 2);
+  assert.equal(result.summary.generated_teacher_sheets, 1);
 
   const classWorkbook = new ExcelJS.Workbook();
   await classWorkbook.xlsx.load(result.files.find(item => item.kind === 'class').buffer);
@@ -217,5 +219,55 @@ test('template export fills timetable cells while preserving template styles', a
   const teacherSheet = teacherWorkbook.getWorksheet('Haman 韩鹏');
   assert.equal(teacherSheet.getCell('B3').value, '英语\n高一教学1班');
   assert.equal(teacherSheet.getCell('B3').fill.fgColor.argb, '00FF00');
+  const generatedTeacherSheet = teacherWorkbook.getWorksheet('秦心瑄');
+  assert.ok(generatedTeacherSheet, '模板缺少的现任教师也必须出现在全部教师课表中');
+  assert.equal(generatedTeacherSheet.getCell('C4').value, 'AP 物理\nBlock 1');
   assert.equal(teacherWorkbook.getWorksheet('机房使用').getCell('B2').value, null);
+});
+
+test('course-matched legacy teacher sheets are relabelled for the current teacher', async () => {
+  const legacyTemplate = new ExcelJS.Workbook();
+  const legacySheet = legacyTemplate.addWorksheet('高一生物原园');
+  days.forEach((day, index) => { legacySheet.getCell(1, index + 2).value = day; });
+  legacySheet.getCell('A2').value = 'Teacher';
+  days.forEach((_, index) => { legacySheet.getCell(2, index + 2).value = '原园'; });
+  timetableRows(legacySheet, 1, 3);
+
+  const state = {
+    ...stateFixture(),
+    teachers: [{ id: 'T_BIO', name: '匿名生物教师' }],
+    courses: [{ id: 'BIO', name: '生物', grade: 10 }],
+    teaching_assignments: [{
+      id: 'TA_BIO', teacher_id: 'T_BIO', course_id: 'BIO',
+      class_id: 'TC_G10_1', class_ids: ['TC_G10_1'], class_type: 'teaching', weekly_hours: 1,
+    }],
+    schedule: {
+      sections: [{
+        id: 'SEC_BIO', course_id: 'BIO', teacher_id: 'T_BIO',
+        class_id: 'TC_G10_1', class_type: 'teaching', student_ids: ['S1'],
+      }],
+      assignments: [{
+        section_id: 'SEC_BIO', course_id: 'BIO', teacher_id: 'T_BIO',
+        class_id: 'TC_G10_1', class_type: 'teaching', student_id: 'S1', slot_id: 'D1P1',
+      }],
+    },
+  };
+  const result = await exportScheduleTemplates({
+    classTemplateBuffer: await classTemplateBuffer(),
+    classTemplateName: 'classes.xlsx',
+    teacherTemplateBuffer: Buffer.from(await legacyTemplate.xlsx.writeBuffer()),
+    teacherTemplateName: 'legacy-teachers.xlsx',
+    state,
+    now: new Date('2026-08-29T00:00:00Z'),
+  });
+
+  const exported = new ExcelJS.Workbook();
+  await exported.xlsx.load(result.files.find(item => item.kind === 'teacher').buffer);
+  assert.equal(exported.getWorksheet('高一生物原园'), undefined);
+  const currentSheet = exported.getWorksheet('匿名生物教师');
+  assert.ok(currentSheet, '旧模板页应保留版式，但必须使用现任教师姓名');
+  for (let column = 2; column <= 6; column += 1) {
+    assert.equal(currentSheet.getCell(2, column).value, '匿名生物教师');
+  }
+  assert.equal(currentSheet.getCell('B3').value, '生物\n高一教学1班');
 });

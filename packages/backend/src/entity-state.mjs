@@ -66,7 +66,107 @@ export function validateEntityInput(entity, item) {
   return item;
 }
 
+function referenceError(message, code = 'ENTITY_REFERENCE_INVALID') {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function entityNotFoundError(id) {
+  const error = new Error(`实体不存在: ${id}`);
+  error.code = 'ENTITY_NOT_FOUND';
+  return error;
+}
+
+function requireReferencedIds(items, ids, label, owner) {
+  const known = new Set((items || []).map(item => item.id));
+  for (const id of ids || []) {
+    if (typeof id !== 'string' || !id || known.has(id)) continue;
+    throw referenceError(`${owner} 引用了不存在的${label} ${id}`);
+  }
+}
+
+/**
+ * Validates references owned by one edited record.  This intentionally does
+ * not reject unrelated legacy records: an administrator can still repair old
+ * data one item at a time, while every new write is prevented from creating
+ * another orphan.
+ */
+export function validateEntityReferences(state, entity, item) {
+  const owner = `${{
+    teachers: '教师',
+    courses: '课程',
+    students: '学生',
+    admin_classes: '行政班',
+    teaching_classes: '教学班',
+    teaching_assignments: '教师分工',
+    selection_blocks: '选课组',
+  }[entity] || '实体'} ${item.id}`;
+
+  if (entity === 'teachers') {
+    requireReferencedIds(state.courses, item.can_teach || [], '课程', owner);
+    const qualified = new Set(item.can_teach || []);
+    const assignment = (state.teaching_assignments || [])
+      .find(candidate => candidate.teacher_id === item.id && !qualified.has(candidate.course_id));
+    if (assignment) {
+      throw referenceError(
+        `教师 ${item.id} 仍负责课程 ${assignment.course_id}（教师分工 ${assignment.id}），不能移除该授课资格`,
+        'TEACHER_NOT_QUALIFIED',
+      );
+    }
+  }
+
+  if (entity === 'students') {
+    if (item.admin_class_id) requireReferencedIds(state.admin_classes, [item.admin_class_id], '行政班', owner);
+    if (item.teaching_class_id) {
+      requireReferencedIds(state.teaching_classes, [item.teaching_class_id], '教学班', owner);
+    }
+    requireReferencedIds(state.courses, item.ap_courses || [], '课程', owner);
+    const electiveCourseIds = Object.values(item.elective_choices || {})
+      .flatMap(value => Array.isArray(value) ? value : [value])
+      .filter(Boolean);
+    requireReferencedIds(state.courses, electiveCourseIds, '课程', owner);
+  }
+
+  if (entity === 'admin_classes' || entity === 'teaching_classes') {
+    requireReferencedIds(state.students, item.student_ids || [], '学生', owner);
+  }
+
+  if (entity === 'courses') {
+    requireReferencedIds(state.teaching_classes, item.applicable_class_ids || [], '教学班', owner);
+    for (const requirement of item.section_requirements || []) {
+      if (requirement.teacher_id) {
+        requireReferencedIds(state.teachers, [requirement.teacher_id], '教师', owner);
+      }
+    }
+  }
+
+  if (entity === 'selection_blocks') {
+    requireReferencedIds(state.courses, item.allowed_course_ids || [], '课程', owner);
+  }
+
+  if (entity === 'teaching_assignments') {
+    const course = (state.courses || []).find(candidate => candidate.id === item.course_id);
+    if (!course) throw referenceError(`${owner} 引用了不存在的课程 ${item.course_id}`);
+    if (item.teacher_id) {
+      const teacher = (state.teachers || []).find(candidate => candidate.id === item.teacher_id);
+      if (!teacher) throw referenceError(`${owner} 引用了不存在的教师 ${item.teacher_id}`);
+      if (!(teacher.can_teach || []).includes(course.id)) {
+        throw referenceError(
+          `教师 ${teacher.id} 未配置为可教授 ${course.id}（${owner}）`,
+          'TEACHER_NOT_QUALIFIED',
+        );
+      }
+    }
+    const classType = item.class_type === 'admin' ? 'admin' : 'teaching';
+    const classItems = classType === 'admin' ? state.admin_classes : state.teaching_classes;
+    requireReferencedIds(classItems, item.class_ids || [], classType === 'admin' ? '行政班' : '教学班', owner);
+  }
+  return item;
+}
+
 export function entityDependencies(state, entity, id) {
+  if (!(state[entity] || []).some(item => item.id === id)) throw entityNotFoundError(id);
   const found = dependencyCollector();
   if (entity === 'courses') {
     for (const assignment of state.teaching_assignments || []) {
@@ -219,7 +319,7 @@ function removeClassReferences(state, entity, id) {
 
 export function deleteEntityFromState(state, entity, id, { cascade = false } = {}) {
   const items = state[entity] || [];
-  if (!items.some(item => item.id === id)) throw new Error(`实体不存在: ${id}`);
+  if (!items.some(item => item.id === id)) throw entityNotFoundError(id);
   const dependencies = entityDependencies(state, entity, id);
   if (dependencies.length && !cascade) {
     const summary = dependencies.map(item => `${item.label} ${item.count} 项`).join('、');

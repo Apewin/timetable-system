@@ -20,6 +20,9 @@ test('imports three grade columns and normalizes flexible duration formats from 
       { id: 'CHIN', name: '语文', grade: [10, 11, 12], type: 'required' },
       { id: 'AP_PSYCH', name: 'AP Psychology', grade: [11, 12], type: 'ap' },
       { id: 'LINEAR_ALG', name: '线性代数', grade: 12, type: 'required_elective' },
+      { id: 'FRENCH', name: '法语', grade: 12, type: 'required_elective' },
+      { id: 'GERMAN', name: '德语', grade: 12, type: 'required_elective' },
+      { id: 'JAPANESE', name: '日语', grade: 12, type: 'required_elective' },
     ],
   }, '各科目考试时长统计.xls');
 
@@ -31,11 +34,43 @@ test('imports three grade columns and normalizes flexible duration formats from 
   })), [
     { grade: 10, subject_name: '语文', duration_minutes: 90, course_id: 'CHIN' },
     { grade: 11, subject_name: 'AP Psychology', duration_minutes: 110, course_id: 'AP_PSYCH' },
-    { grade: 12, subject_name: '二外', duration_minutes: 30, course_id: null },
+    { grade: 12, subject_name: '二外', duration_minutes: 30, course_id: 'FRENCH' },
     { grade: 12, subject_name: '线性代数', duration_minutes: 40, course_id: 'LINEAR_ALG' },
   ]);
   assert.equal(preview.summary.exam_count, 4);
   assert.equal(preview.summary.skipped_count, 2);
+});
+
+test('maps the three special names in the real duration workbook without creating an empty-grade exam', () => {
+  const preview = parseExamDurationBuffer(workbookBuffer([
+    ['', '高一', '', '高二', '', '高三', ''],
+    [1, '综英', '1.5h', '', '', '二外', '30min'],
+    [2, 'AP Microeconomics', '1.5h', '', '', '', ''],
+  ]), {
+    courses: [
+      { id: 'ENG_LS', name: 'Comprehensive English - 中教Listening&Speaking', grade: 10, type: 'required' },
+      { id: 'ENG_RW', name: 'Comprehensive English - 中教Reading&Writing', grade: 10, type: 'required' },
+      { id: 'ENG_LIT', name: 'Comprehensive English - 外教L&S&Lit Reading', grade: 10, type: 'required' },
+      { id: 'AP_MICRO', name: 'AP Microeconomics', grade: 11, type: 'ap' },
+      { id: 'FRENCH', name: '法语', grade: 12, type: 'required_elective' },
+      { id: 'GERMAN', name: '德语', grade: 12, type: 'required_elective' },
+      { id: 'JAPANESE', name: '日语', grade: 12, type: 'required_elective' },
+    ],
+  }, '真实时长.xls');
+
+  assert.deepEqual(preview.rows.map(row => ({
+    subject_name: row.subject_name,
+    grade: row.grade,
+    source_grade: row.source_grade,
+    grade_adjusted: row.grade_adjusted,
+    course_id: row.course_id,
+  })), [
+    { subject_name: '综英', grade: 10, source_grade: undefined, grade_adjusted: undefined, course_id: 'ENG_LS' },
+    { subject_name: '二外', grade: 12, source_grade: undefined, grade_adjusted: undefined, course_id: 'FRENCH' },
+    { subject_name: 'AP Microeconomics', grade: 11, source_grade: 10, grade_adjusted: true, course_id: 'AP_MICRO' },
+  ]);
+  assert.equal(preview.summary.unmatched_count, 0);
+  assert.equal(preview.summary.adjusted_grade_count, 1);
 });
 
 test('matches common duration-sheet names to grade-compatible course aliases', () => {

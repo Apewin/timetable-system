@@ -128,3 +128,115 @@ test('administrative and teaching class names can change without changing their 
   expect(students.data[0].admin_class_id).toBe('G10A');
   expect(students.data[0].teaching_class_id).toBe('G10T');
 });
+
+test('manual scheduling discards browser drafts that no longer belong to current school data', async ({ page }) => {
+  await page.addInitScript(() => {
+    globalThis.localStorage.setItem('timetable.manual-drafts.v1', JSON.stringify({
+      STALE_CLASS: { D1P1: 'STALE_COURSE' },
+    }));
+  });
+  await page.goto('/');
+  await page.getByRole('link', { name: '排课表', exact: true }).click();
+
+  await expect(page.locator('#manual-action-feedback-text')).toContainText('已移除 1 个');
+  expect(await page.evaluate(() => JSON.parse(globalThis.localStorage.getItem('timetable.manual-drafts.v1')))).toEqual({});
+  await expect(page.locator('#manual-plan-status')).not.toContainText('不存在');
+});
+
+test('mobile actions do not overlap and temporary drawers close with Escape', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+
+  await page.locator('#btn-sidebar-toggle').click();
+  await page.locator('#sidebar-mode-switch').click();
+  await expect(page.getByRole('heading', { name: '排考试与考场' })).toBeVisible();
+  await page.locator('[data-exam-workflow-stage="subjects"]').click();
+  await expect(page.locator('#exam-subjects-card')).toBeVisible();
+  const roomManager = page.locator('#exam-room-manager');
+  if (!(await roomManager.evaluate(element => element.open))) {
+    await roomManager.locator('summary').click();
+  }
+  for (const target of [
+    page.locator('#exam-add-room'),
+    page.locator('#exam-save-rooms'),
+    page.getByRole('button', { name: '选择时长表' }),
+    page.getByRole('button', { name: '添加考试' }),
+    page.getByRole('button', { name: '继续设置考试窗口' }),
+  ]) {
+    await expect(target).toBeVisible();
+    expect((await target.boundingBox()).height).toBeGreaterThanOrEqual(44);
+  }
+  const saveRooms = page.locator('#exam-save-rooms');
+  const openAssistant = page.locator('#btn-ai-assistant-open');
+  await saveRooms.scrollIntoViewIfNeeded();
+  await expect(openAssistant).toBeVisible();
+  const [saveBox, assistantBox] = await Promise.all([saveRooms.boundingBox(), openAssistant.boundingBox()]);
+  const overlapWidth = Math.max(0, Math.min(saveBox.x + saveBox.width, assistantBox.x + assistantBox.width)
+    - Math.max(saveBox.x, assistantBox.x));
+  const overlapHeight = Math.max(0, Math.min(saveBox.y + saveBox.height, assistantBox.y + assistantBox.height)
+    - Math.max(saveBox.y, assistantBox.y));
+  expect(overlapWidth * overlapHeight).toBe(0);
+  expect(assistantBox.height).toBeGreaterThanOrEqual(44);
+
+  await page.setViewportSize({ width: 768, height: 844 });
+  await page.locator('#btn-sidebar-toggle').click();
+  await expect(page.locator('.sidebar')).toHaveAttribute('aria-hidden', 'false');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.sidebar')).toHaveAttribute('aria-hidden', 'true');
+  await expect(page.locator('#btn-sidebar-toggle')).toBeFocused();
+
+  await openAssistant.click();
+  await expect(page.locator('#ai-assistant-sidebar')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ai-assistant-sidebar')).toBeHidden();
+  await expect(openAssistant).toBeFocused();
+});
+
+test('high-frequency selectors expose names and command search has dialog semantics', async ({ page }) => {
+  await page.goto('/');
+  const expectNames = async entries => {
+    for (const [selector, name] of entries) {
+      await expect(page.locator(selector)).toBeVisible();
+      await expect(page.locator(selector)).toHaveAccessibleName(name);
+    }
+  };
+
+  await page.locator('#sidebar-mode-switch').click();
+  await page.getByRole('link', { name: '考试科目与时长', exact: true }).click();
+  await expectNames([
+    ['#exam-course-select', '考试课程'],
+    ['#exam-duration-select', '考试时长'],
+  ]);
+  await page.locator('#sidebar-mode-switch').click();
+
+  const pages = [
+    ['排课表', [['#manual-course-search', '搜索待排课程']]],
+    ['按班级', [['#select-class', '选择班级课表']]],
+    ['按教师', [['#select-teacher', '选择教师课表']]],
+    ['按学生', [['#select-student', '选择学生课表']]],
+    ['AP 分流组', [['#select-ap-group', '选择 AP 分流组']]],
+    ['按教室', [['#select-room', '选择教室课表']]],
+    ['学生管理', [
+      ['#filter-student-grade', '按年级筛选学生'],
+      ['#filter-student-class', '按班级筛选学生'],
+    ]],
+    ['其他选课', [
+      ['#filter-elective-grade', '按年级筛选其他选课'],
+      ['#filter-elective-group', '按选课组筛选其他选课'],
+    ]],
+    ['导出课表', [
+      ['#export-dimension', '导出课表维度'],
+      ['#export-target', '导出对象'],
+      ['#export-format', '导出格式'],
+    ]],
+  ];
+  for (const [linkName, controls] of pages) {
+    await page.getByRole('link', { name: linkName, exact: true }).click();
+    await expectNames(controls);
+  }
+
+  await page.locator('#btn-command-search').click();
+  await expect(page.getByRole('dialog', { name: '搜索页面与功能' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '搜索页面与功能' })).toBeHidden();
+});

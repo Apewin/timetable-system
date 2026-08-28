@@ -85,3 +85,46 @@ test('accepts common Grade 12 A-group roster abbreviations after model normaliza
   assert.equal(preview.changes.find(change => change.student_id === '202302').choices.group_a, 'AP_LIT');
   assert.equal(preview.changes.find(change => change.student_id === '202303').choices.group_a, 'HONOR_LIT');
 });
+
+test('parses real-world headerless side-by-side numbered rosters', () => {
+  const aliasState = {
+    ...state,
+    courses: [
+      ...state.courses,
+      { id: 'MECH_BASIS', name: '力学基础', type: 'required_elective', grade: 12, elective_group: 'B' },
+      { id: 'FRENCH', name: '法语', type: 'required_elective', grade: 12, elective_group: 'C' },
+    ],
+  };
+  const preview = parseElectiveSelectionWorkbook(workbook([
+    ['力学基础学生名单', '', '', '', 'AP 商业学生名单', '', '', '', '法语名单（2人）-314教室'],
+    [1, '张三', '', '', 1, '李四', '', '', 1, '张三'],
+    [2, '李四', '', '', '', '', '', '', 2, '李四'],
+  ], 'Sheet1'), aliasState, 'headerless.xlsx');
+
+  assert.equal(preview.recognized_sheet_count, 1);
+  assert.equal(preview.sheets[0].layout, 'roster-grid');
+  assert.equal(preview.matched_rows, 4);
+  assert.equal(preview.can_confirm, false);
+  assert.equal(preview.invalid.length, 1);
+  assert.match(preview.invalid[0].reason, /B 组同时出现/);
+});
+
+test('cleans room, count and list suffixes from headerless roster titles', () => {
+  const languageState = {
+    ...state,
+    courses: [
+      { id: 'HONOR_LIT', name: 'Honor 英美文学史及选读', type: 'required_elective', grade: 12, elective_group: 'A' },
+      { id: 'AP_LANG', name: 'AP Language and Composition', type: 'required_elective', grade: 12, elective_group: 'A' },
+      { id: 'JAPANESE', name: '日语', type: 'required_elective', grade: 12, elective_group: 'C' },
+    ],
+  };
+  const preview = parseElectiveSelectionWorkbook(workbook([
+    ['英美文学史及选读（1人）-416教室', '', '', 'AP LC(1人)-310教室', '', '', '日语名单（1人）-310教室'],
+    [1, '张三', '', 1, '张三', '', 1, '李四'],
+  ], 'Sheet1'), languageState, 'titles.xlsx');
+
+  assert.equal(preview.recognized_sheet_count, 1);
+  assert.equal(preview.matched_rows, 2);
+  assert.equal(preview.invalid.length, 1);
+  assert.match(preview.invalid[0].reason, /A 组同时出现/);
+});

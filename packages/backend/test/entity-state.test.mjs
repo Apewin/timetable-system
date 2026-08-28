@@ -4,6 +4,7 @@ import {
   deleteEntityFromState,
   entityDependencies,
   validateEntityInput,
+  validateEntityReferences,
 } from '../src/entity-state.mjs';
 
 function state() {
@@ -103,5 +104,53 @@ test('rejects an unknown teacher available slot id', () => {
       id: 'T1', can_teach: [], available_slots: ['MONDAY_MORNING'],
     }),
     /可用时段无效.*MONDAY_MORNING/,
+  );
+});
+
+test('rejects teacher qualifications that reference a missing course', () => {
+  assert.throws(
+    () => validateEntityReferences(state(), 'teachers', {
+      id: 'T2', can_teach: ['COURSE_MISSING'], available_slots: [],
+    }),
+    error => error.code === 'ENTITY_REFERENCE_INVALID'
+      && /不存在的课程 COURSE_MISSING/.test(error.message),
+  );
+});
+
+test('rejects a teaching assignment whose teacher is missing or unqualified', () => {
+  assert.throws(
+    () => validateEntityReferences(state(), 'teaching_assignments', {
+      id: 'TA_MISSING', course_id: 'AP_BIO', teacher_id: 'T_MISSING',
+      class_type: 'teaching', class_ids: ['TC1'],
+    }),
+    error => error.code === 'ENTITY_REFERENCE_INVALID'
+      && /不存在的教师 T_MISSING/.test(error.message),
+  );
+  assert.throws(
+    () => validateEntityReferences(state(), 'teaching_assignments', {
+      id: 'TA_UNQUALIFIED', course_id: 'AP_PHYS', teacher_id: 'T1',
+      class_type: 'teaching', class_ids: ['TC1'],
+    }),
+    error => error.code === 'TEACHER_NOT_QUALIFIED'
+      && /未配置为可教授 AP_PHYS/.test(error.message),
+  );
+});
+
+test('rejects teaching assignment classes that do not exist or mismatch class type', () => {
+  assert.throws(
+    () => validateEntityReferences(state(), 'teaching_assignments', {
+      id: 'TA_MISSING_CLASS', course_id: 'AP_BIO', teacher_id: 'T1',
+      class_type: 'teaching', class_ids: ['TC_MISSING'],
+    }),
+    error => error.code === 'ENTITY_REFERENCE_INVALID'
+      && /不存在的教学班 TC_MISSING/.test(error.message),
+  );
+  assert.throws(
+    () => validateEntityReferences(state(), 'teaching_assignments', {
+      id: 'TA_WRONG_TYPE', course_id: 'AP_BIO', teacher_id: 'T1',
+      class_type: 'admin', class_ids: ['TC1'],
+    }),
+    error => error.code === 'ENTITY_REFERENCE_INVALID'
+      && /不存在的行政班 TC1/.test(error.message),
   );
 });

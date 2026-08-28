@@ -31,6 +31,16 @@ function courseKey(value) {
     micro: 'microeconomics',
     art: 'arthistory',
     physicscmechanics: 'physicsc',
+    生物: 'biology',
+    化学: 'chemistry',
+    心理: 'psychology',
+    环科: 'environmentalscience',
+    环境科学: 'environmentalscience',
+    宏经: 'macroeconomics',
+    微经: 'microeconomics',
+    艺术史: 'arthistory',
+    物理c: 'physicsc',
+    物理2: 'physics2',
   };
   return aliases[key] || key;
 }
@@ -97,6 +107,56 @@ function courseForTitle(title, courses) {
   return contains.length === 1 ? contains[0] : undefined;
 }
 
+function blockIdForCourseColumn(matrix, titleRowIndex, column) {
+  for (let rowIndex = titleRowIndex - 1; rowIndex >= 0; rowIndex--) {
+    let nearest = null;
+    for (let candidateColumn = 0; candidateColumn <= column; candidateColumn++) {
+      const match = /\bblock\s*([1-6])\b/i.exec(text(matrix[rowIndex]?.[candidateColumn]));
+      if (match) nearest = `AP_BLOCK_${match[1]}`;
+    }
+    if (nearest) return nearest;
+  }
+  return null;
+}
+
+function headerlessRosterGroups(matrix, sheetName, courses, students) {
+  const groups = [];
+  const usedColumns = new Set();
+  const knownStudentNames = new Set(students.map(student => personKey(student.name)).filter(Boolean));
+  for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 10); rowIndex++) {
+    const values = matrix[rowIndex] || [];
+    for (let column = 0; column < values.length; column++) {
+      const title = text(values[column]);
+      const course = title ? courseForTitle(title, courses) : undefined;
+      if (!course || usedColumns.has(column)) continue;
+      const rows = [];
+      for (let studentRowIndex = rowIndex + 1; studentRowIndex < matrix.length; studentRowIndex++) {
+        const chineseName = text(matrix[studentRowIndex]?.[column]);
+        const normalizedName = personKey(chineseName);
+        if (!chineseName || /^\d+(?:\.0+)?$/.test(chineseName)) continue;
+        if (courseForTitle(chineseName, courses)) continue;
+        if (!knownStudentNames.has(normalizedName)
+          && !/^[\u3400-\u9fff·]{2,8}$/.test(chineseName)) continue;
+        rows.push({
+          sheet_name: sheetName,
+          excel_row: studentRowIndex + 1,
+          course_id: course.id,
+          course_name: course.name,
+          block_id: blockIdForCourseColumn(matrix, rowIndex, column),
+          chinese_name: chineseName,
+          pinyin_name: '',
+          english_name: '',
+        });
+      }
+      if (rows.length) {
+        groups.push({ title, course, rows });
+        usedColumns.add(column);
+      }
+    }
+  }
+  return groups;
+}
+
 function matchStudent(row, students) {
   const chineseKey = personKey(row.chinese_name);
   const englishKey = personKey(row.english_name);
@@ -136,80 +196,91 @@ export function parseApSelectionWorkbook(workbook, state, filename = '') {
   for (const sheetName of workbook.SheetNames) {
     const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
     const headers = findRosterHeaders(matrix);
-    if (!headers.length) {
-      ignoredSheets.push({ sheet_name: sheetName, reason: '未找到中文姓名表头' });
-      continue;
-    }
-    const title = sheetTitle(matrix, sheetName, headers[0].rowIndex);
-    const course = courseForTitle(title, courses);
-    if (!course) {
-      const issue = { sheet_name: sheetName, title: title || '未识别', reason: '标题无法对应系统 AP 课程' };
-      unmappedCourseSheets.push(issue);
-      sheets.push({ ...issue, status: 'unmapped', rows: 0, matched: 0, unmatched: 0, ambiguous: 0 });
-      continue;
-    }
-
-    const rows = headers.flatMap(header => {
-      const rosterRows = [];
-      for (let rowIndex = header.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
-        const values = matrix[rowIndex] || [];
-        const chineseName = text(values[header.columns.chineseName]);
-        if (!chineseName) continue;
-        rosterRows.push({
-          sheet_name: sheetName,
-          excel_row: rowIndex + 1,
-          course_id: course.id,
-          course_name: course.name,
-          block_id: header.blockId,
-          chinese_name: chineseName,
-          pinyin_name: header.columns.pinyinName >= 0 ? text(values[header.columns.pinyinName]) : '',
-          english_name: header.columns.englishName >= 0 ? text(values[header.columns.englishName]) : '',
-        });
+    let rosterGroups;
+    if (headers.length) {
+      const title = sheetTitle(matrix, sheetName, headers[0].rowIndex);
+      const course = courseForTitle(title, courses);
+      if (!course) {
+        const issue = { sheet_name: sheetName, title: title || '未识别', reason: '标题无法对应系统 AP 课程' };
+        unmappedCourseSheets.push(issue);
+        sheets.push({ ...issue, status: 'unmapped', rows: 0, matched: 0, unmatched: 0, ambiguous: 0 });
+        continue;
       }
-      return rosterRows;
-    });
+      const rows = headers.flatMap(header => {
+        const rosterRows = [];
+        for (let rowIndex = header.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
+          const values = matrix[rowIndex] || [];
+          const chineseName = text(values[header.columns.chineseName]);
+          if (!chineseName) continue;
+          rosterRows.push({
+            sheet_name: sheetName,
+            excel_row: rowIndex + 1,
+            course_id: course.id,
+            course_name: course.name,
+            block_id: header.blockId,
+            chinese_name: chineseName,
+            pinyin_name: header.columns.pinyinName >= 0 ? text(values[header.columns.pinyinName]) : '',
+            english_name: header.columns.englishName >= 0 ? text(values[header.columns.englishName]) : '',
+          });
+        }
+        return rosterRows;
+      });
+      rosterGroups = [{ title, course, rows }];
+    } else {
+      rosterGroups = headerlessRosterGroups(matrix, sheetName, courses, students);
+      if (!rosterGroups.length) {
+        ignoredSheets.push({ sheet_name: sheetName, reason: '未找到中文姓名表头或可识别的课程名单列' });
+        continue;
+      }
+    }
 
     let sheetMatched = 0;
     let sheetUnmatched = 0;
     let sheetAmbiguous = 0;
     let sheetGradeMismatch = 0;
-    for (const row of rows) {
-      const match = matchStudent(row, students);
-      if (match.status === 'matched') {
-        if (!courseAppliesToStudentGrade(course, match.student.grade)) {
-          sheetGradeMismatch++;
-          gradeMismatches.push({
-            ...row,
-            student_id: match.student.id,
-            student_grade: match.student.grade,
-            course_id: course.id,
-            course_name: course.name,
-          });
-          continue;
-        }
-        sheetMatched++;
-        matchedRows++;
-        if (!selectedByStudent.has(match.student.id)) selectedByStudent.set(match.student.id, new Set());
-        selectedByStudent.get(match.student.id).add(course.id);
-        if (row.block_id) {
-          if (!blockAssignmentsByStudent.has(match.student.id)) {
-            blockAssignmentsByStudent.set(match.student.id, new Map());
+    for (const group of rosterGroups) {
+      for (const row of group.rows) {
+        const match = matchStudent(row, students);
+        if (match.status === 'matched') {
+          if (!courseAppliesToStudentGrade(group.course, match.student.grade)) {
+            sheetGradeMismatch++;
+            gradeMismatches.push({
+              ...row,
+              student_id: match.student.id,
+              student_grade: match.student.grade,
+              course_id: group.course.id,
+              course_name: group.course.name,
+            });
+            continue;
           }
-          blockAssignmentsByStudent.get(match.student.id).set(course.id, row.block_id);
+          sheetMatched++;
+          matchedRows++;
+          if (!selectedByStudent.has(match.student.id)) selectedByStudent.set(match.student.id, new Set());
+          selectedByStudent.get(match.student.id).add(group.course.id);
+          if (row.block_id) {
+            if (!blockAssignmentsByStudent.has(match.student.id)) {
+              blockAssignmentsByStudent.set(match.student.id, new Map());
+            }
+            blockAssignmentsByStudent.get(match.student.id).set(group.course.id, row.block_id);
+          }
+        } else if (match.status === 'ambiguous') {
+          sheetAmbiguous++;
+          ambiguous.push({ ...row, candidate_ids: match.candidates.map(student => student.id) });
+        } else {
+          sheetUnmatched++;
+          unmatched.push(row);
         }
-      } else if (match.status === 'ambiguous') {
-        sheetAmbiguous++;
-        ambiguous.push({ ...row, candidate_ids: match.candidates.map(student => student.id) });
-      } else {
-        sheetUnmatched++;
-        unmatched.push(row);
       }
     }
+    const rows = rosterGroups.flatMap(group => group.rows);
+    const recognizedCourses = [...new Map(rosterGroups.map(group => [group.course.id, group.course])).values()];
     sheets.push({
       sheet_name: sheetName,
-      title,
-      course_id: course.id,
-      course_name: course.name,
+      title: rosterGroups.map(group => group.title).join('；'),
+      course_id: recognizedCourses.length === 1 ? recognizedCourses[0].id : undefined,
+      course_name: recognizedCourses.length === 1 ? recognizedCourses[0].name : undefined,
+      course_ids: recognizedCourses.map(course => course.id),
+      layout: headers.length ? 'header' : 'roster-grid',
       status: 'recognized',
       rows: rows.length,
       matched: sheetMatched,

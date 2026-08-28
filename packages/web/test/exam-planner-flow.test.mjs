@@ -172,6 +172,7 @@ test('exam planner imports a duration workbook into a reviewable and still-edita
   assert.match(appSource, /new FormData\(\)/);
   assert.match(appSource, /examRowsFromDurationImport/);
   assert.match(appSource, /type="number" min="5" max="240" step="5"/);
+  assert.match(appSource, /已按系统课程调整/);
 });
 
 test('exam planner explains the special 二外 course and teacher rule', () => {

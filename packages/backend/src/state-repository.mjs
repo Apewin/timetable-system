@@ -46,6 +46,7 @@ export class StateRepository {
 
   read() {
     if (!existsSync(this.file)) throw new Error(`状态文件不存在: ${this.file}`);
+    chmodSync(this.file, 0o600);
     const stat = statSync(this.file, { bigint: true });
     const fingerprint = `${stat.size}:${stat.mtimeNs}`;
     if (this.cached && fingerprint === this.cachedFingerprint) return this.cached;
@@ -94,6 +95,7 @@ export class StateRepository {
   backupCurrent(revision) {
     if (!this.maxBackups || !existsSync(this.file)) return null;
     mkdirSync(this.backupDirectory, { recursive: true, mode: 0o700 });
+    chmodSync(this.backupDirectory, 0o700);
     const timestamp = new Date(this.now()).toISOString().replace(/[:.]/g, '-');
     const sequence = ++this.backupSequence;
     const backup = join(
@@ -126,17 +128,27 @@ export class StateRepository {
 
   listBackups() {
     if (!existsSync(this.backupDirectory)) return [];
+    chmodSync(this.backupDirectory, 0o700);
     const prefix = `${basename(this.file)}.r`;
+    const dailyPrefix = `${basename(this.file).replace(/\.json$/i, '')}-`;
+    const backupKind = name => {
+      if (name.startsWith(prefix)) return 'write_before_change';
+      if (name.startsWith(dailyPrefix)
+        && /^\d{8}T\d{6}Z\.json$/.test(name.slice(dailyPrefix.length))) return 'daily';
+      return null;
+    };
     return readdirSync(this.backupDirectory)
-      .filter(name => name.startsWith(prefix) && basename(name) === name)
+      .filter(name => backupKind(name) && basename(name) === name)
       .flatMap(name => {
         try {
           const file = join(this.backupDirectory, name);
+          chmodSync(file, 0o600);
           const stat = statSync(file);
           const state = JSON.parse(readFileSync(file, 'utf8'));
           const revision = this.revision(state);
           return [{
             id: name,
+            kind: backupKind(name),
             revision,
             updated_at: state.meta?.updated_at || null,
             created_at: stat.mtime.toISOString(),

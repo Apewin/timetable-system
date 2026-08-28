@@ -12,6 +12,8 @@ Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=3001
 Environment=STATE_FILE=/var/lib/timetable/timetable.json
+Environment=STATE_BACKUP_DIR=/var/backups/timetable
+Environment=TIMETABLE_ALLOWED_HOSTS=127.0.0.1,localhost,192.168.31.7,sdshiyanHP
 Environment=TZ=Asia/Shanghai
 ExecStart=/usr/bin/node packages/backend/src/server.mjs
 Restart=on-failure
@@ -21,7 +23,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/opt/timetable /var/lib/timetable
+ReadWritePaths=/opt/timetable /var/lib/timetable /var/backups/timetable
 LimitNOFILE=65535
 
 [Install]

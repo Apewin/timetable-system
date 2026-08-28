@@ -62,8 +62,10 @@ import {
 } from './teacher-availability-view.mjs';
 import { changeSchedulingRooms } from './scheduling-room-view.mjs';
 import { qualityAffectedStudents, systemStatusReview } from './system-status-view.mjs';
+import { StateRevisionTracker, mutationNeedsStateRevision } from './api-state-revision.mjs';
 
 const API_BASE = '/api';
+const apiStateRevision = new StateRevisionTracker();
 
 // 辅助函数：从slot中获取课程名称
 function getCourseName(slot) {
@@ -429,15 +431,39 @@ function removeCourse(courseId) {
   if (option) option.disabled = false;
 }
 
+async function refreshApiStateRevision() {
+  const response = await fetch(`${API_BASE}/status`, {
+    headers: { Accept: 'application/json' },
+  });
+  const payload = await response.json();
+  if (!payload.ok) throw new Error(payload.errors?.[0]?.msg || '无法读取当前数据版本');
+  apiStateRevision.observe(response, payload);
+  return apiStateRevision.revision;
+}
+
 async function api(path, options = {}) {
   const { computation, ...requestOptions } = options;
   const descriptor = computation === false
     ? null
     : computation || computationRequestDescriptor(path, requestOptions);
   try {
+    const method = String(requestOptions.method || 'GET').toUpperCase();
+    const needsRevision = mutationNeedsStateRevision(path, method);
+    if (needsRevision && apiStateRevision.revision === null) await refreshApiStateRevision();
+    let bodyHasRevision = false;
+    if (typeof requestOptions.body === 'string') {
+      try {
+        bodyHasRevision = Object.hasOwn(JSON.parse(requestOptions.body), 'expected_revision');
+      } catch {
+        // Non-JSON request bodies are handled by their endpoint and do not
+        // carry the generic entity revision control field.
+      }
+    }
+    const ifMatch = needsRevision && !bodyHasRevision ? apiStateRevision.ifMatchHeader() : null;
     const headers = {
       'Content-Type': 'application/json',
       ...(requestOptions.headers || {}),
+      ...(ifMatch ? { 'If-Match': ifMatch } : {}),
       ...(descriptor ? { 'X-Computation-Job': 'async' } : {}),
     };
     const response = await fetch(`${API_BASE}${path}`, {
@@ -445,6 +471,7 @@ async function api(path, options = {}) {
       headers,
     });
     const data = await response.json();
+    apiStateRevision.observe(response, data);
     if (!data.ok) {
       if (response.status === 401 && data.errors?.[0]?.code === 'AUTH_REQUIRED') {
         showAuthGate('登录状态已过期，请重新登录。');
@@ -452,7 +479,9 @@ async function api(path, options = {}) {
       throw new Error(data.errors?.[0]?.msg || '请求失败');
     }
     if (response.status === 202 && data.data?.job) {
-      return await waitForComputationJob(data.data.job);
+      const result = await waitForComputationJob(data.data.job);
+      await refreshApiStateRevision();
+      return result;
     }
     return data.data;
   } catch (error) {
@@ -881,14 +910,15 @@ function renderExamImportPreview() {
   container.classList.remove('hidden');
   const mappings = state.importMappings || {};
   const mappedCount = preview.rows.filter(row => mappings[examDurationImportRowKey(row)] || row.course_id).length;
+  const adjustedGradeCount = preview.summary.adjusted_grade_count || 0;
   document.getElementById('exam-import-summary').textContent =
-    `${preview.source_filename}：读取 ${preview.summary.exam_count} 门考试，已匹配 ${mappedCount} 门；${preview.summary.skipped_count} 行因未填写有效时长而不加入。`;
+    `${preview.source_filename}：读取 ${preview.summary.exam_count} 门考试，已匹配 ${mappedCount} 门；${preview.summary.skipped_count} 行因未填写有效时长而不加入。${adjustedGradeCount ? ` ${adjustedGradeCount} 门已按系统课程年级调整，请核对。` : ''}`;
   const body = document.getElementById('exam-import-preview-rows');
   body.innerHTML = preview.rows.map(row => {
     const key = examDurationImportRowKey(row);
     const selected = mappings[key] || row.course_id || '';
     return `<tr>
-      <td><strong>${escapeHtml(examGradeLabel(row.grade))}</strong><small>第 ${row.source_row} 行</small></td>
+      <td><strong>${escapeHtml(examGradeLabel(row.grade))}</strong><small>${row.grade_adjusted ? `原表 ${escapeHtml(examGradeLabel(row.source_grade))}，已按系统课程调整 · ` : ''}第 ${row.source_row} 行</small></td>
       <td><strong>${escapeHtml(row.subject_name)}</strong>${row.course_id ? '<small class="exam-import-match">已自动匹配</small>' : '<small class="exam-import-unmatched">需要选择课程</small>'}</td>
       <td><strong>${row.duration_minutes} 分钟</strong><small>原表：${escapeHtml(row.source_duration || '—')}</small></td>
       <td><select class="select" data-exam-import-course="${safeDataAttribute(key)}">${examImportCourseOptions(row, selected)}</select></td>
@@ -1168,13 +1198,15 @@ function renderExamCourseRows() {
   }
   if (gradeFilter) gradeFilter.onchange = renderExamCourseRows;
   body.querySelectorAll('[data-exam-duration]').forEach(select => {
-    select.addEventListener('change', () => {
+    const commitDuration = () => {
       const exam = state.examRows.find(item => item.id === select.dataset.examDuration);
       if (exam) {
         exam.duration_minutes = Number(select.value);
         markExamPlanDirty();
       }
-    });
+    };
+    select.addEventListener('input', commitDuration);
+    select.addEventListener('change', commitDuration);
   });
   body.querySelectorAll('[data-exam-marking-priority]').forEach(select => {
     select.addEventListener('change', () => {
@@ -1199,6 +1231,18 @@ function renderExamCourseRows() {
   });
   populateExamCourseSelect();
   updateExamWorkflow();
+}
+
+function synchronizeVisibleExamCourseEditors() {
+  const state = examPlannerState();
+  document.querySelectorAll('[data-exam-duration]').forEach(input => {
+    const exam = state.examRows.find(item => item.id === input.dataset.examDuration);
+    if (exam) exam.duration_minutes = Number(input.value);
+  });
+  document.querySelectorAll('[data-exam-marking-priority]').forEach(select => {
+    const exam = state.examRows.find(item => item.id === select.dataset.examMarkingPriority);
+    if (exam) exam.marking_priority = select.value;
+  });
 }
 
 function teacherDisplayMap(schedule) {
@@ -1334,7 +1378,7 @@ function renderExamSchedule(schedule) {
   const restPolicy = examRestPolicySummary(schedule);
   document.getElementById('exam-result-summary').textContent =
     timetableOnly
-      ? `已完成 ${schedule.sessions.length} 门考试，时间窗口、休息间隔和年级内顺序校验通过；可以导出三个年级考试时间表。${restPolicy}阅卷优先只影响软排序，不会覆盖学生冲突、考试窗口或休息时间。`
+      ? `已完成 ${schedule.sessions.length} 门考试，时间窗口、休息间隔和年级内顺序校验通过；可以导出三个年级考试时间表。${restPolicy}当前阶段尚未载入完整考生名单，学生冲突将在第 4 步安排考场时校验。`
       : `已完成 ${schedule.sessions.length} 门考试，独立校验通过；可以导出考试总表、教师任务和考场座次。${restPolicy}阅卷优先只影响软排序，不会覆盖学生冲突、考试窗口或休息时间。`;
   const gradeCount = new Set(schedule.sessions.flatMap(session => session.grades || [])).size;
   document.getElementById('exam-result-metrics').innerHTML = (timetableOnly ? [
@@ -1351,7 +1395,9 @@ function renderExamSchedule(schedule) {
   const validation = document.getElementById('exam-review-validation');
   validation.className = `exam-review-validation ${review.validation_ok ? 'success' : 'error'}`;
   validation.textContent = review.validation_ok
-    ? `校验通过：${review.rows.length} 门考试无学生冲突，且考试间休息符合当前策略。`
+    ? timetableOnly
+      ? `时间表阶段校验通过：${review.rows.length} 门考试均在窗口内且休息间隔符合策略；学生冲突将在第 4 步按完整考生名单校验。`
+      : `校验通过：${review.rows.length} 门考试无学生冲突，且考试间休息符合当前策略。`
     : `发现 ${review.conflict_count} 组学生考试冲突或休息间隔问题，请返回修改后重新生成。`;
   const dayFilter = document.getElementById('exam-review-day-filter');
   const gradeFilter = document.getElementById('exam-review-grade-filter');
@@ -1377,6 +1423,7 @@ function renderExamSchedule(schedule) {
         ? row.early_scheduling_reasons
         : [];
       const earlyReasonText = earlyReasons.length ? earlyReasons.join('；') : '普通顺序';
+      const conflictText = timetableOnly ? '第 4 步校验' : row.conflict_status;
       return `${groupHeading}<tr class="exam-review-${row.review_status === '通过' ? 'ready' : 'warning'}">
         <td><strong>${escapeHtml(row.date || row.day_label)}</strong><small>${escapeHtml(row.day_label)}</small></td>
         <td>${escapeHtml(row.grade_label)}</td>
@@ -1385,7 +1432,7 @@ function renderExamSchedule(schedule) {
         <td>${Number(row.student_count ?? row.student_ids?.length ?? 0)} 人</td>
         <td>${roomText}</td>
         <td><span class="exam-review-badge ${earlyReasons.length ? 'info' : ''}">${escapeHtml(earlyReasonText)}</span><small>软约束</small></td>
-        <td><span class="exam-review-badge ${row.conflict_status === '无冲突' ? 'success' : 'error'}">${escapeHtml(row.conflict_status)}</span></td>
+        <td><span class="exam-review-badge ${timetableOnly ? 'info' : row.conflict_status === '无冲突' ? 'success' : 'error'}">${escapeHtml(conflictText)}</span></td>
         <td><span class="exam-review-badge ${row.rest_status === '不足' ? 'error' : 'success'}">${escapeHtml(row.rest_status)}</span><small>${escapeHtml(restText)}</small></td>
       </tr>`;
     }).join('') || '<tr><td colspan="9" class="empty-cell">当前筛选条件下没有考试</td></tr>';
@@ -1502,6 +1549,7 @@ function examEditorFields(timetableOnly) {
 window.saveExamPlan = async function({ quiet = false, timetableOnly } = {}) {
   const state = examPlannerState();
   try {
+    synchronizeVisibleExamCourseEditors();
     if (state.examRoomsDirty) throw new Error('请先保存考场名单，再保存考试计划');
     if (!state.examRooms.length) throw new Error('请先添加并保存考场名单');
     const effectiveTimetableOnly = timetableOnly ?? state.plan?.config?.timetable_only !== false;
@@ -2231,6 +2279,30 @@ function hydrateManualDrafts(plan) {
   return true;
 }
 
+function discardInvalidManualDraftEntries() {
+  const drafts = readManualDrafts();
+  const validDrafts = {};
+  let removed = 0;
+  for (const [classId, draft] of Object.entries(drafts)) {
+    if (!window._manualClassesById?.has(classId)) {
+      removed += Object.keys(draft || {}).length;
+      continue;
+    }
+    for (const [slotId, itemId] of Object.entries(draft || {})) {
+      const item = /^D[1-5]P(?:10|[1-9])$/.test(slotId)
+        ? manualStoredItem(itemId, classId)
+        : null;
+      if (!item || (!(item.section_ids || []).length && item.manual_unlimited !== true)) {
+        removed += 1;
+        continue;
+      }
+      validDrafts[classId] = { ...(validDrafts[classId] || {}), [slotId]: itemId };
+    }
+  }
+  if (removed) writeManualDrafts(validDrafts);
+  return removed;
+}
+
 let manualDraftSyncTimer = null;
 function queueManualDraftSync() {
   if (manualPlanIsConfirmed()) return;
@@ -2916,6 +2988,7 @@ async function loadManualTimetable() {
   ];
   window._manualClassesById = new Map(classes.map(item => [item.id, item]));
   const hydratedFromBackend = hydrateManualDrafts(manualPlan);
+  const discardedDraftCount = hydratedFromBackend ? 0 : discardInvalidManualDraftEntries();
   const previous = selector.value;
   selector.innerHTML = selectableClasses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('');
   if (selectableClasses.some(item => item.id === previous)) selector.value = previous;
@@ -3098,6 +3171,12 @@ async function loadManualTimetable() {
   renderManualCoursePool();
   renderManualTimetableGrid();
   renderManualPlanControls();
+  if (discardedDraftCount) {
+    renderManualActionFeedback(`已移除 ${discardedDraftCount} 个不属于当前班级或课程数据的旧手工草稿格。`, {
+      neutral: true,
+      canUndo: false,
+    });
+  }
   if (shouldShowManualGeneratedTimetable()) {
     await loadManualGeneratedTimetable(manualCurrentClassId());
   }
@@ -8819,11 +8898,28 @@ function initAdminShell() {
       else closeCommandPalette();
       return;
     }
-    if (commandPalette?.classList.contains('hidden')) return;
     if (event.key === 'Escape') {
-      event.preventDefault();
-      closeCommandPalette();
-    } else if (event.key === 'ArrowDown') {
+      if (!commandPalette?.classList.contains('hidden')) {
+        event.preventDefault();
+        closeCommandPalette();
+        return;
+      }
+      if (mobileSidebarBreakpoint.matches && app?.classList.contains('sidebar-mobile-open')) {
+        event.preventDefault();
+        setMobileSidebarOpen(false);
+        sidebarToggle?.focus();
+        return;
+      }
+      const assistantContainer = document.querySelector('.container');
+      if (assistantContainer && !assistantContainer.classList.contains('ai-assistant-collapsed')) {
+        event.preventDefault();
+        setAiAssistantCollapsed(true);
+        document.getElementById('btn-ai-assistant-open')?.focus();
+        return;
+      }
+    }
+    if (commandPalette?.classList.contains('hidden')) return;
+    if (event.key === 'ArrowDown') {
       event.preventDefault();
       selectCommandResult(selectedCommandIndex + 1);
     } else if (event.key === 'ArrowUp') {
@@ -12849,7 +12945,7 @@ function renderStateBackups(data, currentCounts = {}) {
   const labels = { students: '学生', teachers: '教师', courses: '课程', rooms: '教室' };
   const backups = data.backups || [];
   status.textContent = backups.length
-    ? `当前数据版本 r${data.revision}；已保留最近 ${backups.length} 个写入前版本。`
+    ? `当前数据版本 r${data.revision}；可恢复版本共 ${backups.length} 个（含写入前与每日备份）。`
     : `当前数据版本 r${data.revision}；还没有可恢复的旧版本。`;
   list.innerHTML = backups.length ? backups.map(backup => {
     const comparison = Object.entries(labels).map(([key, label]) => {
@@ -12859,7 +12955,7 @@ function renderStateBackups(data, currentCounts = {}) {
     }).join(' · ');
     return `<article class="settings-backup-card">
       <div>
-        <strong>数据版本 r${Number(backup.revision)}</strong>
+        <strong>${backup.kind === 'daily' ? '每日备份' : '写入前版本'} · r${Number(backup.revision)}</strong>
         <span>${escapeHtml(new Date(backup.updated_at || backup.created_at).toLocaleString('zh-CN'))}</span>
         <small>与当前相比：${escapeHtml(comparison)}</small>
       </div>

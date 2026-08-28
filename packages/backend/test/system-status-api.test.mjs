@@ -34,10 +34,12 @@ test('system status explains review requirements and distinguishes meetings from
     STATE_FILE: process.env.STATE_FILE,
     TIMETABLE_AUTH_MODE: process.env.TIMETABLE_AUTH_MODE,
     TIMETABLE_AUDIT_FILE: process.env.TIMETABLE_AUDIT_FILE,
+    TIMETABLE_RELEASE_COMMIT: process.env.TIMETABLE_RELEASE_COMMIT,
   };
   process.env.STATE_FILE = stateFile;
   process.env.TIMETABLE_AUTH_MODE = 'off';
   process.env.TIMETABLE_AUDIT_FILE = join(directory, 'audit.jsonl');
+  process.env.TIMETABLE_RELEASE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 
   const { startServer } = await import(`../src/server.mjs?system-status=${Date.now()}`);
   const server = startServer({ port: 0, host: '127.0.0.1' });
@@ -58,6 +60,7 @@ test('system status explains review requirements and distinguishes meetings from
 
   assert.equal(status.counts.assignments, 2);
   assert.equal(status.counts.meetings, 1);
+  assert.equal(status.release_commit, '0123456789abcdef0123456789abcdef01234567');
   assert.equal(status.review_required, true);
   assert.deepEqual(status.review_items, [
     { code: 'AP_GAP', message: '一名 AP 学生存在全天空档' },

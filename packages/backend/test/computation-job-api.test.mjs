@@ -59,10 +59,15 @@ test('known computations return a pollable job while ordinary mutations stay syn
   assert.equal(completed.status, 'succeeded');
   assert.equal(completed.result.tasks_generated, 0);
   assert.equal(completed.result_location.view, 'assignments');
+  const currentRevision = (await (await fetch(`${base}/api/status`)).json()).data.revision;
 
   const mutation = await fetch(`${base}/api/teachers`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-computation-job': 'async' },
+    headers: {
+      'content-type': 'application/json',
+      'x-computation-job': 'async',
+      'if-match': `"${currentRevision}"`,
+    },
     body: JSON.stringify({
       id: 'T1', name: '教师一', can_teach: [], available_slots: [],
       max_per_day: 5, max_per_week: 20,

@@ -738,32 +738,167 @@ function resolvedTeacherId(mapping, overrides, teachers) {
   return mapping.teacher_id || null;
 }
 
+function safeTeacherWorksheetName(workbook, teacher, currentWorksheet = null) {
+  const fallback = compactText(teacher?.id) || '未命名教师';
+  const base = (compactText(teacher?.name) || fallback)
+    .replace(/[\\/*?:[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 31) || '未命名教师';
+  const nameIsAvailable = candidate => {
+    const existing = workbook.getWorksheet(candidate);
+    return !existing || existing.id === currentWorksheet?.id;
+  };
+  if (nameIsAvailable(base)) return base;
+  for (let sequence = 2; sequence < 1_000; sequence += 1) {
+    const suffix = ` ${sequence}`;
+    const candidate = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+    if (nameIsAvailable(candidate)) return candidate;
+  }
+  throw new Error(`无法为教师 ${teacher?.name || teacher?.id || ''} 生成唯一工作表名称`);
+}
+
+function relabelTeacherWorksheet(workbook, worksheet, teacher) {
+  const currentName = compactText(teacher?.name) || compactText(teacher?.id);
+  if (!currentName) return false;
+  let changed = false;
+  if (!normalizedIdentity(worksheet.name).includes(normalizedIdentity(currentName))) {
+    worksheet.name = safeTeacherWorksheetName(workbook, teacher, worksheet);
+    changed = true;
+  }
+  for (let rowNumber = 1; rowNumber <= Math.min(worksheet.rowCount, 5); rowNumber += 1) {
+    const hasTeacherLabel = Array.from({ length: worksheet.columnCount }, (_, index) => (
+      compactText(worksheet.getCell(rowNumber, index + 1).value)
+    )).some(value => /^(teacher|教师)$/i.test(value));
+    if (!hasTeacherLabel) continue;
+    for (let columnNumber = 1; columnNumber <= worksheet.columnCount; columnNumber += 1) {
+      const cell = worksheet.getCell(rowNumber, columnNumber);
+      const value = compactText(cell.value);
+      if (!value || /^(teacher|教师)$/i.test(value) || value === currentName) continue;
+      cell.value = currentName;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function createGeneratedTeacherWorksheet(workbook, teacher) {
+  const worksheet = workbook.addWorksheet(safeTeacherWorksheetName(workbook, teacher), {
+    properties: { defaultRowHeight: 30 },
+    pageSetup: {
+      paperSize: 9,
+      orientation: 'landscape',
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 1,
+      margins: { left: 0.25, right: 0.25, top: 0.4, bottom: 0.4, header: 0.15, footer: 0.15 },
+    },
+  });
+  const dayLabels = ['星期一', '星期二', '星期三', '星期四', '星期五'];
+  worksheet.mergeCells('A1:F1');
+  worksheet.getCell('A1').value = `${teacher.name || teacher.id} 教师课表`;
+  worksheet.getCell('A2').value = '节次';
+  dayLabels.forEach((label, index) => { worksheet.getCell(2, index + 2).value = label; });
+  for (let period = 1; period <= 10; period += 1) {
+    worksheet.getCell(period + 2, 1).value = `第 ${period} 节`;
+  }
+  worksheet.getColumn(1).width = 10;
+  for (let column = 2; column <= 6; column += 1) worksheet.getColumn(column).width = 20;
+  worksheet.getRow(1).height = 32;
+  worksheet.getRow(2).height = 24;
+  for (let row = 1; row <= 12; row += 1) {
+    for (let column = 1; column <= 6; column += 1) {
+      const cell = worksheet.getCell(row, column);
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true, shrinkToFit: true };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFB8C2CC' } },
+        left: { style: 'thin', color: { argb: 'FFB8C2CC' } },
+        bottom: { style: 'thin', color: { argb: 'FFB8C2CC' } },
+        right: { style: 'thin', color: { argb: 'FFB8C2CC' } },
+      };
+    }
+  }
+  worksheet.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+  worksheet.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
+  for (let column = 1; column <= 6; column += 1) {
+    const cell = worksheet.getCell(2, column);
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4B5563' } };
+  }
+  for (let row = 3; row <= 12; row += 1) {
+    worksheet.getCell(row, 1).font = { bold: true, color: { argb: 'FF374151' } };
+    worksheet.getCell(row, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+  }
+  worksheet.pageSetup.printArea = 'A1:F12';
+  worksheet.views = [{ state: 'frozen', ySplit: 2, xSplit: 1 }];
+  return worksheet;
+}
+
+function fillOneTeacherWorksheet(worksheet, teacherId, meetings, lookups) {
+  const grid = worksheetGrid(worksheet);
+  if (!grid) return 0;
+  const teacherMeetings = meetings.filter(item => item.teacher_id === teacherId);
+  let filledCells = 0;
+  for (const { day, column } of grid.dayColumns) {
+    for (const [period, row] of grid.periodRows.entries()) {
+      const value = teacherCellText(
+        teacherMeetings.filter(item => item.day === day && item.period === period),
+        lookups,
+      );
+      setTimetableCell(worksheet.getCell(row, column), value);
+      if (value) filledCells += 1;
+    }
+  }
+  return filledCells;
+}
+
 function fillTeacherWorkbook(workbook, state, meetings, lookups, teacherMappings = {}) {
   let filledCells = 0;
   const warnings = [];
   const mappings = analyzeTeacherWorkbook(workbook, state).mappings;
+  const teachersById = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
+  const exportedTeacherIds = new Set();
+  const omittedWorksheetIds = [];
   for (const mapping of mappings) {
     const worksheet = workbook.getWorksheet(mapping.sheet_name);
     const grid = worksheet && worksheetGrid(worksheet);
     if (!worksheet || !grid || mapping.status === 'resource') continue;
     const teacherId = resolvedTeacherId(mapping, teacherMappings, state.teachers || []);
     if (!teacherId) {
-      warnings.push(`${mapping.sheet_name} 未匹配教师，已保留空白`);
-      for (const { column } of grid.dayColumns) {
-        for (const row of grid.periodRows.values()) setTimetableCell(worksheet.getCell(row, column), '');
-      }
+      warnings.push(`${mapping.sheet_name} 未匹配现任教师，已从“全部教师课表”中省略`);
+      omittedWorksheetIds.push(worksheet.id);
       continue;
     }
-    const teacherMeetings = meetings.filter(item => item.teacher_id === teacherId);
-    for (const { day, column } of grid.dayColumns) {
-      for (const [period, row] of grid.periodRows.entries()) {
-        const text = teacherCellText(teacherMeetings.filter(item => item.day === day && item.period === period), lookups);
-        setTimetableCell(worksheet.getCell(row, column), text);
-        if (text) filledCells += 1;
-      }
+    if (exportedTeacherIds.has(teacherId)) {
+      warnings.push(`${mapping.sheet_name} 与另一张教师表重复，已省略重复页`);
+      omittedWorksheetIds.push(worksheet.id);
+      continue;
     }
+    const teacher = teachersById.get(teacherId);
+    if (teacher && relabelTeacherWorksheet(workbook, worksheet, teacher)) {
+      warnings.push(`${mapping.sheet_name} 已更新为现任教师“${teacher.name || teacher.id}”`);
+    }
+    exportedTeacherIds.add(teacherId);
+    filledCells += fillOneTeacherWorksheet(worksheet, teacherId, meetings, lookups);
   }
-  return { filled_cells: filledCells, warnings, mappings };
+  for (const worksheetId of omittedWorksheetIds) workbook.removeWorksheet(worksheetId);
+
+  let generatedSheets = 0;
+  for (const teacher of state.teachers || []) {
+    if (exportedTeacherIds.has(teacher.id)) continue;
+    const worksheet = createGeneratedTeacherWorksheet(workbook, teacher);
+    filledCells += fillOneTeacherWorksheet(worksheet, teacher.id, meetings, lookups);
+    exportedTeacherIds.add(teacher.id);
+    generatedSheets += 1;
+  }
+  if (generatedSheets) warnings.push(`模板缺少的 ${generatedSheets} 位现任教师已自动生成标准课表页`);
+  return {
+    filled_cells: filledCells,
+    warnings,
+    mappings,
+    generated_sheets: generatedSheets,
+    exported_teacher_count: exportedTeacherIds.size,
+  };
 }
 
 function safeDateStamp(now = new Date()) {
@@ -812,6 +947,8 @@ export async function exportScheduleTemplates({
     summary: {
       class_filled_cells: classResult.filled_cells,
       teacher_filled_cells: teacherResult.filled_cells,
+      teacher_sheet_count: teacherResult.exported_teacher_count,
+      generated_teacher_sheets: teacherResult.generated_sheets,
       warnings: [...classResult.warnings, ...teacherResult.warnings],
     },
   };

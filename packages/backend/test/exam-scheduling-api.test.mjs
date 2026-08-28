@@ -142,6 +142,7 @@ test('saves, solves, retrieves, and exports one exam plan through the public API
 
   const deleteResponse = await fetch(`${base.replace(/\/exams$/, '')}/courses/MATH`, {
     method: 'DELETE',
+    headers: { 'if-match': `"${persisted.meta.revision}"` },
   });
   assert.equal(deleteResponse.status, 200);
 

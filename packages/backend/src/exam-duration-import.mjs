@@ -40,7 +40,38 @@ function aliasKeys(value) {
   if (normalized === '化学' || normalized.includes('中方化学')) aliases.add('CHINESE_CHEMISTRY');
   if (normalized === '物理' || normalized.includes('中方物理')) aliases.add('CHINESE_PHYSICS');
   if (normalized === '力学' || normalized.includes('力学基础')) aliases.add('MECHANICS');
+  if (normalized === '二外'
+    || /secondforeignlanguage/.test(normalized)
+    || /^(?:法语|德语|日语|french|german|japanese)$/.test(normalized)) {
+    aliases.add('SECOND_FOREIGN_LANGUAGE');
+  }
   return aliases;
+}
+
+function uniqueBestCourse(courses, subject, subjectAliases) {
+  const scored = courses.map(course => {
+    const courseName = normalizedName(course.name || course.id);
+    const courseId = normalizedName(course.id);
+    let score = courseName === subject || courseId === subject ? 100 : 0;
+    const courseAliases = new Set([...aliasKeys(course.name), ...aliasKeys(course.id)]);
+    if (!score && [...subjectAliases].some(alias => courseAliases.has(alias))) score = 90;
+    if (!score && subject.length >= 4 && (courseName.includes(subject) || subject.includes(courseName))) score = 80;
+    return { course, score };
+  }).filter(item => item.score > 0).sort((left, right) => right.score - left.score);
+  if (!scored.length) return null;
+  const best = scored.filter(item => item.score === scored[0].score);
+  if (best.length === 1) return best[0].course;
+
+  const preferences = subjectAliases.has('COMPREHENSIVE_ENGLISH')
+    ? ['ENG_COMP', 'ENG_LS', 'COMPREHENSIVE_ENGLISH', 'ENG_RW', 'ENG_LIT']
+    : subjectAliases.has('SECOND_FOREIGN_LANGUAGE')
+      ? ['FRENCH', 'JAPANESE', 'GERMAN']
+      : [];
+  for (const preferredId of preferences) {
+    const preferred = best.find(item => String(item.course.id).toUpperCase() === preferredId);
+    if (preferred) return preferred.course;
+  }
+  return null;
 }
 
 function matchingCourse(courses, grade, subjectName) {
@@ -50,17 +81,18 @@ function matchingCourse(courses, grade, subjectName) {
     const grades = courseGrades(course);
     return !grades.length || grades.includes(grade);
   });
-  const scored = candidates.map(course => {
+  const sameGradeCourse = uniqueBestCourse(candidates, subject, subjectAliases);
+  if (sameGradeCourse) return { course: sameGradeCourse, grade, adjusted: false };
+
+  const exactAcrossGrades = (courses || []).filter(course => {
     const courseName = normalizedName(course.name || course.id);
     const courseId = normalizedName(course.id);
-    let score = courseName === subject || courseId === subject ? 100 : 0;
-    const courseAliases = new Set([...aliasKeys(course.name), ...aliasKeys(course.id)]);
-    if (!score && [...subjectAliases].some(alias => courseAliases.has(alias))) score = 90;
-    if (!score && subject.length >= 4 && (courseName.includes(subject) || subject.includes(courseName))) score = 80;
-    return { course, score };
-  }).filter(item => item.score > 0).sort((left, right) => right.score - left.score);
-  if (!scored.length || scored.filter(item => item.score === scored[0].score).length > 1) return null;
-  return scored[0].course;
+    return courseName === subject || courseId === subject;
+  });
+  if (exactAcrossGrades.length !== 1) return null;
+  const targetGrades = courseGrades(exactAcrossGrades[0]);
+  if (targetGrades.length !== 1) return null;
+  return { course: exactAcrossGrades[0], grade: targetGrades[0], adjusted: true };
 }
 
 function durationMinutes(value) {
@@ -104,15 +136,16 @@ export function parseExamDurationBuffer(buffer, state = {}, filename = '') {
         skippedRows.push({ grade, subject_name: subjectName, source_duration: text(sourceDuration), source_row: rowIndex + 1 });
         continue;
       }
-      const course = matchingCourse(state.courses, grade, subjectName);
+      const match = matchingCourse(state.courses, grade, subjectName);
       rows.push({
-        grade,
+        grade: match?.grade ?? grade,
+        ...(match?.adjusted ? { source_grade: grade, grade_adjusted: true } : {}),
         subject_name: subjectName,
         source_duration: text(sourceDuration),
         duration_minutes: minutes,
         source_row: rowIndex + 1,
-        course_id: course?.id || null,
-        match_status: course ? 'matched' : 'unmatched',
+        course_id: match?.course?.id || null,
+        match_status: match ? 'matched' : 'unmatched',
       });
     }
   }
@@ -126,6 +159,7 @@ export function parseExamDurationBuffer(buffer, state = {}, filename = '') {
       matched_count: rows.filter(row => row.course_id).length,
       unmatched_count: rows.filter(row => !row.course_id).length,
       skipped_count: skippedRows.length,
+      adjusted_grade_count: rows.filter(row => row.grade_adjusted).length,
     },
   };
 }
