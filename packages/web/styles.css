@@ -6796,6 +6796,7 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
 .exam-table td { padding: 9px 10px; vertical-align: top; }
 .exam-table td small { display: block; margin-top: 2px; color: var(--shell-muted); font-size: 9px; }
 .exam-table .exam-duration { min-width: 105px; padding: 6px 8px; font-size: 11px; }
+.exam-table .exam-marking-priority { min-width: 116px; padding: 6px 8px; font-size: 11px; }
 
 .exam-result-card {
   max-width: 1480px;
@@ -7529,6 +7530,7 @@ tr:hover { background: color-mix(in srgb, var(--shell-accent) 60%, transparent);
 }
 .exam-review-badge.success { color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--white)); }
 .exam-review-badge.error { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--white)); }
+.exam-review-badge.info { color: var(--secondary-dark); background: color-mix(in srgb, var(--secondary) 10%, var(--white)); }
 
 .exam-teacher-duty-review { display: grid; gap: 13px; }
 .exam-teacher-duty-content { display: grid; gap: 13px; }

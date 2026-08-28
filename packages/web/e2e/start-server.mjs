@@ -26,10 +26,17 @@ writeFileSync(stateFile, `${JSON.stringify({
       id: 'T_OTHER', name: '安生监考教师', can_teach: [],
       available_slots: [], max_per_day: 5, max_per_week: 20,
     },
+    {
+      id: 'T_BIO', name: '生物任课教师', can_teach: ['BIO'],
+      available_slots: [], max_per_day: 5, max_per_week: 20,
+    },
   ],
   rooms: [{ id: 'R1', name: '教室一', type: 'classroom', capacity: 30 }],
   courses: [{
     id: 'MATH', name: '数学', type: 'required', grade: 10,
+    weekly_hours: 1, required_room_type: 'classroom',
+  }, {
+    id: 'BIO', name: '生物', type: 'required', grade: 10,
     weekly_hours: 1, required_room_type: 'classroom',
   }],
   students: [
@@ -40,6 +47,9 @@ writeFileSync(stateFile, `${JSON.stringify({
   teaching_classes: [{ id: 'G10T', name: '高一教学班', grade: 10, student_ids: ['S1', 'S2'], fixed_room_id: 'R1' }],
   teaching_assignments: [{
     id: 'TA_MATH', teacher_id: 'T_MATH', course_id: 'MATH',
+    class_id: 'G10T', class_ids: ['G10T'], class_type: 'teaching', weekly_hours: 1,
+  }, {
+    id: 'TA_BIO', teacher_id: 'T_BIO', course_id: 'BIO',
     class_id: 'G10T', class_ids: ['G10T'], class_type: 'teaching', weekly_hours: 1,
   }],
   teaching_tasks: [],

@@ -38,6 +38,8 @@ function examGrades(rawExam) {
 
 const SECOND_FOREIGN_LANGUAGE_SUBJECT_IDS = new Set(['FRENCH', 'GERMAN', 'JAPANESE']);
 const COMBINED_CHIEF_INVIGILATOR_MODE = 'single_teacher_combined_chief_invigilator';
+const MAX_EXAM_DURATION_MINUTES = 240;
+const DEFAULT_HIGH_MARKING_PRIORITY_SUBJECT_IDS = new Set(['BIOLOGY', 'CHEMISTRY']);
 const EXAM_STAFF_GROUP_LABELS = Object.freeze({
   ansheng: '安生教师',
   director: '主任',
@@ -119,6 +121,15 @@ function examSubjectIdForCourse(course) {
   if (/(?:\bART\b|美术)/.test(signature)) return 'ART';
   if (/(?:(?:^|[ _-])PE(?:[ _-]|$)|PHYSICAL EDUCATION|体育)/.test(signature)) return 'PHYSICAL_EDUCATION';
   return `COURSE_${normalizedSubjectId(course?.id)}`;
+}
+
+function examMarkingPriority(rawValue, subjectId) {
+  if (rawValue === undefined || rawValue === null || text(rawValue) === '') {
+    return DEFAULT_HIGH_MARKING_PRIORITY_SUBJECT_IDS.has(subjectId) ? 'high' : 'normal';
+  }
+  const value = text(rawValue).toLowerCase();
+  if (!['normal', 'high'].includes(value)) throw new Error('阅卷优先级必须是 normal 或 high');
+  return value;
 }
 
 function selectedCourseIds(student) {
@@ -280,7 +291,7 @@ export function normalizeExamPlan(state = {}, raw = {}) {
     const courseId = text(rawExam?.course_id);
     const course = courses.get(courseId);
     if (!course) throw new Error(`考试 ${id} 引用了不存在的课程 ${courseId || '（空）'}`);
-    const durationMinutes = integer(rawExam.duration_minutes, `考试 ${id} 时长`, { minimum: config.slot_minutes, maximum: 240 });
+    const durationMinutes = integer(rawExam.duration_minutes, `考试 ${id} 时长`, { minimum: config.slot_minutes, maximum: MAX_EXAM_DURATION_MINUTES });
     if (durationMinutes % config.slot_minutes !== 0) {
       throw new Error(`考试 ${id} 时长必须是 ${config.slot_minutes} 分钟的整数倍`);
     }
@@ -291,6 +302,9 @@ export function normalizeExamPlan(state = {}, raw = {}) {
         : 'derived';
     const grades = examGrades(rawExam).length ? examGrades(rawExam) : courseGrades(course);
     const secondForeignLanguage = isSecondForeignLanguageExam(rawExam, course);
+    const subjectId = secondForeignLanguage
+      ? 'SECOND_FOREIGN_LANGUAGE'
+      : normalizedSubjectId(rawExam.subject_id) || examSubjectIdForCourse(course);
     const componentCourseIds = secondForeignLanguage
       ? secondForeignLanguageCourseIds(state, grades)
       : [];
@@ -306,9 +320,8 @@ export function normalizeExamPlan(state = {}, raw = {}) {
       id,
       course_id: course.id,
       course_name: text(rawExam.course_name || rawExam.name) || course.name || course.id,
-      subject_id: secondForeignLanguage
-        ? 'SECOND_FOREIGN_LANGUAGE'
-        : normalizedSubjectId(rawExam.subject_id) || examSubjectIdForCourse(course),
+      subject_id: subjectId,
+      marking_priority: examMarkingPriority(rawExam.marking_priority, subjectId),
       ...(secondForeignLanguage ? {
         component_course_ids: componentCourseIds,
         staffing_mode: COMBINED_CHIEF_INVIGILATOR_MODE,
@@ -923,7 +936,7 @@ function addTimetableOnlySymmetryBreaking(model, records) {
 
   for (const record of records.values()) {
     const grades = [...(record.exam.grades || [])].sort((left, right) => left - right);
-    const key = `${grades.join(',')}:${record.exam.duration_units}`;
+    const key = `${grades.join(',')}:${record.exam.duration_units}:${record.earlyDateWeight}`;
     const group = interchangeableExamGroups.get(key) || [];
     group.push(record);
     interchangeableExamGroups.set(key, group);
@@ -935,6 +948,22 @@ function addTimetableOnlySymmetryBreaking(model, records) {
       model.addLessOrEqual(group[index - 1].start, group[index].start);
     }
   }
+}
+
+function examEarlyDateWeight(exam) {
+  // A manually selected high priority outranks any normal exam duration, while
+  // duration still differentiates exams inside each priority level.
+  const markingPriorityBonus = exam.marking_priority === 'high' ? MAX_EXAM_DURATION_MINUTES : 0;
+  return exam.duration_minutes + markingPriorityBonus;
+}
+
+function examEarlySchedulingReasons(exam, longestDurationMinutes) {
+  const reasons = [];
+  if (exam.duration_minutes === longestDurationMinutes) {
+    reasons.push(`本批次最长考试（${exam.duration_minutes} 分钟）`);
+  }
+  if (exam.marking_priority === 'high') reasons.push('阅卷优先科目');
+  return reasons;
 }
 
 /**
@@ -980,12 +1009,15 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
     if (!timetableOnly && courses.get(exam.course_id)?.type !== 'required' && requiredRoomCount > 3) {
       throw new Error(`选修课 ${exam.course_name} 的 ${exam.student_count} 名考生需要 ${requiredRoomCount} 个考场；选修课最多只能使用 3 个考场`);
     }
-    const starts = time.solverStarts(exam.duration_units, dayCountForExam(plan.config, exam));
+    const examDayCount = dayCountForExam(plan.config, exam);
+    const starts = time.solverStarts(exam.duration_units, examDayCount);
     if (!starts.length) throw new Error(`考试 ${exam.course_name} 无法放入任何一个可用时间窗口`);
     const start = model.newIntVarFromDomain(
       Domain.fromValues(starts.map(BigInt)),
       `EXAM_START_${exam.id}`,
     );
+    const day = model.newIntVar(0n, BigInt(examDayCount - 1), `EXAM_DAY_${exam.id}`);
+    model.addDivisionEquality(day, start, BigInt(time.solverDayStride));
     const interval = model.newFixedSizeIntervalVar(start, BigInt(exam.duration_units), `EXAM_INTERVAL_${exam.id}`);
     const attendeeInterval = model.newFixedSizeIntervalVar(
       start,
@@ -1122,6 +1154,8 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
       chiefTeacherIds,
       combinedDutyVars,
       requiredRoomCount,
+      day,
+      earlyDateWeight: examEarlyDateWeight(exam),
     });
   }
 
@@ -1190,6 +1224,8 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
     [...records.values()].map(record => record.start.add(BigInt(record.exam.duration_units))),
   );
   const startTerms = [...records.values()].map(record => record.start);
+  const earlyDateTerms = [...records.values()].map(record =>
+    record.day.mul(BigInt(record.earlyDateWeight)));
   const objectiveTerms = [latestEnd.mul(1_000_000_000n)];
   let maxTeacherLoad;
   let minTeacherLoad;
@@ -1208,6 +1244,7 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
     objectiveTerms.push(maxTeacherLoad.sub(minTeacherLoad).mul(1_000_000n));
     objectiveTerms.push(maxTeacherMinutes.sub(minTeacherMinutes).mul(1_000n));
   }
+  objectiveTerms.push(LinearExpr.sum(earlyDateTerms).mul(100n));
   objectiveTerms.push(LinearExpr.sum(startTerms).mul(10n));
   if (objectiveRoomTerms.length) objectiveTerms.push(LinearExpr.sum(objectiveRoomTerms));
   model.minimize(LinearExpr.sum(objectiveTerms));
@@ -1270,6 +1307,12 @@ export async function solveExamSchedule(state = {}, rawPlan = {}, options = {}) 
       student_ids: record.exam.student_ids,
       student_count: record.exam.student_count,
       duration_minutes: record.exam.duration_minutes,
+      marking_priority: record.exam.marking_priority,
+      early_date_weight: record.earlyDateWeight,
+      early_scheduling_reasons: examEarlySchedulingReasons(
+        record.exam,
+        time.longestExamDurationMinutes,
+      ),
       day_index: dayIndex,
       day_label: plan.config.day_labels[dayIndex],
       global_start_unit: globalStart,

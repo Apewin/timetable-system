@@ -323,7 +323,7 @@
             <section id="exam-subjects-card" class="exam-card" data-exam-stage-panel="subjects">
               <div class="exam-card-heading">
                 <div><span>01</span><h3>考试科目与时长</h3></div>
-                <p>先上传考试时长统计表批量生成考试，再逐科核对课程映射和调整分钟数；当前只按科目和年级排时间，即使当前考生人数为 0 也不会漏排。</p>
+                <p>先上传考试时长统计表批量生成考试，再逐科核对课程映射、调整分钟数和阅卷顺序。长时长考试会获得更高的靠前权重；生物、化学默认设为阅卷优先，也可以逐科改回普通顺序。当前考生人数为 0 的科目仍不会漏排。</p>
               </div>
               <div class="exam-import-panel">
                 <div>
@@ -368,7 +368,7 @@
               </div>
               <div class="table-container exam-table-wrap">
                 <table class="exam-table">
-                  <thead><tr><th>年级</th><th>科目</th><th>类型</th><th>时长</th><th>考生名单来源</th><th>考场安排</th><th></th></tr></thead>
+                  <thead><tr><th>年级</th><th>科目</th><th>类型</th><th>时长</th><th>阅卷顺序</th><th>考生名单来源</th><th>考场安排</th><th></th></tr></thead>
                   <tbody id="exam-course-rows"></tbody>
                 </table>
               </div>
@@ -437,7 +437,7 @@
             <section id="exam-result-card" class="exam-card exam-result-card hidden" data-exam-stage-panel="timetable">
               <div class="exam-card-heading">
                 <div><span>03</span><h3>生成与审核考试时间表</h3></div>
-                <p id="exam-result-summary">设置已保存后，在这里单独启动计算并核对日期、年级、学生冲突与休息间隔。</p>
+                <p id="exam-result-summary">设置已保存后，在这里单独启动计算并核对日期、年级、阅卷优先依据、学生冲突与休息间隔。</p>
               </div>
               <div id="exam-result-empty" class="exam-stage-empty">
                 <strong>还没有可审核的考试时间表</strong>
@@ -458,7 +458,7 @@
                 </div>
                 <div class="table-container">
                   <table class="exam-table exam-review-table">
-                    <thead><tr><th>日期</th><th>年级</th><th>时间</th><th>科目</th><th>考生</th><th>考场</th><th>学生冲突</th><th>休息校验</th></tr></thead>
+                    <thead><tr><th>日期</th><th>年级</th><th>时间</th><th>科目</th><th>考生</th><th>考场</th><th>靠前依据</th><th>学生冲突</th><th>休息校验</th></tr></thead>
                     <tbody id="exam-schedule-rows"></tbody>
                   </table>
                 </div>

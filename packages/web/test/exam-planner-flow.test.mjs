@@ -188,6 +188,15 @@ test('exam planner exposes ordinary and longest-exam rest times', () => {
   assert.match(appSource, /examRestPolicySummary\(schedule\)/);
 });
 
+test('exam planner lets staff review marking priority and explains the soft early-date rule', () => {
+  assert.match(indexSource, /长时长考试会获得更高的靠前权重/);
+  assert.match(indexSource, /生物、化学默认设为阅卷优先/);
+  assert.match(indexSource, /<th>阅卷顺序<\/th>/);
+  assert.match(indexSource, /<th>靠前依据<\/th>/);
+  assert.match(appSource, /data-exam-marking-priority/);
+  assert.match(appSource, /阅卷优先只影响软排序，不会覆盖学生冲突、考试窗口或休息时间/);
+});
+
 test('exam planner has dedicated desktop and responsive presentation', () => {
   for (const selector of [
     '.exam-page-header',

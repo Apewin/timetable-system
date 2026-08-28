@@ -26,6 +26,7 @@ import {
   changeExamRooms,
   DEFAULT_EXAM_SOLVE_SECONDS,
   examDurationImportRowKey,
+  examMarkingPriorityForEditor,
   examPlanFromEditor,
   examRestPolicySummary,
   examRowsFromDurationImport,
@@ -1121,7 +1122,7 @@ function renderExamCourseRows() {
   const visibleCount = document.getElementById('exam-subject-visible-count');
   if (!body) return;
   if (!state.examRows.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty-state">尚未添加考试科目</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="empty-state">尚未添加考试科目</td></tr>';
     if (visibleCount) visibleCount.textContent = '尚未添加考试';
     populateExamCourseSelect();
     updateExamWorkflow();
@@ -1134,6 +1135,8 @@ function renderExamCourseRows() {
   body.innerHTML = visibleRows.map(exam => {
     const course = courses.get(exam.course_id) || { name: exam.course_name || exam.course_id, type: '' };
     const examName = exam.course_name || course.name;
+    const markingPriority = examMarkingPriorityForEditor(exam, course);
+    exam.marking_priority = markingPriority;
     const courseScope = exam.subject_id === 'SECOND_FOREIGN_LANGUAGE'
       || /二外|second[ _-]*foreign[ _-]*language/i.test(examName)
       ? '合并考试：法语 / 日语 / 德语'
@@ -1143,17 +1146,21 @@ function renderExamCourseRows() {
       && Number.isInteger(Number(exam.student_count))
       ? `${Number(exam.student_count)} 人`
       : '按当前学生选课自动生成';
-    return `<tr class="${exam.ready ? '' : 'is-warning'}">
+    return `<tr class="${exam.ready ? '' : 'is-warning'}" data-exam-course-row="${safeDataAttribute(exam.id)}">
       <td><strong>${escapeHtml(exam.grade_label)}</strong><small>${escapeHtml(exam.source_label)}</small></td>
       <td><strong>${escapeHtml(examName)}</strong><small>${escapeHtml(courseScope)}</small>${exam.issues.length ? `<small class="exam-import-unmatched">${escapeHtml(exam.issues.join('；'))}</small>` : ''}</td>
       <td>${escapeHtml(examTypeLabel(course.type))}</td>
       <td><input class="input exam-duration" type="number" min="5" max="240" step="5" value="${Number(exam.duration_minutes)}" data-exam-duration="${safeDataAttribute(exam.id)}">${exam.source_duration ? `<small>原表：${escapeHtml(exam.source_duration)} · 可调整</small>` : '<small>按分钟调整</small>'}</td>
+      <td><select class="select exam-marking-priority" data-exam-marking-priority="${safeDataAttribute(exam.id)}" aria-label="${escapeHtml(examName)}的阅卷顺序">
+        <option value="normal"${markingPriority === 'normal' ? ' selected' : ''}>普通顺序</option>
+        <option value="high"${markingPriority === 'high' ? ' selected' : ''}>优先靠前</option>
+      </select><small>${markingPriority === 'high' ? '尽量为阅卷留出更多时间' : '仍按考试时长自动加权'}</small></td>
       <td>${escapeHtml(rosterLabel)}<small>${exam.roster_mode === 'explicit' ? '使用已确认的手工名单' : '安排考场时按当前选课重新核对'}</small></td>
       <td>第 4 步分配<small>按实际人数均分考场</small></td>
       <td><button class="btn btn-danger btn-sm" type="button" data-exam-remove="${safeDataAttribute(exam.id)}">移除</button></td>
     </tr>`;
   }).join('');
-  if (!visibleRows.length) body.innerHTML = '<tr><td colspan="7" class="empty-state">当前年级筛选下没有考试</td></tr>';
+  if (!visibleRows.length) body.innerHTML = '<tr><td colspan="8" class="empty-state">当前年级筛选下没有考试</td></tr>';
   if (visibleCount) {
     visibleCount.textContent = readiness.issue_count
       ? `显示 ${visibleRows.length} / ${readiness.rows.length} 门；${readiness.issue_count} 门需要确认`
@@ -1167,6 +1174,20 @@ function renderExamCourseRows() {
         exam.duration_minutes = Number(select.value);
         markExamPlanDirty();
       }
+    });
+  });
+  body.querySelectorAll('[data-exam-marking-priority]').forEach(select => {
+    select.addEventListener('change', () => {
+      const exam = state.examRows.find(item => item.id === select.dataset.examMarkingPriority);
+      if (!exam) return;
+      exam.marking_priority = select.value;
+      markExamPlanDirty();
+      setExamStatus(
+        select.value === 'high'
+          ? `已将“${exam.course_name || exam.course_id}”设为阅卷优先；保存并重新生成后会尽量安排在较早日期。`
+          : `已将“${exam.course_name || exam.course_id}”恢复为普通顺序；考试时长仍参与靠前排序。`,
+        'success',
+      );
     });
   });
   body.querySelectorAll('[data-exam-remove]').forEach(button => {
@@ -1313,8 +1334,8 @@ function renderExamSchedule(schedule) {
   const restPolicy = examRestPolicySummary(schedule);
   document.getElementById('exam-result-summary').textContent =
     timetableOnly
-      ? `已完成 ${schedule.sessions.length} 门考试，时间窗口、休息间隔和年级内顺序校验通过；可以导出三个年级考试时间表。${restPolicy}`
-      : `已完成 ${schedule.sessions.length} 门考试，独立校验通过；可以导出考试总表、教师任务和考场座次。${restPolicy}`;
+      ? `已完成 ${schedule.sessions.length} 门考试，时间窗口、休息间隔和年级内顺序校验通过；可以导出三个年级考试时间表。${restPolicy}阅卷优先只影响软排序，不会覆盖学生冲突、考试窗口或休息时间。`
+      : `已完成 ${schedule.sessions.length} 门考试，独立校验通过；可以导出考试总表、教师任务和考场座次。${restPolicy}阅卷优先只影响软排序，不会覆盖学生冲突、考试窗口或休息时间。`;
   const gradeCount = new Set(schedule.sessions.flatMap(session => session.grades || [])).size;
   document.getElementById('exam-result-metrics').innerHTML = (timetableOnly ? [
     ['使用天数', `${schedule.metrics.used_days} 天`],
@@ -1344,7 +1365,7 @@ function renderExamSchedule(schedule) {
     let previousGroup = '';
     document.getElementById('exam-schedule-rows').innerHTML = rows.map(row => {
       const group = `${row.day_index}:${row.start_time}`;
-      const groupHeading = group === previousGroup ? '' : `<tr class="exam-session-group"><td colspan="8">${escapeHtml(row.date_label || row.day_label)} · ${escapeHtml(row.start_time)} 开始</td></tr>`;
+      const groupHeading = group === previousGroup ? '' : `<tr class="exam-session-group"><td colspan="9">${escapeHtml(row.date_label || row.day_label)} · ${escapeHtml(row.start_time)} 开始</td></tr>`;
       previousGroup = group;
       const roomText = timetableOnly
         ? '第 4 步分配'
@@ -1352,6 +1373,10 @@ function renderExamSchedule(schedule) {
       const restText = row.rest_after_minutes === null
         ? '无需预留'
         : `${row.rest_after_minutes} 分钟（需 ${row.required_rest_minutes}）`;
+      const earlyReasons = Array.isArray(row.early_scheduling_reasons)
+        ? row.early_scheduling_reasons
+        : [];
+      const earlyReasonText = earlyReasons.length ? earlyReasons.join('；') : '普通顺序';
       return `${groupHeading}<tr class="exam-review-${row.review_status === '通过' ? 'ready' : 'warning'}">
         <td><strong>${escapeHtml(row.date || row.day_label)}</strong><small>${escapeHtml(row.day_label)}</small></td>
         <td>${escapeHtml(row.grade_label)}</td>
@@ -1359,10 +1384,11 @@ function renderExamSchedule(schedule) {
         <td><strong>${escapeHtml(row.course_name)}</strong></td>
         <td>${Number(row.student_count ?? row.student_ids?.length ?? 0)} 人</td>
         <td>${roomText}</td>
+        <td><span class="exam-review-badge ${earlyReasons.length ? 'info' : ''}">${escapeHtml(earlyReasonText)}</span><small>软约束</small></td>
         <td><span class="exam-review-badge ${row.conflict_status === '无冲突' ? 'success' : 'error'}">${escapeHtml(row.conflict_status)}</span></td>
         <td><span class="exam-review-badge ${row.rest_status === '不足' ? 'error' : 'success'}">${escapeHtml(row.rest_status)}</span><small>${escapeHtml(restText)}</small></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" class="empty-cell">当前筛选条件下没有考试</td></tr>';
+    }).join('') || '<tr><td colspan="9" class="empty-cell">当前筛选条件下没有考试</td></tr>';
     document.getElementById('exam-review-visible-count').textContent = `显示 ${rows.length} / ${review.rows.length} 门考试`;
   };
   dayFilter.onchange = renderRows;
@@ -1425,6 +1451,7 @@ window.addExamCourse = function() {
     course_id: courseId,
     course_name: course?.name || courseId,
     duration_minutes: Number(document.getElementById('exam-duration-select').value),
+    marking_priority: examMarkingPriorityForEditor({}, course),
   });
   markExamPlanDirty();
   renderExamCourseRows();

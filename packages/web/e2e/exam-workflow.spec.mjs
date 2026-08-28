@@ -34,12 +34,22 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
 
   await page.locator('#exam-course-select').selectOption('MATH');
   await page.getByRole('button', { name: '添加考试' }).click();
-  await expect(page.locator('[data-exam-workflow-status="subjects"]')).toContainText('1 门已添加');
+  await page.locator('#exam-course-select').selectOption('BIO');
+  await page.getByRole('button', { name: '添加考试' }).click();
+  await expect(page.locator('[data-exam-workflow-status="subjects"]')).toContainText('2 门已添加');
+  const mathPriority = page.locator('[data-exam-course-row="EXAM_MATH"] [data-exam-marking-priority]');
+  const biologyPriority = page.locator('[data-exam-course-row="EXAM_BIO"] [data-exam-marking-priority]');
+  await expect(mathPriority).toHaveValue('normal');
+  await expect(biologyPriority).toHaveValue('high');
+  await biologyPriority.selectOption('normal');
+  await expect(page.locator('#exam-plan-status')).toContainText('恢复为普通顺序');
+  await biologyPriority.selectOption('high');
+  await expect(page.locator('#exam-plan-status')).toContainText('设为阅卷优先');
   await page.getByRole('button', { name: '继续设置考试窗口' }).click();
   await expect(page.locator('[data-exam-workflow-stage="config"]')).toHaveAttribute('aria-current', 'step');
 
   await page.locator('#exam-start-date').fill('2027-01-21');
-  await page.locator('#exam-day-end').fill('11:30');
+  await page.locator('#exam-day-end').fill('09:30');
   await page.locator('#exam-breaks').fill('');
   await page.locator('#exam-require-all-teachers').uncheck();
   await page.getByRole('button', { name: '保存并进入第 3 步' }).click();
@@ -55,6 +65,11 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
   await expect(page.locator('#computation-progress')).toBeVisible();
   await expect(page.locator('#exam-result-card')).toBeVisible({ timeout: 120_000 });
   await expect(page.locator('#exam-schedule-rows')).toContainText('数学');
+  await expect(page.locator('#exam-schedule-rows')).toContainText('生物');
+  await expect(page.locator('#exam-schedule-rows')).toContainText('阅卷优先科目');
+  const scheduleRows = page.locator('#exam-schedule-rows tr:not(.exam-session-group)');
+  await expect(scheduleRows.first()).toContainText('生物');
+  await expect(scheduleRows.nth(1)).toContainText('数学');
   await expect(page.locator('#exam-review-validation')).toContainText('校验通过');
   await expect(page.locator('#computation-progress-note')).toContainText('结果位置：排考试 → 安排结果');
 

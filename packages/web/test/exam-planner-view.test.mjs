@@ -6,6 +6,7 @@ import {
   examSeatReview,
   examScheduleReview,
   examTeacherDutyReview,
+  examMarkingPriorityForEditor,
   examPlanFromEditor,
   examRestPolicySummary,
   examRoomsForEditor,
@@ -14,6 +15,13 @@ import {
   examSubjectReadiness,
   examWorkflowState,
 } from '../exam-planner-view.mjs';
+
+test('preselects biology and chemistry for early marking while honoring staff overrides', () => {
+  assert.equal(examMarkingPriorityForEditor({}, { id: 'BIO', name: '生物' }), 'high');
+  assert.equal(examMarkingPriorityForEditor({}, { id: 'CHEM', name: 'Chemistry' }), 'high');
+  assert.equal(examMarkingPriorityForEditor({}, { id: 'MATH', name: '数学' }), 'normal');
+  assert.equal(examMarkingPriorityForEditor({ marking_priority: 'normal' }, { id: 'BIO', name: '生物' }), 'normal');
+});
 
 test('exam subject readiness identifies grade and source before allowing the next stage', () => {
   const courses = [
@@ -325,6 +333,27 @@ test('serializes the editor into the room and teacher staffing phase', () => {
   }, [{ id: 'EXAM_MATH', course_id: 'MATH', duration_minutes: 90 }]);
 
   assert.equal(plan.config.timetable_only, false);
+});
+
+test('preserves the staff-selected marking priority in the saved exam plan', () => {
+  const plan = examPlanFromEditor({
+    day_count: '3',
+    start_date: '2027-01-21',
+    day_start: '08:00',
+    day_end: '17:30',
+    breaks: '',
+    room_count: '1',
+    room_capacity: '30',
+    invigilators_per_room: '1',
+    require_every_teacher_invigilates: false,
+  }, [{
+    id: 'EXAM_BIO',
+    course_id: 'BIO',
+    duration_minutes: 90,
+    marking_priority: 'high',
+  }]);
+
+  assert.equal(plan.exams[0].marking_priority, 'high');
 });
 
 test('serializes the named exam rooms managed by the user', () => {

@@ -86,6 +86,117 @@ test('defaults to fifteen-minute breaks and thirty minutes after the longest exa
   assert.equal(plan.config.longest_exam_gap_minutes, 30);
 });
 
+test('defaults biology and chemistry to high marking priority', () => {
+  const state = {
+    courses: [
+      { id: 'BIO', name: '生物', type: 'required', grade: 10 },
+      { id: 'CHEM', name: 'Chemistry', type: 'required', grade: 10 },
+      { id: 'MATH', name: '数学', type: 'required', grade: 10 },
+    ],
+    students: [],
+  };
+
+  const plan = normalizeExamPlan(state, {
+    config: { day_count: 3, room_count: 1, room_capacity: 30 },
+    exams: state.courses.map(course => ({
+      id: `EXAM_${course.id}`,
+      course_id: course.id,
+      duration_minutes: 60,
+    })),
+  });
+
+  assert.deepEqual(plan.exams.map(exam => [exam.course_id, exam.marking_priority]), [
+    ['BIO', 'high'],
+    ['CHEM', 'high'],
+    ['MATH', 'normal'],
+  ]);
+});
+
+test('allows staff to override the default marking priority', () => {
+  const state = {
+    courses: [{ id: 'BIO', name: '生物', type: 'required', grade: 10 }],
+    students: [],
+  };
+  const plan = normalizeExamPlan(state, {
+    config: { day_count: 3, room_count: 1, room_capacity: 30 },
+    exams: [{
+      id: 'EXAM_BIO',
+      course_id: 'BIO',
+      duration_minutes: 60,
+      marking_priority: 'normal',
+    }],
+  });
+
+  assert.equal(plan.exams[0].marking_priority, 'normal');
+});
+
+test('places a high marking-priority exam on the earlier date when hard constraints allow it', async () => {
+  const state = {
+    courses: [
+      { id: 'MATH', name: '数学', type: 'required', grade: 10 },
+      { id: 'BIO', name: '生物', type: 'required', grade: 10 },
+    ],
+    students: [],
+    teachers: [],
+  };
+  const result = await solveExamSchedule(state, {
+    config: {
+      timetable_only: true,
+      day_count: 3,
+      day_start: '08:00',
+      day_end: '09:00',
+      slot_minutes: 5,
+      breaks: [],
+      room_count: 1,
+      room_capacity: 30,
+    },
+    exams: [
+      { id: 'EXAM_A_MATH', course_id: 'MATH', duration_minutes: 60 },
+      { id: 'EXAM_Z_BIO', course_id: 'BIO', duration_minutes: 60 },
+    ],
+  }, { maxTimeSeconds: 5, numSearchWorkers: 1 });
+
+  assert.equal(result.ok, true);
+  const biology = result.sessions.find(session => session.course_id === 'BIO');
+  assert.equal(biology.day_index, 0);
+  assert.equal(biology.marking_priority, 'high');
+  assert.ok(biology.early_scheduling_reasons.includes('阅卷优先科目'));
+  assert.equal(result.sessions.find(session => session.course_id === 'MATH').day_index, 1);
+});
+
+test('places a longer exam earlier and explains the marking-time preference', async () => {
+  const state = {
+    courses: [
+      { id: 'SHORT', name: '短时长科目', type: 'required', grade: 10 },
+      { id: 'LONG', name: '长时长科目', type: 'required', grade: 10 },
+    ],
+    students: [],
+    teachers: [],
+  };
+  const result = await solveExamSchedule(state, {
+    config: {
+      timetable_only: true,
+      day_count: 3,
+      day_start: '08:00',
+      day_end: '10:00',
+      slot_minutes: 5,
+      breaks: [],
+      room_count: 1,
+      room_capacity: 30,
+    },
+    exams: [
+      { id: 'EXAM_A_SHORT', course_id: 'SHORT', duration_minutes: 60 },
+      { id: 'EXAM_Z_LONG', course_id: 'LONG', duration_minutes: 120 },
+    ],
+  }, { maxTimeSeconds: 5, numSearchWorkers: 1 });
+
+  const longExam = result.sessions.find(session => session.course_id === 'LONG');
+  const shortExam = result.sessions.find(session => session.course_id === 'SHORT');
+  assert.equal(result.ok, true);
+  assert.ok(longExam.day_index < shortExam.day_index);
+  assert.ok(longExam.early_scheduling_reasons.includes('本批次最长考试（120 分钟）'));
+});
+
 test('rejects duplicate managed exam room names', () => {
   assert.throws(() => normalizeExamPlan(schoolState(), {
     config: {

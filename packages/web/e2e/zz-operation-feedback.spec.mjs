@@ -41,7 +41,7 @@ test('manual placement, native drag, solving, timetable adjustment and overlays 
 
   await page.getByRole('link', { name: '改课表' }).click();
   const source = page.locator('.slot-cell.has-class[data-slot-id="D2P1"]');
-  const target = page.locator('.slot-cell[data-slot-id="D1P1"]');
+  const target = page.locator('.slot-cell[data-slot-id="D3P1"]');
   const dragResponse = page.waitForResponse(response =>
     response.url().endsWith('/api/swap') && response.request().method() === 'POST');
   await source.dragTo(target);

@@ -32,6 +32,23 @@ export const DEFAULT_EXAM_SOLVE_SECONDS = 90;
 
 const GRADE_LABELS = { 10: '高一', 11: '高二', 12: '高三' };
 
+export function examMarkingPriorityForEditor(exam = {}, course = {}) {
+  const explicit = String(exam?.marking_priority ?? '').trim().toLowerCase();
+  if (['normal', 'high'].includes(explicit)) return explicit;
+  const signature = [
+    exam?.subject_id,
+    exam?.course_id,
+    exam?.course_name,
+    course?.subject_id,
+    course?.id,
+    course?.name,
+  ].map(value => String(value ?? '')).join(' ').toUpperCase()
+    .replace(/[^A-Z0-9\u3400-\u9FFF]+/g, ' ');
+  return /(?:^| )(?:BIO|BIOLOGY|CHEM|CHEMISTRY)(?: |$)|生物|化学/.test(signature)
+    ? 'high'
+    : 'normal';
+}
+
 function normalizedExamGrades(exam = {}, course = {}) {
   const source = exam.grades ?? exam.grade ?? course.grade;
   const values = Array.isArray(source) ? source : source == null || source === '' ? [] : [source];
@@ -506,6 +523,13 @@ export function examPlanFromEditor(fields = {}, examRows = []) {
       course_id: courseId,
       duration_minutes: integer(row?.duration_minutes, `第 ${index + 1} 门考试时长`, 5, 240),
     };
+    const markingPriority = String(row?.marking_priority ?? '').trim().toLowerCase();
+    if (markingPriority) {
+      if (!['normal', 'high'].includes(markingPriority)) {
+        throw new Error(`第 ${index + 1} 门考试的阅卷优先级无效`);
+      }
+      exam.marking_priority = markingPriority;
+    }
     if (String(row?.course_name ?? '').trim()) exam.course_name = String(row.course_name).trim();
     if (String(row?.source_duration ?? '').trim()) exam.source_duration = String(row.source_duration).trim();
     if (Number.isInteger(Number(row?.source_row)) && Number(row.source_row) > 0) exam.source_row = Number(row.source_row);
