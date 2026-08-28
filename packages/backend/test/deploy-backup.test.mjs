@@ -28,6 +28,10 @@ test('production service accepts the office LAN address used by nginx', () => {
     service,
     /^Environment=TIMETABLE_ALLOWED_HOSTS=.*(?:^|,)192\.168\.31\.7(?:,|$)/m,
   );
+  assert.match(
+    service,
+    /^Environment=TIMETABLE_ALLOWED_HOSTS=.*(?:^|,)sdshiyanAP(?:,|$)/m,
+  );
   assert.match(service, /^Environment=STATE_BACKUP_DIR=\/var\/backups\/timetable$/m);
   assert.match(service, /^ReadWritePaths=.*\/var\/backups\/timetable(?:\s|$)/m);
 });

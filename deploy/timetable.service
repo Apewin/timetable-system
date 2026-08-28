@@ -13,7 +13,7 @@ Environment=HOST=127.0.0.1
 Environment=PORT=3001
 Environment=STATE_FILE=/var/lib/timetable/timetable.json
 Environment=STATE_BACKUP_DIR=/var/backups/timetable
-Environment=TIMETABLE_ALLOWED_HOSTS=127.0.0.1,localhost,192.168.31.7,sdshiyanHP
+Environment=TIMETABLE_ALLOWED_HOSTS=127.0.0.1,localhost,192.168.31.7,sdshiyanHP,sdshiyanAP
 Environment=TZ=Asia/Shanghai
 ExecStart=/usr/bin/node packages/backend/src/server.mjs
 Restart=on-failure
