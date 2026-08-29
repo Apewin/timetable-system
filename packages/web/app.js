@@ -3074,23 +3074,26 @@ async function loadManualTimetable() {
     window._manualAiRunning = true;
     renderManualPlanControls(optimize
       ? '继续优化：正在以当前有效课表为提示，在不破坏金框和硬约束的前提下降低软约束代价…'
-      : '快速生成阶段 1/2：DeepSeek 正在读取锁定课程和规则，生成安全的搜索优先级…');
+      : '快速生成：规则求解器正在先构造完整可用课表，再在 70 秒预算内优化…');
     const timer = setInterval(() => {
       const seconds = Math.round((Date.now() - startedAt) / 1000);
       const stage = optimize
         ? '继续优化：独立求解进程正在保留当前可行课表并寻找更好排法'
-        : seconds < 45
-        ? '辅助 AI 阶段 1/2：DeepSeek 正在整理约束和搜索优先级'
-        : '快速生成阶段 2/2：已保留可行初稿，正在用剩余预算进行全局择优';
+        : seconds < 10
+        ? '快速生成：正在构造通过硬约束校验的保底课表'
+        : '快速生成：已进入全局优化；即使未证明数学最优，也会保留准确可用的最好结果';
       renderManualPlanControls(`${stage}（已用 ${seconds} 秒）…`);
     }, 1000);
     try {
       const result = await solveWithRequiredApproval({
-        use_ai_strategy: true,
+        // The deterministic solver is the source of truth. Avoid putting a
+        // variable 0–90 second model call in front of the bounded solve; AI
+        // remains available elsewhere for explanations and suggestions.
+        use_ai_strategy: false,
         feasible_first: true,
         solver_strategy: optimize ? 'exact' : 'resilient_optimize',
         candidate_count: 2,
-        max_time_seconds: 120,
+        max_time_seconds: 70,
         instruction: optimize
           ? '保留全部手动锁定课程和现有可行解；只在硬约束始终成立时改善课程分布与教师负担。'
           : '保留全部手动锁定课程；先快速构造完整可行课表，再优先处理跨年级教师和高约束课程。',

@@ -814,6 +814,10 @@ export async function solveSchedule(problem, options = {}) {
   for (const limit of problem.teacher_limits || []) {
     const teacherOccurrences = occurrences.filter(occurrence =>
       occurrence.section.teacher_id === limit.teacher_id);
+    // A workload limit is an upper bound, not a requirement to create work.
+    // Teachers without any section occurrences satisfy every daily and
+    // availability limit vacuously; avoid building a sum over an empty set.
+    if (!teacherOccurrences.length) continue;
     const maximum = Number(limit.max_per_day);
     if (Number.isInteger(maximum) && maximum >= 0) {
       for (const [dayIndex, day] of days.entries()) {

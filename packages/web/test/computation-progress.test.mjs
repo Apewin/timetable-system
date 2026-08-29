@@ -78,6 +78,10 @@ test('recognizes every scheduling calculation request and its time budget', () =
     method: 'POST',
     body: JSON.stringify({ max_time_seconds: 120, use_ai_strategy: false }),
   }).maxSeconds, 120);
+  assert.equal(computationRequestDescriptor('/manual-plan/ai-solve', {
+    method: 'POST',
+    body: JSON.stringify({ use_ai_strategy: false }),
+  }).maxSeconds, 70);
   assert.equal(computationRequestDescriptor('/solve', {
     method: 'POST',
     body: JSON.stringify({ timeout: 45_000 }),

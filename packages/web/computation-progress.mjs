@@ -13,7 +13,7 @@ const COMPUTATION_ROUTES = new Map([
   ['/manual-plan/ai-solve', {
     label: '正在生成完整课表',
     successText: '完整课表计算完成',
-    defaultMaxSeconds: 120,
+    defaultMaxSeconds: 70,
   }],
   ['/solve', {
     label: '正在计算正式课表',

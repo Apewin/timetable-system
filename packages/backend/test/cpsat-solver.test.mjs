@@ -1206,6 +1206,33 @@ test('does not fill a teacher workload up to the weekly upper limit', async () =
   assert.equal(solution.meetings.length, 2);
 });
 
+test('ignores daily and availability limits for a teacher with no scheduled lessons', async () => {
+  const problem = {
+    slots,
+    rooms: [],
+    rules: [],
+    teacher_limits: [{
+      teacher_id: 'T_UNUSED',
+      teacher_name: '本周无课教师',
+      max_per_day: 6,
+      max_per_week: 25,
+      available_slot_ids: ['D1P1'],
+    }],
+    sections: [{
+      id: 'MATH', course_id: 'MATH', teacher_id: 'T1', class_type: 'teaching',
+      weekly_hours: 1, student_ids: [], eligible_student_ids: [],
+    }],
+  };
+
+  const solution = await solveSchedule(problem, {
+    maxTimeSeconds: 5,
+    useConstructiveSeed: false,
+  });
+
+  assert.equal(solution.ok, true, solution.reason || solution.status);
+  assert.equal(solution.meetings.length, 1);
+});
+
 test('rejects a teacher day above the configured daily upper limit', async () => {
   const problem = {
     slots,

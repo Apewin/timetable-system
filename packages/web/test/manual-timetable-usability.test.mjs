@@ -54,6 +54,19 @@ test('locking uses one term and destructive actions live under more actions', ()
   assert.match(manualView, /规则求解器/);
 });
 
+test('quick generation uses a bounded deterministic solver and keeps feasible results', () => {
+  const solveFlow = appSource.slice(
+    appSource.indexOf('const runManualAiSolve'),
+    appSource.indexOf("document.getElementById('manual-ai-solve').onclick"),
+  );
+  assert.match(solveFlow, /use_ai_strategy:\s*false/);
+  assert.match(solveFlow, /solver_strategy:\s*optimize \? 'exact' : 'resilient_optimize'/);
+  assert.match(solveFlow, /max_time_seconds:\s*70/);
+  assert.match(solveFlow, /即使未证明数学最优，也会保留准确可用的最好结果/);
+  assert.match(solveFlow, /if \(!result\.solved\)/);
+  assert.doesNotMatch(solveFlow, /result\.solver_status\s*!==\s*'OPTIMAL'/);
+});
+
 test('legacy scheduling-room ids are explained as editable door numbers', () => {
   assert.match(appSource, /R1 这类旧式系统 ID/);
   assert.match(appSource, /可直接改成门牌号/);
