@@ -210,7 +210,7 @@ test('template export fills timetable cells while preserving template styles', a
   await classWorkbook.xlsx.load(result.files.find(item => item.kind === 'class').buffer);
   const classSheet = classWorkbook.getWorksheet('Senior1');
   assert.equal(classSheet.getCell('B2').value, '英语\n韩鹏');
-  assert.equal(classSheet.getCell('C3').value, 'Block 1\nAP 分流');
+  assert.equal(classSheet.getCell('C3').value, 'AP 物理\n秦心瑄');
   assert.equal(classSheet.getCell('B2').fill.fgColor.argb, 'FFFF00');
   assert.equal(classSheet.getCell('B2').border.bottom.style, 'thin');
 
@@ -223,6 +223,116 @@ test('template export fills timetable cells while preserving template styles', a
   assert.ok(generatedTeacherSheet, '模板缺少的现任教师也必须出现在全部教师课表中');
   assert.equal(generatedTeacherSheet.getCell('C4').value, 'AP 物理\nBlock 1');
   assert.equal(teacherWorkbook.getWorksheet('机房使用').getCell('B2').value, null);
+});
+
+test('a teacher missing from the template inherits the existing school worksheet style', async () => {
+  const state = stateFixture();
+  state.teachers.push({ id: 'T_NEW', name: '全新测试教师' });
+  state.courses.push({ id: 'NEW_COURSE', name: '新教师课程' });
+  state.schedule.sections.push({
+    id: 'SEC_NEW',
+    course_id: 'NEW_COURSE',
+    teacher_id: 'T_NEW',
+    class_id: 'TC_G10_1',
+    class_type: 'teaching',
+    student_ids: ['S1'],
+  });
+  state.schedule.assignments.push({
+    section_id: 'SEC_NEW',
+    course_id: 'NEW_COURSE',
+    teacher_id: 'T_NEW',
+    class_id: 'TC_G10_1',
+    class_type: 'teaching',
+    student_id: 'S1',
+    slot_id: 'D1P2',
+  });
+  const defaults = await resolveScheduleTemplateInputs();
+
+  const result = await exportScheduleTemplates({
+    classTemplateBuffer: await classTemplateBuffer(),
+    classTemplateName: 'classes.xlsx',
+    teacherTemplateBuffer: defaults.teacherTemplateBuffer,
+    teacherTemplateName: defaults.teacherTemplateName,
+    state,
+    now: new Date('2026-08-29T00:00:00Z'),
+  });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(result.files.find(item => item.kind === 'teacher').buffer);
+  const source = workbook.getWorksheet('Haman 韩鹏');
+  const generated = workbook.getWorksheet('全新测试教师');
+  assert.ok(source);
+  assert.ok(generated);
+  assert.equal(result.summary.generated_teacher_sheets, 1);
+  assert.equal(
+    source.getCell('A1').value,
+    'Notes:This schedule  will be  in effect  from August 29,2026.',
+  );
+  assert.equal(generated.getCell('A1').value, source.getCell('A1').value);
+  assert.equal(generated.getCell('A1').fill?.fgColor?.argb, source.getCell('A1').fill?.fgColor?.argb);
+  assert.equal(generated.getCell('B2').value, 'Monday');
+  assert.equal(generated.getCell('A3').value, 'Teacher');
+  assert.equal(generated.getCell('B3').value, '全新测试教师');
+  assert.equal(generated.getCell('B6').value, '新教师课程\n高一教学1班');
+  assert.ok(generated.model.merges.includes('A1:F1'));
+  assert.deepEqual(generated.getCell('B2').style, source.getCell('B2').style);
+  assert.equal(generated.getRow(1).height, source.getRow(1).height);
+  assert.equal(generated.getColumn(2).width, source.getColumn(2).width);
+  assert.equal(generated.pageSetup.orientation, source.pageSetup.orientation);
+});
+
+test('class timetable export lists every AP course instead of block placeholders or summaries', async () => {
+  const state = stateFixture();
+  const apCourses = [
+    ['AP_PHY', 'AP 物理', 'T_QINXINXUAN', '秦心瑄'],
+    ['AP_CHEM', 'AP 化学', 'T_CHEM', '化学教师'],
+    ['AP_BIO', 'AP 生物', 'T_BIO', '生物教师'],
+    ['AP_MICRO', 'AP 微观经济学', 'T_MICRO', '经济教师'],
+    ['AP_ART', 'AP 艺术史', 'T_ART', '艺术教师'],
+  ];
+  state.courses = apCourses.map(([id, name]) => ({ id, name }));
+  state.teachers = apCourses.map(([, , id, name]) => ({ id, name }));
+  state.schedule = {
+    sections: apCourses.map(([courseId, , teacherId], index) => ({
+      id: `SEC_AP_${index + 1}`,
+      course_id: courseId,
+      teacher_id: teacherId,
+      class_type: 'ap',
+      ap_block_id: 'B1',
+      ap_block_name: 'Block 1',
+      student_ids: ['S1'],
+    })),
+    assignments: apCourses.map(([courseId, , teacherId], index) => ({
+      section_id: `SEC_AP_${index + 1}`,
+      course_id: courseId,
+      teacher_id: teacherId,
+      class_type: 'ap',
+      student_id: 'S1',
+      slot_id: 'D2P2',
+    })),
+  };
+
+  const result = await exportScheduleTemplates({
+    classTemplateBuffer: await classTemplateBuffer(),
+    classTemplateName: 'classes.xlsx',
+    teacherTemplateBuffer: await teacherTemplateBuffer(),
+    teacherTemplateName: 'teachers.xlsx',
+    state,
+    now: new Date('2026-08-29T00:00:00Z'),
+  });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(result.files.find(item => item.kind === 'class').buffer);
+  const worksheet = workbook.getWorksheet('Senior1');
+  const cell = worksheet.getCell('C3');
+  const lines = String(cell.value).split('\n');
+  assert.equal(lines.length, apCourses.length);
+  for (const [, courseNameValue] of apCourses) {
+    assert.ok(lines.some(line => line.includes(courseNameValue)), `${courseNameValue} 必须完整显示`);
+  }
+  assert.doesNotMatch(String(cell.value), /Block|AP 分流|等\s*\d+\s*门/);
+  assert.ok(cell.font.size <= 9, '课程较多时应缩小字号');
+  assert.ok(worksheet.getRow(cell.row).height >= 60, '课程较多时应保证足够行高');
 });
 
 test('course-matched legacy teacher sheets are relabelled for the current teacher', async () => {

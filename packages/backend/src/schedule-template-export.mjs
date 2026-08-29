@@ -649,9 +649,6 @@ function roomName(meeting, lookups) {
 
 function classCellText(meetings, lookups) {
   if (!meetings.length) return '';
-  const allAp = meetings.every(item => item.class_type === 'ap');
-  const blockLabels = [...new Set(meetings.map(item => item.ap_block_name || item.ap_block_id).filter(Boolean))];
-  if (allAp && blockLabels.length === 1) return `${blockLabels[0]}\nAP 分流`;
   const unique = [];
   const seen = new Set();
   for (const meeting of meetings) {
@@ -665,8 +662,7 @@ function classCellText(meetings, lookups) {
   if (unique.length === 1) {
     return [unique[0].course, unique[0].teacher, unique[0].room].filter(Boolean).join('\n');
   }
-  if (unique.length <= 3) return unique.map(item => `${item.course}${item.teacher ? ` · ${item.teacher}` : ''}`).join('\n');
-  return `${unique.slice(0, 2).map(item => item.course).join(' / ')} 等 ${unique.length} 门分流课`;
+  return unique.map(item => `${item.course}${item.teacher ? ` · ${item.teacher}` : ''}`).join('\n');
 }
 
 function teacherCellText(meetings, lookups) {
@@ -697,6 +693,24 @@ function setTimetableCell(cell, value) {
     wrapText: true,
     shrinkToFit: true,
   };
+  const lineCount = value ? String(value).split('\n').length : 0;
+  const compactFontSize = lineCount >= 9 ? 7
+    : lineCount >= 7 ? 8
+      : lineCount >= 5 ? 9
+        : lineCount >= 4 ? 10
+          : null;
+  if (!compactFontSize) return;
+
+  const currentFontSize = Number(cell.font?.size) || 12;
+  const fontSize = Math.min(currentFontSize, compactFontSize);
+  cell.font = { ...(cell.font || {}), size: fontSize };
+
+  const row = cell.worksheet.getRow(cell.row);
+  const currentHeight = Number(row.height)
+    || Number(cell.worksheet.properties.defaultRowHeight)
+    || 15;
+  const minimumHeight = 8 + lineCount * (fontSize + 3);
+  row.height = Math.max(currentHeight, minimumHeight);
 }
 
 function fillClassWorkbook(workbook, state, meetings, lookups) {
@@ -782,55 +796,88 @@ function relabelTeacherWorksheet(workbook, worksheet, teacher) {
   return changed;
 }
 
-function createGeneratedTeacherWorksheet(workbook, teacher) {
-  const worksheet = workbook.addWorksheet(safeTeacherWorksheetName(workbook, teacher), {
-    properties: { defaultRowHeight: 30 },
-    pageSetup: {
-      paperSize: 9,
-      orientation: 'landscape',
-      fitToPage: true,
-      fitToWidth: 1,
-      fitToHeight: 1,
-      margins: { left: 0.25, right: 0.25, top: 0.4, bottom: 0.4, header: 0.15, footer: 0.15 },
-    },
-  });
-  const dayLabels = ['星期一', '星期二', '星期三', '星期四', '星期五'];
-  worksheet.mergeCells('A1:F1');
-  worksheet.getCell('A1').value = `${teacher.name || teacher.id} 教师课表`;
-  worksheet.getCell('A2').value = '节次';
-  dayLabels.forEach((label, index) => { worksheet.getCell(2, index + 2).value = label; });
-  for (let period = 1; period <= 10; period += 1) {
-    worksheet.getCell(period + 2, 1).value = `第 ${period} 节`;
-  }
-  worksheet.getColumn(1).width = 10;
-  for (let column = 2; column <= 6; column += 1) worksheet.getColumn(column).width = 20;
-  worksheet.getRow(1).height = 32;
-  worksheet.getRow(2).height = 24;
-  for (let row = 1; row <= 12; row += 1) {
-    for (let column = 1; column <= 6; column += 1) {
-      const cell = worksheet.getCell(row, column);
-      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true, shrinkToFit: true };
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FFB8C2CC' } },
-        left: { style: 'thin', color: { argb: 'FFB8C2CC' } },
-        bottom: { style: 'thin', color: { argb: 'FFB8C2CC' } },
-        right: { style: 'thin', color: { argb: 'FFB8C2CC' } },
-      };
+function cloneWorksheetValue(value) {
+  return value == null ? value : structuredClone(value);
+}
+
+function captureTeacherWorksheetTemplate(worksheet) {
+  const rows = [];
+  for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    const sourceRow = worksheet.getRow(rowNumber);
+    const cells = [];
+    for (let columnNumber = 1; columnNumber <= worksheet.columnCount; columnNumber += 1) {
+      const sourceCell = sourceRow.getCell(columnNumber);
+      const isMergedChild = sourceCell.isMerged && sourceCell.master.address !== sourceCell.address;
+      cells.push({
+        value: isMergedChild ? undefined : cloneWorksheetValue(sourceCell.value),
+        style: cloneWorksheetValue(sourceCell.style),
+        note: cloneWorksheetValue(sourceCell.note),
+        dataValidation: cloneWorksheetValue(sourceCell.dataValidation),
+      });
     }
+    rows.push({
+      height: sourceRow.height,
+      hidden: sourceRow.hidden,
+      outlineLevel: sourceRow.outlineLevel,
+      style: cloneWorksheetValue(sourceRow.style),
+      cells,
+    });
   }
-  worksheet.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
-  worksheet.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
-  for (let column = 1; column <= 6; column += 1) {
-    const cell = worksheet.getCell(2, column);
-    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4B5563' } };
-  }
-  for (let row = 3; row <= 12; row += 1) {
-    worksheet.getCell(row, 1).font = { bold: true, color: { argb: 'FF374151' } };
-    worksheet.getCell(row, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
-  }
-  worksheet.pageSetup.printArea = 'A1:F12';
-  worksheet.views = [{ state: 'frozen', ySplit: 2, xSplit: 1 }];
+  const columns = Array.from({ length: worksheet.columnCount }, (_, index) => {
+    const sourceColumn = worksheet.getColumn(index + 1);
+    return {
+      width: sourceColumn.width,
+      hidden: sourceColumn.hidden,
+      outlineLevel: sourceColumn.outlineLevel,
+      style: cloneWorksheetValue(sourceColumn.style),
+    };
+  });
+  return {
+    properties: cloneWorksheetValue(worksheet.properties),
+    pageSetup: cloneWorksheetValue(worksheet.pageSetup),
+    views: cloneWorksheetValue(worksheet.views),
+    headerFooter: cloneWorksheetValue(worksheet.headerFooter),
+    autoFilter: cloneWorksheetValue(worksheet.autoFilter),
+    merges: [...(worksheet.model.merges || [])],
+    rows,
+    columns,
+  };
+}
+
+function createGeneratedTeacherWorksheet(workbook, teacher, template) {
+  if (!template) throw new Error('教师模板中没有可复用的教师课表页，无法为缺失教师补充同样式课表');
+  const worksheet = workbook.addWorksheet(safeTeacherWorksheetName(workbook, teacher), {
+    properties: cloneWorksheetValue(template.properties),
+    pageSetup: cloneWorksheetValue(template.pageSetup),
+    views: cloneWorksheetValue(template.views),
+    headerFooter: cloneWorksheetValue(template.headerFooter),
+  });
+  template.columns.forEach((sourceColumn, index) => {
+    const targetColumn = worksheet.getColumn(index + 1);
+    if (sourceColumn.width != null) targetColumn.width = sourceColumn.width;
+    targetColumn.hidden = sourceColumn.hidden;
+    targetColumn.outlineLevel = sourceColumn.outlineLevel;
+    targetColumn.style = cloneWorksheetValue(sourceColumn.style) || {};
+  });
+  template.rows.forEach((sourceRow, rowIndex) => {
+    const targetRow = worksheet.getRow(rowIndex + 1);
+    if (sourceRow.height != null) targetRow.height = sourceRow.height;
+    targetRow.hidden = sourceRow.hidden;
+    targetRow.outlineLevel = sourceRow.outlineLevel;
+    targetRow.style = cloneWorksheetValue(sourceRow.style) || {};
+    sourceRow.cells.forEach((sourceCell, columnIndex) => {
+      const targetCell = targetRow.getCell(columnIndex + 1);
+      if (sourceCell.value !== undefined) targetCell.value = cloneWorksheetValue(sourceCell.value);
+      targetCell.style = cloneWorksheetValue(sourceCell.style) || {};
+      if (sourceCell.note != null) targetCell.note = cloneWorksheetValue(sourceCell.note);
+      if (sourceCell.dataValidation != null) {
+        targetCell.dataValidation = cloneWorksheetValue(sourceCell.dataValidation);
+      }
+    });
+  });
+  for (const range of template.merges) worksheet.mergeCells(range);
+  if (template.autoFilter) worksheet.autoFilter = cloneWorksheetValue(template.autoFilter);
+  relabelTeacherWorksheet(workbook, worksheet, teacher);
   return worksheet;
 }
 
@@ -856,6 +903,15 @@ function fillTeacherWorkbook(workbook, state, meetings, lookups, teacherMappings
   let filledCells = 0;
   const warnings = [];
   const mappings = analyzeTeacherWorkbook(workbook, state).mappings;
+  const styleSource = mappings
+    .map(mapping => ({ mapping, worksheet: workbook.getWorksheet(mapping.sheet_name) }))
+    .find(item => item.worksheet && item.mapping.status === 'matched' && worksheetGrid(item.worksheet))
+    || mappings
+      .map(mapping => ({ mapping, worksheet: workbook.getWorksheet(mapping.sheet_name) }))
+      .find(item => item.worksheet && item.mapping.status !== 'resource' && worksheetGrid(item.worksheet));
+  const teacherWorksheetTemplate = styleSource
+    ? captureTeacherWorksheetTemplate(styleSource.worksheet)
+    : null;
   const teachersById = new Map((state.teachers || []).map(teacher => [teacher.id, teacher]));
   const exportedTeacherIds = new Set();
   const omittedWorksheetIds = [];
@@ -886,12 +942,12 @@ function fillTeacherWorkbook(workbook, state, meetings, lookups, teacherMappings
   let generatedSheets = 0;
   for (const teacher of state.teachers || []) {
     if (exportedTeacherIds.has(teacher.id)) continue;
-    const worksheet = createGeneratedTeacherWorksheet(workbook, teacher);
+    const worksheet = createGeneratedTeacherWorksheet(workbook, teacher, teacherWorksheetTemplate);
     filledCells += fillOneTeacherWorksheet(worksheet, teacher.id, meetings, lookups);
     exportedTeacherIds.add(teacher.id);
     generatedSheets += 1;
   }
-  if (generatedSheets) warnings.push(`模板缺少的 ${generatedSheets} 位现任教师已自动生成标准课表页`);
+  if (generatedSheets) warnings.push(`模板缺少的 ${generatedSheets} 位现任教师已按学校模板样式补充课表页`);
   return {
     filled_cells: filledCells,
     warnings,
@@ -899,6 +955,25 @@ function fillTeacherWorkbook(workbook, state, meetings, lookups, teacherMappings
     generated_sheets: generatedSheets,
     exported_teacher_count: exportedTeacherIds.size,
   };
+}
+
+const ENGLISH_MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+function updateTeacherEffectiveDates(workbook, now) {
+  const dateLabel = `${ENGLISH_MONTH_NAMES[now.getMonth()]} ${now.getDate()},${now.getFullYear()}`;
+  const note = `Notes:This schedule  will be  in effect  from ${dateLabel}.`;
+  for (const worksheet of workbook.worksheets) {
+    for (let column = 1; column <= Math.max(worksheet.columnCount, 1); column += 1) {
+      const cell = worksheet.getCell(1, column);
+      if (!/^Notes:\s*This schedule\s+will be\s+in effect\s+from\b/i.test(compactText(cell.value))) continue;
+      const target = cell.isMerged ? cell.master : cell;
+      target.value = note;
+      break;
+    }
+  }
 }
 
 function safeDateStamp(now = new Date()) {
@@ -924,6 +999,7 @@ export async function exportScheduleTemplates({
   const lookups = scheduleLookups(state);
   const classResult = fillClassWorkbook(classWorkbook, state, meetings, lookups);
   const teacherResult = fillTeacherWorkbook(teacherWorkbook, state, meetings, lookups, teacherMappings);
+  updateTeacherEffectiveDates(teacherWorkbook, now);
   const [classBuffer, teacherBuffer] = await Promise.all([
     classWorkbook.xlsx.writeBuffer(),
     teacherWorkbook.xlsx.writeBuffer(),
