@@ -13,7 +13,10 @@ export default defineConfig({
     port: 3000,
     open: true,
     proxy: {
-      '/api': {
+      // Match the API namespace boundary only. A plain `/api` prefix also
+      // captures the frontend module `/api-state-revision.mjs`, causing the
+      // backend SPA fallback to return HTML where the browser expects JS.
+      '^/api(?:/|$)': {
         target: 'http://localhost:3001',
         changeOrigin: true,
       },
