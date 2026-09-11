@@ -71,6 +71,203 @@ function thinBorder() {
   return { top: edge, left: edge, bottom: edge, right: edge };
 }
 
+const PROCTOR_HEADER_FILL = 'FFBFBFBF';
+const PROCTOR_UNUSED_FILL = 'FFD9D9D9';
+const PROCTOR_PENDING_FILL = 'FFFFF2CC';
+const PROCTOR_FONT = 'Arial Unicode MS';
+
+function dateForExamDay(config, dayIndex) {
+  if (!config?.start_date) return null;
+  const date = new Date(`${config.start_date}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setDate(date.getDate() + dayIndex);
+  return date;
+}
+
+function proctorTitle(config) {
+  const date = dateForExamDay(config, 0) || new Date();
+  return `Proctor List ${date.getFullYear()}.${date.getMonth() + 1}`;
+}
+
+function proctorDateDisplay(config, dayIndex, fallback) {
+  const date = dateForExamDay(config, dayIndex);
+  if (!date) return fallback || `Day ${dayIndex + 1}`;
+  const months = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.'];
+  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  return `${months[date.getMonth()]}${date.getDate()}\n${weekdays[date.getDay()]}`;
+}
+
+function proctorRoomKey(room = {}) {
+  return text(room.id || room.room_id || room.name || room.room_name);
+}
+
+function proctorRoomCatalog(config, sessions) {
+  const catalog = [];
+  const known = new Set();
+  const addRoom = raw => {
+    const key = proctorRoomKey(raw);
+    if (!key || known.has(key)) return;
+    known.add(key);
+    catalog.push({
+      key,
+      id: text(raw.id || raw.room_id),
+      name: text(raw.name || raw.room_name) || key,
+      capacity: Number.isFinite(Number(raw.capacity)) ? Number(raw.capacity) : null,
+    });
+  };
+  for (const room of config?.rooms || []) addRoom(room);
+  for (const session of sessions || []) {
+    for (const room of session.room_allocations || []) addRoom(room);
+  }
+  return catalog;
+}
+
+function roomsUsedBySessions(catalog, sessions) {
+  const usedKeys = new Set();
+  const usedNames = new Set();
+  for (const session of sessions) for (const room of session.room_allocations || []) {
+    usedKeys.add(proctorRoomKey(room));
+    usedNames.add(text(room.room_name || room.name));
+  }
+  return catalog.filter(room => usedKeys.has(room.key) || usedNames.has(room.name));
+}
+
+function proctorRoomHeader(room) {
+  return room.capacity ? `${room.name}(${room.capacity})` : room.name;
+}
+
+function proctorCellStyle(cell, { fill = null, bold = false, size = 12 } = {}) {
+  cell.font = { name: PROCTOR_FONT, size, bold };
+  cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  cell.border = thinBorder();
+  if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+}
+
+function sessionRoomAllocation(session, room) {
+  return (session.room_allocations || []).find(allocation => (
+    proctorRoomKey(allocation) === room.key
+    || text(allocation.room_name || allocation.name) === room.name
+  ));
+}
+
+function addPrintableProctorWorksheet(workbook, schedule, teachers) {
+  const worksheet = workbook.addWorksheet('监考表');
+  const config = schedule.plan.config;
+  const gradeSections = [10, 11, 12].map(grade => {
+    const sessions = sessionsForGrade(schedule, grade);
+    return {
+      grade,
+      sessions,
+      rooms: roomsUsedBySessions(proctorRoomCatalog(config, schedule.sessions), sessions),
+    };
+  });
+  const roomColumnCount = Math.max(1, ...gradeSections.map(section => section.rooms.length));
+  const lastColumn = 4 + roomColumnCount;
+
+  worksheet.mergeCells(1, 1, 1, lastColumn);
+  const title = worksheet.getCell(1, 1);
+  title.value = proctorTitle(config);
+  proctorCellStyle(title, { bold: true, size: 16 });
+  worksheet.getRow(1).height = 34;
+
+  let rowNumber = 2;
+  for (const [sectionIndex, section] of gradeSections.entries()) {
+    if (sectionIndex > 0) worksheet.getRow(rowNumber - 1).addPageBreak(1, lastColumn);
+    const headerRow = rowNumber;
+    const headers = [`Senior ${section.grade - 9}`, 'Date', 'Time', 'Subject'];
+    for (let column = 1; column <= lastColumn; column += 1) {
+      const cell = worksheet.getCell(headerRow, column);
+      cell.value = column <= headers.length
+        ? headers[column - 1]
+        : proctorRoomHeader(section.rooms[column - 5] || { name: '' });
+      proctorCellStyle(cell, { fill: PROCTOR_HEADER_FILL, bold: true, size: column === 1 ? 14 : 12 });
+    }
+    worksheet.getCell(headerRow, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+    worksheet.getRow(headerRow).height = 32;
+    rowNumber += 1;
+
+    const firstDataRow = rowNumber;
+    if (!section.sessions.length) {
+      worksheet.getCell(rowNumber, 4).value = 'No exams';
+      for (let column = 2; column <= lastColumn; column += 1) {
+        const cell = worksheet.getCell(rowNumber, column);
+        proctorCellStyle(cell, { fill: column >= 5 ? PROCTOR_UNUSED_FILL : null });
+      }
+      worksheet.getRow(rowNumber).height = 30;
+      rowNumber += 1;
+    } else {
+      for (const session of section.sessions) {
+        const chiefNames = teacherNames(session.chief_teacher_ids, teachers);
+        worksheet.getCell(rowNumber, 2).value = proctorDateDisplay(config, session.day_index, session.day_label);
+        worksheet.getCell(rowNumber, 3).value = `${session.start_time}-${session.end_time}`;
+        worksheet.getCell(rowNumber, 4).value = chiefNames
+          ? `${session.course_name}\n巡考：${chiefNames}`
+          : session.course_name;
+
+        for (let column = 2; column <= lastColumn; column += 1) {
+          const cell = worksheet.getCell(rowNumber, column);
+          if (column < 5) {
+            proctorCellStyle(cell, { bold: column === 4, size: column === 4 ? 11 : 12 });
+            continue;
+          }
+          const room = section.rooms[column - 5];
+          const allocation = room ? sessionRoomAllocation(session, room) : null;
+          if (!allocation) {
+            proctorCellStyle(cell, { fill: PROCTOR_UNUSED_FILL });
+            continue;
+          }
+          const invigilators = teacherNames(allocation.invigilator_teacher_ids, teachers);
+          cell.value = invigilators || '待安排';
+          proctorCellStyle(cell, { fill: invigilators ? null : PROCTOR_PENDING_FILL, bold: !invigilators });
+        }
+        worksheet.getRow(rowNumber).height = chiefNames ? 42 : 32;
+        rowNumber += 1;
+      }
+
+      let dayStartRow = firstDataRow;
+      while (dayStartRow < rowNumber) {
+        const dayIndex = section.sessions[dayStartRow - firstDataRow].day_index;
+        let dayEndRow = dayStartRow;
+        while (
+          dayEndRow + 1 < rowNumber
+          && section.sessions[dayEndRow + 1 - firstDataRow].day_index === dayIndex
+        ) dayEndRow += 1;
+        if (dayEndRow > dayStartRow) worksheet.mergeCells(dayStartRow, 2, dayEndRow, 2);
+        dayStartRow = dayEndRow + 1;
+      }
+    }
+
+    const lastDataRow = rowNumber - 1;
+    worksheet.mergeCells(headerRow, 1, lastDataRow, 1);
+    const gradeCell = worksheet.getCell(headerRow, 1);
+    gradeCell.value = `Senior ${section.grade - 9}`;
+    proctorCellStyle(gradeCell, { bold: true, size: 14 });
+    for (let column = 1; column <= lastColumn; column += 1) {
+      worksheet.getCell(lastDataRow, column).border = {
+        ...thinBorder(),
+        bottom: { style: 'medium', color: { argb: 'FF000000' } },
+      };
+    }
+  }
+
+  worksheet.getColumn(1).width = 11;
+  worksheet.getColumn(2).width = 14;
+  worksheet.getColumn(3).width = 16;
+  worksheet.getColumn(4).width = 34;
+  for (let column = 5; column <= lastColumn; column += 1) worksheet.getColumn(column).width = 18;
+  worksheet.views = [{ state: 'frozen', ySplit: 1, showGridLines: false }];
+  worksheet.pageSetup = {
+    paperSize: 9,
+    orientation: 'landscape',
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    horizontalCentered: true,
+    margins: { left: 0.25, right: 0.25, top: 0.35, bottom: 0.35, header: 0.15, footer: 0.15 },
+    printArea: `A1:${worksheet.getColumn(lastColumn).letter}${rowNumber - 1}`,
+  };
+}
+
 function addPrintableSeatingWorksheets(workbook, schedule, students) {
   for (const session of schedule.sessions || []) {
     const worksheet = workbook.addWorksheet(seatingWorksheetName(workbook, session.course_name));
@@ -314,6 +511,7 @@ export async function exportExamScheduleWorkbook({ state = {}, schedule = {} } =
     ]);
   }
   styleTable(scheduleSheet, [16, 12, 12, 24, 14, 12, 24, 24, 42]);
+  addPrintableProctorWorksheet(workbook, schedule, teachers);
 
   const teacherSheet = workbook.addWorksheet('教师任务');
   teacherSheet.addRow(['教师', '监考场次', '监考分钟数', '巡考/主考科目', '监考明细']);

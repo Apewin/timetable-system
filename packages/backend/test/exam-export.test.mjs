@@ -32,13 +32,116 @@ test('exports a usable workbook with schedule, teacher duties, and room seat ass
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
 
-  assert.deepEqual(workbook.worksheets.map(sheet => sheet.name), ['考试安排', '教师任务', '考场座次', '座次-数学']);
+  assert.deepEqual(workbook.worksheets.map(sheet => sheet.name), ['考试安排', '监考表', '教师任务', '考场座次', '座次-数学']);
   assert.deepEqual(workbook.getWorksheet('考试安排').getRow(2).values.slice(1, 6), [
     '第 1 天', '08:00', '09:30', '数学', 90,
   ]);
   assert.deepEqual(workbook.getWorksheet('考场座次').getRow(2).values.slice(1, 8), [
     '第 1 天', '08:00', '数学', '考场 A', 1, 'S1', '张三',
   ]);
+});
+
+test('exports a printable proctor list grouped by grade, date, and room', async () => {
+  const state = {
+    students: [],
+    teachers: [
+      { id: 'T_CHIEF', name: 'Amy' },
+      { id: 'T_ROOM_1', name: 'May' },
+      { id: 'T_ROOM_2', name: 'Phoebe' },
+    ],
+  };
+  const schedule = {
+    ok: true,
+    plan: {
+      config: {
+        timetable_only: false,
+        day_count: 2,
+        start_date: '2027-02-02',
+        rooms: [
+          { id: 'ROOM_502', name: 'Room 502', capacity: 31 },
+          { id: 'ROOM_505', name: 'Room 505', capacity: 30 },
+        ],
+      },
+    },
+    sessions: [
+      {
+        exam_id: 'EXAM_MATH',
+        grades: [10],
+        day_index: 0,
+        day_label: '第 1 天',
+        global_start_unit: 0,
+        start_time: '08:20',
+        end_time: '09:50',
+        course_name: 'Math',
+        duration_minutes: 90,
+        student_count: 61,
+        chief_teacher_ids: ['T_CHIEF'],
+        room_allocations: [
+          {
+            room_id: 'ROOM_502',
+            room_name: 'Room 502',
+            student_ids: Array.from({ length: 31 }, (_, index) => `A${index}`),
+            seats: [],
+            invigilator_teacher_ids: ['T_ROOM_1'],
+          },
+          {
+            room_id: 'ROOM_505',
+            room_name: 'Room 505',
+            student_ids: Array.from({ length: 30 }, (_, index) => `B${index}`),
+            seats: [],
+            invigilator_teacher_ids: ['T_ROOM_2'],
+          },
+        ],
+      },
+      {
+        exam_id: 'EXAM_CHINESE',
+        grades: [10],
+        day_index: 0,
+        day_label: '第 1 天',
+        global_start_unit: 20,
+        start_time: '10:30',
+        end_time: '12:00',
+        course_name: 'Chinese',
+        duration_minutes: 90,
+        student_count: 31,
+        chief_teacher_ids: [],
+        room_allocations: [{
+          room_id: 'ROOM_502',
+          room_name: 'Room 502',
+          student_ids: Array.from({ length: 31 }, (_, index) => `C${index}`),
+          seats: [],
+          invigilator_teacher_ids: ['T_ROOM_2'],
+        }],
+      },
+    ],
+    teacher_loads: [],
+  };
+
+  const buffer = await exportExamScheduleWorkbook({ state, schedule });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const worksheet = workbook.getWorksheet('监考表');
+
+  assert.ok(worksheet);
+  assert.equal(worksheet.getCell('A1').value, 'Proctor List 2027.2');
+  assert.equal(worksheet.getCell('F1').master.address, 'A1');
+  assert.deepEqual(worksheet.getRow(2).values.slice(1, 7), [
+    'Senior 1', 'Date', 'Time', 'Subject', 'Room 502(31)', 'Room 505(30)',
+  ]);
+  assert.equal(worksheet.getCell('A4').master.address, 'A2');
+  assert.equal(worksheet.getCell('B3').value, 'Feb.2\nTuesday');
+  assert.equal(worksheet.getCell('B4').master.address, 'B3');
+  assert.equal(worksheet.getCell('C3').value, '08:20-09:50');
+  assert.equal(worksheet.getCell('D3').value, 'Math\n巡考：Amy');
+  assert.equal(worksheet.getCell('E3').value, 'May');
+  assert.equal(worksheet.getCell('F3').value, 'Phoebe');
+  assert.equal(worksheet.getCell('F4').value, null);
+  assert.equal(worksheet.getCell('F4').fill.fgColor.argb, 'FFD9D9D9');
+  assert.equal(worksheet.getCell('B2').fill.fgColor.argb, 'FFBFBFBF');
+  assert.equal(worksheet.getCell('D3').font.name, 'Arial Unicode MS');
+  assert.equal(worksheet.pageSetup.orientation, 'landscape');
+  assert.equal(worksheet.pageSetup.fitToWidth, 1);
+  assert.equal(worksheet.views[0].showGridLines, false);
 });
 
 test('exports a 30-student room as five desk columns in a printable seating worksheet', async () => {
