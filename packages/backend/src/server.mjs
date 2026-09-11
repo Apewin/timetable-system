@@ -118,9 +118,19 @@ import { createOperationAudit } from './operation-audit.mjs';
 import { createComputationJobManager } from './computation-job-manager.mjs';
 import { computationJobDescriptor, solverProgressForJob } from './computation-job-policy.mjs';
 import { scheduledWeeklyHoursByTeacher } from './teacher-workload.mjs';
+import { publicPathFromEnv, stripPublicPathFromUrl } from './public-path.mjs';
 
 const app = express();
 app.disable('x-powered-by');
+const publicPath = publicPathFromEnv(process.env);
+app.use((req, res, next) => {
+  const pathname = String(req.url || '/').split('?')[0];
+  if (publicPath && pathname === '/' && String(req.headers.accept || '').includes('text/html')) {
+    return res.redirect(302, `${publicPath}/`);
+  }
+  req.url = stripPublicPathFromUrl(req.url, publicPath);
+  next();
+});
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');

@@ -57,6 +57,9 @@ test('system status explains review requirements and distinguishes meetings from
   const payload = await response.json();
   assert.equal(response.status, 200, JSON.stringify(payload));
   const status = payload.data;
+  const prefixed = await fetch(`http://127.0.0.1:${server.address().port}/timetable/api/status`);
+  assert.equal(prefixed.status, 200);
+  assert.equal((await prefixed.json()).data.release_commit, status.release_commit);
 
   assert.equal(status.counts.assignments, 2);
   assert.equal(status.counts.meetings, 1);

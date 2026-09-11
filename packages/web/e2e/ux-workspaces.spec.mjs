@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('overview focus mode stays full width at the mobile-sidebar breakpoint', async ({ page }) => {
   await page.setViewportSize({ width: 980, height: 760 });
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.locator('#btn-sidebar-toggle').click();
   await page.getByRole('link', { name: '总课表概览' }).click();
   await page.getByRole('button', { name: '专注查看' }).click();
@@ -19,7 +19,7 @@ test('overview focus mode stays full width at the mobile-sidebar breakpoint', as
 });
 
 test('import readiness uses canonical student selections without failing the page', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.getByRole('button', { name: '导入数据' }).click();
 
   await expect(page.locator('#import-readiness-summary')).toContainText('核心数据 3/4 项已就绪');
@@ -29,7 +29,7 @@ test('import readiness uses canonical student selections without failing the pag
 
 test('sidebar becomes interactive after resizing from mobile to desktop', async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 760 });
-  await page.goto('/');
+  await page.goto('/timetable/');
   await expect(page.locator('.sidebar')).toHaveAttribute('aria-hidden', 'true');
 
   await page.setViewportSize({ width: 1280, height: 760 });
@@ -41,7 +41,7 @@ test('sidebar becomes interactive after resizing from mobile to desktop', async 
 });
 
 test('daily timetable classrooms can be added, renamed, deleted and saved without enabling room constraints', async ({ page, request }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.getByRole('link', { name: '排课表' }).click();
 
   const manager = page.locator('#manual-room-manager');
@@ -92,7 +92,7 @@ test('daily timetable classrooms can be added, renamed, deleted and saved withou
 });
 
 test('administrative and teaching class names can change without changing their ids or memberships', async ({ page, request }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.getByRole('link', { name: '班级管理' }).click();
   await expect(page.locator('#view-classes').getByRole('heading', { name: '班级管理' })).toBeVisible();
 
@@ -135,7 +135,7 @@ test('manual scheduling discards browser drafts that no longer belong to current
       STALE_CLASS: { D1P1: 'STALE_COURSE' },
     }));
   });
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.getByRole('link', { name: '排课表', exact: true }).click();
 
   await expect(page.locator('#manual-action-feedback-text')).toContainText('已移除 1 个');
@@ -145,7 +145,7 @@ test('manual scheduling discards browser drafts that no longer belong to current
 
 test('mobile actions do not overlap and temporary drawers close with Escape', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/');
+  await page.goto('/timetable/');
 
   await page.locator('#btn-sidebar-toggle').click();
   await page.locator('#sidebar-mode-switch').click();
@@ -193,7 +193,7 @@ test('mobile actions do not overlap and temporary drawers close with Escape', as
 });
 
 test('high-frequency selectors expose names and command search has dialog semantics', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   const expectNames = async entries => {
     for (const [selector, name] of entries) {
       await expect(page.locator(selector)).toBeVisible();

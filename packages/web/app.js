@@ -63,8 +63,7 @@ import {
 import { changeSchedulingRooms } from './scheduling-room-view.mjs';
 import { qualityAffectedStudents, systemStatusReview } from './system-status-view.mjs';
 import { StateRevisionTracker, mutationNeedsStateRevision } from './api-state-revision.mjs';
-
-const API_BASE = '/api';
+import { API_BASE } from './public-base.mjs';
 const apiStateRevision = new StateRevisionTracker();
 
 // 辅助函数：从slot中获取课程名称
@@ -521,7 +520,7 @@ async function bootstrapApplication() {
     submit.disabled = true;
     status.textContent = '正在验证…';
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: new FormData(loginForm).get('password') }),
@@ -539,12 +538,12 @@ async function bootstrapApplication() {
     }
   });
   logoutButton?.addEventListener('click', async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
     window.location.reload();
   });
 
   try {
-    const response = await fetch('/api/auth/status');
+    const response = await fetch(`${API_BASE}/auth/status`);
     const payload = await response.json();
     if (!response.ok || !payload.ok) throw new Error(payload.errors?.[0]?.msg || '无法读取登录状态');
     if (payload.data.enabled && !payload.data.authenticated) {
@@ -4010,7 +4009,7 @@ window.testAIConnection = async function() {
   try {
     const startTime = Date.now();
 
-    const response = await fetch('/api/ai/test', {
+    const response = await fetch(`${API_BASE}/ai/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: '你好，请回复"连接成功"' })
@@ -8205,7 +8204,7 @@ async function applySelectedSolution() {
     showToast('正在应用方案...', 'info');
 
     // 调用 API 更新排课结果
-    const response = await fetch('/api/ai/apply-solution', {
+    const response = await fetch(`${API_BASE}/ai/apply-solution`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -10128,7 +10127,7 @@ async function handleElectiveSelectionImportFile(file) {
   try {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch('/api/elective-selections/import/preview', { method: 'POST', body: formData });
+    const response = await fetch(`${API_BASE}/elective-selections/import/preview`, { method: 'POST', body: formData });
     const result = await response.json();
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || '高三选课表识别失败');
     pendingElectiveSelectionImport = result.data;
@@ -10290,7 +10289,7 @@ window.organizeElectiveSelectionImportWithAi = async function() {
     const formData = new FormData();
     formData.append('file', pendingElectiveSelectionUploadFile);
     formData.append('ai_organize', 'true');
-    const response = await fetch('/api/elective-selections/import/preview', { method: 'POST', body: formData });
+    const response = await fetch(`${API_BASE}/elective-selections/import/preview`, { method: 'POST', body: formData });
     const result = await response.json();
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
     pendingElectiveSelectionImport = result.data;
@@ -10380,7 +10379,7 @@ async function handleApSelectionImportFile(file) {
   try {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch('/api/ap-selections/import/preview', { method: 'POST', body: formData });
+    const response = await fetch(`${API_BASE}/ap-selections/import/preview`, { method: 'POST', body: formData });
     const result = await response.json();
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || 'AP 选课表识别失败');
     pendingApSelectionImport = result.data;
@@ -10573,7 +10572,7 @@ window.organizeApSelectionImportWithAi = async function() {
     const formData = new FormData();
     formData.append('file', pendingApSelectionUploadFile);
     formData.append('ai_organize', 'true');
-    const response = await fetch('/api/ap-selections/import/preview', { method: 'POST', body: formData });
+    const response = await fetch(`${API_BASE}/ap-selections/import/preview`, { method: 'POST', body: formData });
     const result = await response.json();
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
     pendingApSelectionImport = result.data;
@@ -10672,7 +10671,7 @@ async function handleStudentImportFiles(fileList) {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('expected_type', 'students');
-      const response = await fetch('/api/import/excel', { method: 'POST', body: formData });
+      const response = await fetch(`${API_BASE}/import/excel`, { method: 'POST', body: formData });
       const result = await response.json();
       if (!result.ok) throw new Error(result.errors?.[0]?.msg || '名单识别失败');
       if (result.data.type !== 'students') throw new Error('该文件不是学生名单');
@@ -10777,7 +10776,7 @@ window.organizeStudentImportWithAi = async function(index) {
     formData.append('file', item.file);
     formData.append('expected_type', 'students');
     formData.append('ai_organize', 'true');
-    const response = await fetch('/api/import/excel', { method: 'POST', body: formData });
+    const response = await fetch(`${API_BASE}/import/excel`, { method: 'POST', body: formData });
     const result = await response.json();
     if (!result.ok) throw new Error(result.errors?.[0]?.msg || '大模型整理失败');
     if (result.data.type !== 'students') throw new Error('大模型整理后仍不是可导入的学生名单');
@@ -10812,7 +10811,7 @@ window.confirmStudentImports = async function() {
   let skipped = 0;
   try {
     for (const item of pendingStudentImports) {
-      const response = await fetch('/api/import/confirm', {
+      const response = await fetch(`${API_BASE}/import/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'students', data: item.data.parsed_data }),
@@ -10981,7 +10980,7 @@ async function handleMultipleFiles(files) {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch('/api/import/excel', {
+      const response = await fetch(`${API_BASE}/import/excel`, {
         method: 'POST',
         body: formData
       });
@@ -11094,7 +11093,7 @@ window.confirmAllImports = async function() {
 
   for (const item of pendingFiles) {
     try {
-      const response = await fetch('/api/import/confirm', {
+      const response = await fetch(`${API_BASE}/import/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -11164,7 +11163,7 @@ async function confirmImport() {
   }
 
   try {
-    const response = await fetch('/api/import/confirm', {
+    const response = await fetch(`${API_BASE}/import/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -11256,7 +11255,7 @@ function templateExportFormData({ includeMappings = false } = {}) {
 }
 
 async function templateExportRequest(path, formData) {
-  const response = await fetch(`/api${path}`, { method: 'POST', body: formData });
+  const response = await fetch(`${API_BASE}${path}`, { method: 'POST', body: formData });
   const result = await response.json().catch(() => null);
   if (!response.ok || !result?.ok) {
     throw new Error(result?.errors?.[0]?.msg || `模板处理失败（HTTP ${response.status}）`);
@@ -12773,7 +12772,7 @@ window.parseTempDescription = async function() {
     resultDiv.innerHTML = '<div class="loading">正在解析您的描述...</div>';
 
     // 调用 AI 解析
-    const result = await fetch('/api/ai/parse-temp-timetable', {
+    const result = await fetch(`${API_BASE}/ai/parse-temp-timetable`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description })
@@ -13393,13 +13392,13 @@ window.openStudentGraduationConfirmation = async function() {
 // 加载设置
 async function loadSettings() {
   try {
-    const response = await fetch('/api/settings');
+    const response = await fetch(`${API_BASE}/settings`);
     const result = await response.json();
 
     if (result.ok && result.data) {
       document.getElementById('settings-api-key').value = result.data.apiKey || '';
       document.getElementById('settings-api-url').value = result.data.apiUrl || 'https://api.deepseek.com';
-      document.getElementById('settings-model').value = result.data.model || 'deepseek-v4-flash';
+      document.getElementById('settings-model').value = result.data.model || 'deepseek-flash';
     }
   } catch (error) {
     console.error('加载设置失败:', error);
@@ -13496,7 +13495,7 @@ window.saveSettings = async function() {
   try {
     showToast('正在保存设置...', 'info');
 
-    const response = await fetch('/api/settings', {
+    const response = await fetch(`${API_BASE}/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey, apiUrl, model })
@@ -13524,7 +13523,7 @@ window.testSettingsConnection = async function() {
   try {
     const startTime = Date.now();
 
-    const response = await fetch('/api/ai/test', {
+    const response = await fetch(`${API_BASE}/ai/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: '你好，请回复"连接成功"' })
@@ -13561,7 +13560,7 @@ async function checkAIStatus() {
   statusEl.style.color = 'var(--gray-500)';
 
   try {
-    const response = await fetch('/api/ai/test', {
+    const response = await fetch(`${API_BASE}/ai/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: 'test' })

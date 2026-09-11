@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('a user completes the four-stage exam workflow in real Chrome and recovers the job result after refresh', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await expect(page.getByRole('heading', { name: '概览' })).toBeVisible();
   await expect(page.locator('#ai-assistant-sidebar')).toBeHidden();
   const mainBox = await page.locator('#main-content').boundingBox();

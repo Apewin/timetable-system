@@ -35,3 +35,10 @@ test('production service accepts the office LAN address used by nginx', () => {
   assert.match(service, /^Environment=STATE_BACKUP_DIR=\/var\/backups\/timetable$/m);
   assert.match(service, /^ReadWritePaths=.*\/var\/backups\/timetable(?:\s|$)/m);
 });
+
+test('nginx exposes the timetable app under /timetable so other services can share the host', () => {
+  const nginx = readFileSync(new URL('../../../deploy/nginx-timetable.conf.template', import.meta.url), 'utf8');
+  assert.match(nginx, /location = \/ \{\s*return 302 \/timetable\/;/);
+  assert.match(nginx, /location \/timetable\/ \{/);
+  assert.doesNotMatch(nginx, /location \/ \{/);
+});

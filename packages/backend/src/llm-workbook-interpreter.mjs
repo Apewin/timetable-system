@@ -17,7 +17,15 @@ import { previewClearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
 const envFile = process.env.TIMETABLE_ENV_FILE
   || fileURLToPath(new URL('../../../.env.local', import.meta.url));
 const DEFAULT_API_URL = 'https://api.deepseek.com';
-const DEFAULT_MODEL = 'deepseek-v4-flash';
+const DEFAULT_MODEL = 'deepseek-flash';
+const RETIRED_FLASH_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']);
+
+function resolveModel(value) {
+  const model = text(value);
+  if (!model || RETIRED_FLASH_MODELS.has(model)) return DEFAULT_MODEL;
+  return model;
+}
+
 const supportedTypes = new Set(['students', 'generic', 'ap_selections', 'elective_selections']);
 
 function text(value) {
@@ -45,7 +53,7 @@ export function getAiConfig({ includeSecret = false } = {}) {
   const apiKey = process.env.DEEPSEEK_API_KEY || file.DEEPSEEK_API_KEY || '';
   const config = {
     apiUrl: process.env.DEEPSEEK_API_URL || file.DEEPSEEK_API_URL || DEFAULT_API_URL,
-    model: process.env.DEEPSEEK_MODEL || file.DEEPSEEK_MODEL || DEFAULT_MODEL,
+    model: resolveModel(process.env.DEEPSEEK_MODEL || file.DEEPSEEK_MODEL),
     configured: Boolean(apiKey),
   };
   if (includeSecret) config.apiKey = apiKey;
@@ -68,7 +76,7 @@ export function saveAiConfig({ apiKey, apiUrl, model }) {
   const current = localEnv();
   if (apiKey && apiKey !== '***已配置***') current.DEEPSEEK_API_KEY = envValue(apiKey, 'API Key');
   if (apiUrl) current.DEEPSEEK_API_URL = validateApiUrl(text(apiUrl));
-  if (model) current.DEEPSEEK_MODEL = envValue(model, '模型名称');
+  if (model) current.DEEPSEEK_MODEL = resolveModel(envValue(model, '模型名称'));
   if (!current.DEEPSEEK_API_KEY) throw new Error('请输入模型 API Key');
   const ordered = ['DEEPSEEK_API_KEY', 'DEEPSEEK_API_URL', 'DEEPSEEK_MODEL'];
   const lines = [
@@ -80,7 +88,7 @@ export function saveAiConfig({ apiKey, apiUrl, model }) {
   writeFileSync(envFile, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
   process.env.DEEPSEEK_API_KEY = current.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_URL = current.DEEPSEEK_API_URL || DEFAULT_API_URL;
-  process.env.DEEPSEEK_MODEL = current.DEEPSEEK_MODEL || DEFAULT_MODEL;
+  process.env.DEEPSEEK_MODEL = resolveModel(current.DEEPSEEK_MODEL);
   return getAiConfig();
 }
 

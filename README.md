@@ -132,8 +132,9 @@ pnpm dev
 
 启动后访问：
 
-- 网页：<http://localhost:3000/>
-- 当前 API：<http://localhost:3001/api/status>
+- 网页：<http://localhost:3000/timetable/>
+- API：<http://localhost:3001/api/status> 或 <http://localhost:3001/timetable/api/status>
+- 办公室：<https://10.5.14.215/timetable/>
 
 开发模式会同时启动：
 
@@ -231,7 +232,7 @@ DEEPSEEK_API_KEY=你的密钥
 # 可选：兼容 DeepSeek API 的地址
 DEEPSEEK_API_URL=https://api.deepseek.com
 # 可选：模型名称；也可在网页“系统设置”中修改
-DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODEL=deepseek-flash
 ```
 
 方式二：打开网页“系统设置”，填写 API 地址、模型名称和 API Key。API Key 只保存在本地配置中，接口返回时会脱敏为“已配置”。

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('manual placement, native drag, solving, timetable adjustment and overlays all respond in Chrome', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.getByRole('link', { name: '教师分工' }).click();
   await page.locator('#btn-build-tasks').click();
   await expect(page.locator('#assignment-action-feedback')).toContainText('生成完成');
@@ -67,7 +67,7 @@ test('manual placement, native drag, solving, timetable adjustment and overlays 
 });
 
 test('state restore and stale export controls explain every step', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.getByRole('link', { name: '系统设置' }).click();
   await page.locator('#policy-max-gap-days').fill('1');
   await page.getByRole('button', { name: '💾 保存排课策略' }).click();
@@ -94,7 +94,7 @@ test('state restore and stale export controls explain every step', async ({ page
 });
 
 test('AI assistant gives feedback for empty input and a controlled connection failure', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/timetable/');
   await page.locator('#btn-ai-assistant-open').click();
   const sendButton = page.locator('#btn-ai-assistant-send');
   await expect(sendButton).toBeInViewport();

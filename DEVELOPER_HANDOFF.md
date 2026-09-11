@@ -86,7 +86,7 @@ pnpm test:e2e
 
 ```bash
 ssh sdshiyanHP 'hostname; systemctl is-active timetable nginx timetable-backup.timer'
-curl -kfsS https://192.168.31.7/api/status
+curl -kfsS https://10.5.14.215/timetable/api/status
 ```
 
 本机工作区目前存在一批文件名带空格和 `2` 的**未跟踪重复副本**，例如 `exam-scheduling 2.mjs`。这些不是当前发布代码，最终版本也未提交它们。接手人必须先核对来源，不能用 `git add -A` 把它们误提交，也不要在未确认归属前删除。
@@ -316,7 +316,7 @@ pnpm dev
 
 | 服务 | 地址 | 说明 |
 | --- | --- | --- |
-| Vite | `http://localhost:3000/` | `packages/web`，代理 `/api` 到 3001 |
+| Vite | `http://localhost:3000/timetable/` | `packages/web`，代理 `/api` 与 `/timetable/api` 到 3001 |
 | Express | `http://localhost:3001/` | API 和已有生产构建静态文件 |
 | 状态 | `http://localhost:3001/api/status` | 最小健康检查 |
 
@@ -362,7 +362,7 @@ pnpm --filter @timetable/web dev
 | `TIMETABLE_ENV_FILE` | 根 `.env.local` | AI 配置落盘文件 |
 | `DEEPSEEK_API_KEY` | 无 | AI 功能密钥；环境优先于文件 |
 | `DEEPSEEK_API_URL` | `https://api.deepseek.com` | DeepSeek 兼容地址 |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 模型名称 |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | 模型名称 |
 | `SOFFICE_PATH` | `soffice` | 旧 `.xls` 模板转换程序路径 |
 
 `.env.example` 只列了最常用变量，生产变量以本表和代码为准。不要把密码、密钥或真实学校文件写进 shell 历史、截图或 Git。
@@ -1775,7 +1775,7 @@ ssh sdshiyanHP '
   ss -ltn | grep -E "127.0.0.1:3001|:443"
 '
 
-curl -kfsS https://192.168.31.7/api/status
+curl -kfsS https://10.5.14.215/timetable/api/status
 curl -ksS -o /dev/null -w '%{http_code}\n' \
   -H 'Host: attacker.invalid' https://192.168.31.7/api/status
 ```

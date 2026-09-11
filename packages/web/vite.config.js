@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: '.',
+  base: '/timetable/',
   build: {
     outDir: 'dist',
   },
@@ -16,6 +17,10 @@ export default defineConfig({
       // Match the API namespace boundary only. A plain `/api` prefix also
       // captures the frontend module `/api-state-revision.mjs`, causing the
       // backend SPA fallback to return HTML where the browser expects JS.
+      '^/timetable/api(?:/|$)': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
       '^/api(?:/|$)': {
         target: 'http://localhost:3001',
         changeOrigin: true,
