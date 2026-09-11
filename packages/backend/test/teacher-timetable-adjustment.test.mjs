@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  applyClassTimetableAdjustment,
   applyTeacherTimetableAdjustment,
+  evaluateClassTimetableAdjustments,
   evaluateTeacherTimetableAdjustments,
 } from '../src/teacher-timetable-adjustment.mjs';
 
@@ -121,4 +123,40 @@ test('moves every section in a synchronized AP Block as one bundle', () => {
   });
   assert.ok(applied.schedule.meetings.some(item => item.section_id === 'A_LINK' && item.slot_id === 'D1P4'));
   assert.equal(applied.schedule.validation.ok, true);
+});
+
+test('class grid swaps two whole-class courses instead of colliding a one-way move', () => {
+  const { state, problem } = fixture();
+  const result = evaluateClassTimetableAdjustments(state, problem, {
+    class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1',
+  });
+  const candidates = new Map(result.public_candidates.map(item => [item.slot_id, item.action]));
+
+  assert.equal(candidates.get('D1P3'), 'swap');
+  assert.equal(candidates.get('D1P4'), 'move');
+  assert.equal(candidates.has('D1P2'), false, 'S2 already occupies T1 in period 2, so A cannot move there');
+
+  const swapped = applyClassTimetableAdjustment(state, problem, {
+    class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1', to_slot: 'D1P3', action: 'swap',
+  });
+  assert.equal(swapped.action, 'swap');
+  assert.ok(swapped.schedule.meetings.some(item => item.section_id === 'A' && item.slot_id === 'D1P3'));
+  assert.ok(swapped.schedule.meetings.some(item => item.section_id === 'C' && item.slot_id === 'D1P1'));
+  assert.equal(swapped.schedule.validation.ok, true);
+});
+
+test('class grid explains why a conflicting drop is rejected', () => {
+  const { state, problem } = fixture();
+  const result = evaluateClassTimetableAdjustments(state, problem, {
+    class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1',
+  });
+  const busy = result.unavailable.find(item => item.slot_id === 'D1P2');
+  assert.ok(busy?.reason);
+
+  assert.throws(
+    () => applyClassTimetableAdjustment(state, problem, {
+      class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1', to_slot: 'D1P2',
+    }),
+    /教师 T1 在 D1P2 已有其他课程/,
+  );
 });

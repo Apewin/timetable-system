@@ -83,7 +83,9 @@ import {
   resolveScheduleTemplateInputs,
 } from './schedule-template-export.mjs';
 import {
+  applyClassTimetableAdjustment,
   applyTeacherTimetableAdjustment,
+  evaluateClassTimetableAdjustments,
   evaluateTeacherTimetableAdjustments,
 } from './teacher-timetable-adjustment.mjs';
 import {
@@ -444,6 +446,7 @@ function timetableGrid(state, by, id) {
           teacher: '请查看学生或 section 课表', room: '—',
           split_groups: groups.map(group => ({
             section_id: group.section_id,
+            task_id: group.task_id || '',
             course: group.course,
             section_label: group.section_label,
             teacher: group.teacher,
@@ -2065,6 +2068,7 @@ app.post('/api/teacher-timetable/drag-candidates', (req, res) => reply(res, () =
   return {
     source: result.source,
     candidates: result.public_candidates,
+    unavailable: result.unavailable || [],
     legend: { move: '可直接移动', swap: '可安全互换' },
   };
 }));
@@ -2073,6 +2077,43 @@ app.post('/api/teacher-timetable/adjust', (req, res) => reply(res, () => {
   const state = repository.read();
   const problem = problemForSchedule(state, state.schedule || {});
   const result = applyTeacherTimetableAdjustment(state, problem, req.body || {});
+  const schedule = withScheduleQualityStatus(result.schedule, result.schedule.validation);
+  repository.write({
+    ...state,
+    assignments: schedule.assignments,
+    schedule,
+    solve_status: 'valid',
+  });
+  const verb = result.action === 'swap' ? '已安全互换两节课程' : '已移动课程';
+  const selfStudyNote = result.displaced_self_study_count
+    ? `，并替换 ${result.displaced_self_study_count} 个自习标注`
+    : '';
+  const linkedNote = result.linked_section_count > (result.action === 'swap' ? 2 : 1)
+    ? `（联动 ${result.linked_section_count} 个同步 section）`
+    : '';
+  return {
+    message: `${verb}${linkedNote}${selfStudyNote}`,
+    action: result.action,
+    validation: schedule.validation,
+  };
+}));
+
+app.post('/api/class-timetable/drag-candidates', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const problem = problemForSchedule(state, state.schedule || {});
+  const result = evaluateClassTimetableAdjustments(state, problem, req.body || {});
+  return {
+    source: result.source,
+    candidates: result.public_candidates,
+    unavailable: result.unavailable || [],
+    legend: { move: '可直接移动', swap: '可安全互换' },
+  };
+}));
+
+app.post('/api/class-timetable/adjust', (req, res) => reply(res, () => {
+  const state = repository.read();
+  const problem = problemForSchedule(state, state.schedule || {});
+  const result = applyClassTimetableAdjustment(state, problem, req.body || {});
   const schedule = withScheduleQualityStatus(result.schedule, result.schedule.validation);
   repository.write({
     ...state,

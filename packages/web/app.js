@@ -3397,8 +3397,8 @@ async function renderScheduleEditorTimetable() {
       'schedule-editor-grid',
       data,
       `${teachingClass.name} · 改课表`,
-      '拖动单门课程到空格会进行完整硬约束校验；分流格和上下行政班格请保留原位。',
-      { editorMode: true, compact: true },
+      '拖动单门课程：绿色格可放入，蓝色格可互换；分流课请点选其中一门。',
+      { editorMode: true, compact: true, classDrag: data.stale !== true, classId },
     );
     grid.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
       cell.setAttribute('role', 'button');
@@ -6993,8 +6993,11 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
   const container = document.getElementById(containerId);
   const compact = options.compact === true;
   const teacherDragEnabled = Boolean(options.teacherDrag && options.teacherId && !data?.stale);
+  const classDragEnabled = Boolean(options.classDrag && options.classId && !data?.stale);
   container.dataset.teacherDragEnabled = teacherDragEnabled ? 'true' : 'false';
   container.dataset.teacherId = teacherDragEnabled ? options.teacherId : '';
+  container.dataset.classDragEnabled = classDragEnabled ? 'true' : 'false';
+  container.dataset.classId = classDragEnabled ? options.classId : '';
   if (!data || !data.rows || data.rows.length === 0) {
     container.innerHTML = '<div class="empty-state"><p>无排课结果</p></div>';
     return;
@@ -7023,7 +7026,7 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
           <h3>${escapeHtml(title)}</h3>
           <p>${escapeHtml(subtitle)}</p>
           ${data.stale ? '<div class="validation-result warning">⚠️ 当前输入已修改：以下为上一版历史课表。请重新排课后再据此调整。</div>' : ''}
-          ${teacherDragEnabled ? `
+          ${teacherDragEnabled || classDragEnabled ? `
             <div class="teacher-drag-guide">
               拖动课程调整时段：<span class="move-guide">绿色可直接放入</span>
               <span class="swap-guide">蓝色可与现有课程安全互换</span>
@@ -7032,6 +7035,13 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
           ` : ''}
         </div>
       `}
+      ${compact && classDragEnabled ? `
+        <div class="teacher-drag-guide schedule-editor-drag-guide">
+          拖动课程调整时段：<span class="move-guide">绿色可直接放入</span>
+          <span class="swap-guide">蓝色可与现有课程安全互换</span>
+          <span class="invalid-guide">红色表示学生或教师冲突</span>
+        </div>
+      ` : ''}
       <div class="timetable-grid">
         <div class="header-cell">节次</div>
         ${days.map(d => `<div class="header-cell">${d}</div>`).join('')}
@@ -7059,10 +7069,22 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
         if (slot.split_groups?.length) {
           const administrativeSplit = slot.split_groups.length > 1 &&
             slot.split_groups.every(group => group.class_type === 'admin');
-          // A class-level split cell is a directory of simultaneous options,
-          // not one common lesson.  Each student follows the one Section shown
-          // in their own timetable.
-          if (administrativeSplit) {
+          if (classDragEnabled) {
+            html += `
+              <div class="slot-cell has-class category-${category} split-course-cell editor-split-cell${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
+                   data-slot-id="${slotId}">
+                ${slot.split_groups.map(group => `
+                  <div class="split-course-drag" role="button" tabindex="0" draggable="true"
+                       data-task-id="${safeDataAttribute(group.task_id || '')}"
+                       data-section-id="${safeDataAttribute(group.section_id || '')}"
+                       data-slot-id="${slotId}">
+                    <strong>${escapeHtml(group.course)}</strong>
+                    <span>${escapeHtml(group.section_label || group.teacher || '')}</span>
+                  </div>
+                `).join('')}
+              </div>
+            `;
+          } else if (administrativeSplit) {
             // A teaching class can draw students from several administrative
             // classes.  Unlike AP/elective diversion, these are fixed class
             // lessons, so show each administrative class in its own vertical
@@ -7160,8 +7182,9 @@ function renderDetailedTimetable(containerId, data, title, subtitle, options = {
           // 其他课表：直接显示
           html += `
             <div class="slot-cell has-class category-${category}${overlayClass} ${isWalkBlock ? 'walk-block' : ''}"
-                 draggable="${options.teacherDrag ? teacherDragEnabled : true}"
+                 draggable="${options.teacherDrag ? teacherDragEnabled : options.classDrag ? classDragEnabled : true}"
                  data-task-id="${safeDataAttribute(slot.task_id || '')}"
+                 data-section-id="${safeDataAttribute(slot.section_id || '')}"
                  data-slot-id="${slotId}">
               <div class="course-name">
                 ${escapeHtml(getCourseName(slot))}
@@ -8217,11 +8240,16 @@ let draggedTask = null;
 let draggedFromSlot = null;
 let draggedScheduleTemplate = null;
 let draggedTeacherId = null;
+let draggedClassId = null;
+let draggedSectionId = null;
 let draggedTeacherContainer = null;
 let teacherDropCandidates = new Map();
+let dropUnavailable = new Map();
+let dropCandidatePromise = null;
 let teacherCandidateRequestId = 0;
 let selectedScheduleEditorTask = null;
 let selectedScheduleEditorFromSlot = null;
+let selectedScheduleEditorSectionId = null;
 let selectedScheduleEditorTemplate = null;
 
 function clearScheduleEditorClickState() {
@@ -8229,8 +8257,23 @@ function clearScheduleEditorClickState() {
     element.classList.remove('is-click-selected');
     if (element.matches('.schedule-editor-tool')) element.setAttribute('aria-pressed', 'false');
   });
+  const editorGrid = document.getElementById('schedule-editor-grid');
+  const draggingTimetable = Boolean(draggedTask || draggedTeacherId || draggedClassId);
+  if (editorGrid && !draggingTimetable) {
+    editorGrid.classList.remove('teacher-drag-active', 'teacher-drag-loading');
+    editorGrid.querySelectorAll('.slot-cell.teacher-move-candidate, .slot-cell.teacher-swap-candidate, .slot-cell.teacher-invalid-candidate').forEach(cell => {
+      cell.classList.remove('teacher-move-candidate', 'teacher-swap-candidate', 'teacher-invalid-candidate');
+      delete cell.dataset.teacherDropAction;
+      cell.removeAttribute('title');
+    });
+    teacherCandidateRequestId += 1;
+    teacherDropCandidates = new Map();
+    dropUnavailable = new Map();
+    dropCandidatePromise = null;
+  }
   selectedScheduleEditorTask = null;
   selectedScheduleEditorFromSlot = null;
+  selectedScheduleEditorSectionId = null;
   selectedScheduleEditorTemplate = null;
 }
 
@@ -8239,15 +8282,93 @@ function setScheduleEditorSelectionStatus(message) {
   if (status) status.textContent = message;
 }
 
-async function moveScheduleEditorCourse(taskId, fromSlot, toSlot) {
-  const result = await api('/swap', {
+function applyDropCandidateHighlights(container, fromSlot, candidates, unavailable) {
+  if (!container) return;
+  container.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
+    if (cell.dataset.slotId !== fromSlot) cell.classList.add('teacher-invalid-candidate');
+    const reason = unavailable.get(cell.dataset.slotId);
+    if (reason) cell.title = reason;
+  });
+  for (const [slotId, candidate] of candidates) {
+    const cell = container.querySelector(`.slot-cell[data-slot-id="${slotId}"]`);
+    if (!cell) continue;
+    cell.classList.remove('teacher-invalid-candidate');
+    cell.classList.add(candidate.action === 'swap' ? 'teacher-swap-candidate' : 'teacher-move-candidate');
+    cell.dataset.teacherDropAction = candidate.action;
+    cell.title = candidate.action === 'swap' ? '可安全互换' : '可直接放入';
+  }
+}
+
+async function loadDropCandidates({ teacherId, classId, taskId, sectionId, fromSlot, container }) {
+  const requestId = ++teacherCandidateRequestId;
+  teacherDropCandidates = new Map();
+  dropUnavailable = new Map();
+  if (!container || !fromSlot || (!teacherId && !classId) || !(taskId || sectionId)) return null;
+  container.classList.add('teacher-drag-active', 'teacher-drag-loading');
+  const payload = teacherId
+    ? { teacher_id: teacherId, task_id: taskId, from_slot: fromSlot }
+    : { class_id: classId, task_id: taskId || undefined, section_id: sectionId || undefined, from_slot: fromSlot };
+  const promise = api(teacherId ? '/teacher-timetable/drag-candidates' : '/class-timetable/drag-candidates', {
     method: 'POST',
-    body: JSON.stringify({ task_id: taskId, from_slot: fromSlot, to_slot: toSlot }),
+    body: JSON.stringify(payload),
+  });
+  dropCandidatePromise = promise;
+  try {
+    const result = await promise;
+    if (requestId === teacherCandidateRequestId) {
+      teacherDropCandidates = new Map((result.candidates || []).map(candidate => [candidate.slot_id, candidate]));
+      dropUnavailable = new Map((result.unavailable || []).map(item => [item.slot_id, item.reason]));
+      applyDropCandidateHighlights(container, fromSlot, teacherDropCandidates, dropUnavailable);
+    }
+    return result;
+  } catch {
+    return null;
+  } finally {
+    if (requestId === teacherCandidateRequestId) {
+      container.classList.remove('teacher-drag-loading');
+      if (dropCandidatePromise === promise) dropCandidatePromise = null;
+    }
+  }
+}
+
+async function commitClassTimetableAdjustment({ taskId, sectionId, fromSlot, toSlot, action }) {
+  const classId = scheduleEditorSelectedClassId();
+  const result = await api('/class-timetable/adjust', {
+    method: 'POST',
+    body: JSON.stringify({
+      class_id: classId,
+      task_id: taskId || undefined,
+      section_id: sectionId || undefined,
+      from_slot: fromSlot,
+      to_slot: toSlot,
+      action,
+    }),
   });
   clearScheduleEditorClickState();
   showToast(result.message, 'success');
   await refreshCurrentTimetable();
   setScheduleEditorSelectionStatus(`${result.message}；可以继续选择课程或编辑工具。`);
+}
+
+async function placeSelectedScheduleEditorCourse(slotCell) {
+  const toSlot = slotCell?.dataset.slotId;
+  if (!toSlot || !selectedScheduleEditorFromSlot || toSlot === selectedScheduleEditorFromSlot) return false;
+  if (dropCandidatePromise) await dropCandidatePromise.catch(() => {});
+  const candidate = teacherDropCandidates.get(toSlot);
+  if (!candidate) {
+    const reason = dropUnavailable.get(toSlot) || '该时段有课程冲突，不能放到这里';
+    showToast(reason, 'warning');
+    setScheduleEditorSelectionStatus(reason);
+    return true;
+  }
+  await commitClassTimetableAdjustment({
+    taskId: selectedScheduleEditorTask,
+    sectionId: selectedScheduleEditorSectionId,
+    fromSlot: selectedScheduleEditorFromSlot,
+    toSlot,
+    action: candidate.action,
+  });
+  return true;
 }
 
 async function handleScheduleEditorClick(target) {
@@ -8274,51 +8395,54 @@ async function handleScheduleEditorClick(target) {
     return;
   }
 
+  const splitChip = target.closest('.split-course-drag');
   const slotCell = target.closest('.slot-cell[data-slot-id]');
-  if (!slotCell) return;
-  if (slotCell.classList.contains('has-class')) {
-    if (!slotCell.dataset.taskId) {
-      showToast('这个组合课程格不能单独移动', 'warning');
+  if (await placeSelectedScheduleEditorCourse(slotCell)) return;
+  if (splitChip || (slotCell && slotCell.classList.contains('has-class'))) {
+    const source = splitChip || slotCell;
+    if (!source.dataset.taskId && !source.dataset.sectionId) {
+      showToast('请点选并行课程中的一门，再拖到绿色或蓝色格子', 'warning');
       return;
     }
-    const alreadySelected = slotCell.classList.contains('is-click-selected');
+    const alreadySelected = source.classList.contains('is-click-selected');
     clearScheduleEditorClickState();
     if (alreadySelected) {
-      setScheduleEditorSelectionStatus('已取消课程选择；可以重新选择课程或编辑工具。');
+      setScheduleEditorSelectionStatus('已取消课程选择；可以重新选择课程或工具。');
       return;
     }
-    selectedScheduleEditorTask = slotCell.dataset.taskId;
-    selectedScheduleEditorFromSlot = slotCell.dataset.slotId;
-    slotCell.classList.add('is-click-selected');
-    setScheduleEditorSelectionStatus(`已选择“${slotCell.textContent.trim() || '课程'}”；现在点击一个目标空格，系统会先校验再调整。`);
+    selectedScheduleEditorTask = source.dataset.taskId || '';
+    selectedScheduleEditorSectionId = source.dataset.sectionId || '';
+    selectedScheduleEditorFromSlot = source.dataset.slotId;
+    source.classList.add('is-click-selected');
+    const label = source.textContent.trim() || '课程';
+    setScheduleEditorSelectionStatus(`已选择“${label}”；绿色格可放入，蓝色格可互换，红色格会说明冲突。`);
+    void loadDropCandidates({
+      classId: scheduleEditorSelectedClassId(),
+      taskId: selectedScheduleEditorTask,
+      sectionId: selectedScheduleEditorSectionId,
+      fromSlot: selectedScheduleEditorFromSlot,
+      container: document.getElementById('schedule-editor-grid'),
+    });
     return;
   }
-  if (slotCell.classList.contains('has-schedule-overlay')) return;
-  if (selectedScheduleEditorTemplate) {
+  if (selectedScheduleEditorTemplate && slotCell && !slotCell.classList.contains('has-class')) {
     const template = selectedScheduleEditorTemplate;
     clearScheduleEditorClickState();
     await addScheduleEditorOverlay(template, slotCell.dataset.slotId);
     return;
   }
-  if (selectedScheduleEditorTask && selectedScheduleEditorFromSlot) {
-    await moveScheduleEditorCourse(
-      selectedScheduleEditorTask,
-      selectedScheduleEditorFromSlot,
-      slotCell.dataset.slotId,
-    );
-    return;
-  }
   showToast('请先选择一门课程或右侧编辑工具', 'info');
-  setScheduleEditorSelectionStatus('请先选择一门课程、自习或特殊事件，再点击目标空格。');
+  setScheduleEditorSelectionStatus('请先选择一门课程、自习或特殊事件，再点击绿色或蓝色目标格。');
 }
 
 function clearTimetableDragState() {
-  document.querySelectorAll('.slot-cell.dragging, .schedule-editor-tool.dragging').forEach(element => {
+  document.querySelectorAll('.slot-cell.dragging, .schedule-editor-tool.dragging, .split-course-drag.dragging').forEach(element => {
     element.classList.remove('dragging');
   });
   document.querySelectorAll('.slot-cell.drag-over, .slot-cell.teacher-move-candidate, .slot-cell.teacher-swap-candidate, .slot-cell.teacher-invalid-candidate').forEach(element => {
     element.classList.remove('drag-over', 'teacher-move-candidate', 'teacher-swap-candidate', 'teacher-invalid-candidate');
     delete element.dataset.teacherDropAction;
+    element.removeAttribute('title');
   });
   document.querySelectorAll('.teacher-drag-active, .teacher-drag-loading').forEach(element => {
     element.classList.remove('teacher-drag-active', 'teacher-drag-loading');
@@ -8328,40 +8452,23 @@ function clearTimetableDragState() {
   draggedFromSlot = null;
   draggedScheduleTemplate = null;
   draggedTeacherId = null;
+  draggedClassId = null;
+  draggedSectionId = null;
   draggedTeacherContainer = null;
   teacherDropCandidates = new Map();
+  dropUnavailable = new Map();
+  dropCandidatePromise = null;
 }
 
 async function loadTeacherDropCandidates() {
-  const requestId = ++teacherCandidateRequestId;
-  const teacherId = draggedTeacherId;
-  const taskId = draggedTask;
-  const fromSlot = draggedFromSlot;
-  const container = draggedTeacherContainer;
-  if (!teacherId || !taskId || !fromSlot || !container) return;
-  container.classList.add('teacher-drag-active', 'teacher-drag-loading');
-  try {
-    const result = await api('/teacher-timetable/drag-candidates', {
-      method: 'POST',
-      body: JSON.stringify({ teacher_id: teacherId, task_id: taskId, from_slot: fromSlot }),
-    });
-    if (requestId !== teacherCandidateRequestId || container !== draggedTeacherContainer) return;
-    teacherDropCandidates = new Map((result.candidates || []).map(candidate => [candidate.slot_id, candidate]));
-    container.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
-      if (cell.dataset.slotId !== fromSlot) cell.classList.add('teacher-invalid-candidate');
-    });
-    for (const [slotId, candidate] of teacherDropCandidates) {
-      const cell = container.querySelector(`.slot-cell[data-slot-id="${slotId}"]`);
-      if (!cell) continue;
-      cell.classList.remove('teacher-invalid-candidate');
-      cell.classList.add(candidate.action === 'swap' ? 'teacher-swap-candidate' : 'teacher-move-candidate');
-      cell.dataset.teacherDropAction = candidate.action;
-    }
-  } catch {
-    // api() already presents the backend reason. The course remains in place.
-  } finally {
-    if (requestId === teacherCandidateRequestId) container.classList.remove('teacher-drag-loading');
-  }
+  return loadDropCandidates({
+    teacherId: draggedTeacherId,
+    classId: draggedClassId,
+    taskId: draggedTask,
+    sectionId: draggedSectionId,
+    fromSlot: draggedFromSlot,
+    container: draggedTeacherContainer,
+  });
 }
 
 function scheduleEditorTemplateFromCard(card) {
@@ -8381,7 +8488,10 @@ function scheduleEditorTemplateFromCard(card) {
 function canDropOnTimetableSlot(slotCell) {
   if (!slotCell) return false;
   if (draggedScheduleTemplate) return Boolean(slotCell.closest('#view-schedule-editor'));
-  if (draggedTeacherId) return teacherDropCandidates.has(slotCell.dataset.slotId);
+  if (draggedTeacherId || draggedClassId) {
+    if (dropCandidatePromise && teacherDropCandidates.size === 0 && dropUnavailable.size === 0) return true;
+    return teacherDropCandidates.has(slotCell.dataset.slotId);
+  }
   if (slotCell.classList.contains('has-class') || slotCell.classList.contains('has-schedule-overlay')) return false;
   return Boolean(draggedTask && draggedFromSlot);
 }
@@ -8404,28 +8514,35 @@ function initDragAndDrop() {
       draggedTask = null;
       draggedFromSlot = null;
       draggedTeacherId = null;
+      draggedClassId = null;
+      draggedSectionId = null;
       draggedTeacherContainer = null;
       teacherDropCandidates = new Map();
+      dropUnavailable = new Map();
       templateCard.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('application/x-schedule-editor-template', JSON.stringify(draggedScheduleTemplate));
       return;
     }
-    const slotCell = e.target.closest('.slot-cell.has-class');
-    if (!slotCell || !slotCell.dataset.taskId) return;
+    const splitChip = e.target.closest('.split-course-drag');
+    const slotCell = splitChip || e.target.closest('.slot-cell.has-class');
+    if (!slotCell || (!slotCell.dataset.taskId && !slotCell.dataset.sectionId)) return;
 
-    draggedTask = slotCell.dataset.taskId;
+    draggedTask = slotCell.dataset.taskId || '';
+    draggedSectionId = slotCell.dataset.sectionId || '';
     draggedFromSlot = slotCell.dataset.slotId;
     draggedScheduleTemplate = null;
-    const teacherContainer = slotCell.closest('[data-teacher-drag-enabled="true"]');
-    draggedTeacherId = teacherContainer?.dataset.teacherId || null;
-    draggedTeacherContainer = draggedTeacherId ? teacherContainer : null;
+    const grid = slotCell.closest('[data-teacher-drag-enabled="true"], [data-class-drag-enabled="true"]');
+    draggedTeacherId = grid?.dataset.teacherDragEnabled === 'true' ? grid.dataset.teacherId : null;
+    draggedClassId = grid?.dataset.classDragEnabled === 'true' ? grid.dataset.classId : null;
+    draggedTeacherContainer = (draggedTeacherId || draggedClassId) ? grid : null;
     teacherDropCandidates = new Map();
+    dropUnavailable = new Map();
     slotCell.classList.add('dragging');
 
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', draggedTask);
-    if (draggedTeacherId) void loadTeacherDropCandidates();
+    e.dataTransfer.setData('text/plain', draggedTask || draggedSectionId);
+    if (draggedTeacherId || draggedClassId) void loadTeacherDropCandidates();
   });
 
   document.addEventListener('dragover', (e) => {
@@ -8450,33 +8567,61 @@ function initDragAndDrop() {
 
     slotCell.classList.remove('drag-over');
     const toSlot = slotCell.dataset.slotId;
-    if (!toSlot || !canDropOnTimetableSlot(slotCell)) return;
-
-    // Capture the drag operation before dragend clears the visual state while
-    // the commit request is still in flight.
     const taskId = draggedTask;
+    const sectionId = draggedSectionId;
     const fromSlot = draggedFromSlot;
     const teacherId = draggedTeacherId;
-    const teacherCandidate = teacherDropCandidates.get(toSlot) || null;
+    const classId = draggedClassId;
+    const template = draggedScheduleTemplate;
+    const pendingCandidates = dropCandidatePromise;
+    let candidate = teacherDropCandidates.get(toSlot) || null;
+    let unavailableReason = dropUnavailable.get(toSlot) || '';
 
     try {
-      if (draggedScheduleTemplate) {
-        await addScheduleEditorOverlay(draggedScheduleTemplate, toSlot);
+      if (template) {
+        if (!toSlot || !canDropOnTimetableSlot(slotCell)) return;
+        await addScheduleEditorOverlay(template, toSlot);
         return;
       }
-      if (!taskId || !fromSlot || toSlot === fromSlot) return;
-      const result = teacherId && teacherCandidate
-        ? await api('/teacher-timetable/adjust', {
-          method: 'POST',
-          body: JSON.stringify({
-            teacher_id: teacherId,
-            task_id: taskId,
-            from_slot: fromSlot,
-            to_slot: toSlot,
-            action: teacherCandidate.action,
-          }),
-        })
-        : await api('/swap', {
+      if (!toSlot || (!taskId && !sectionId) || !fromSlot || toSlot === fromSlot) return;
+      if ((teacherId || classId) && pendingCandidates && !candidate) {
+        const result = await pendingCandidates.catch(() => null);
+        candidate = (result?.candidates || []).find(item => item.slot_id === toSlot) || null;
+        unavailableReason = (result?.unavailable || []).find(item => item.slot_id === toSlot)?.reason || unavailableReason;
+      }
+      if (teacherId || classId) {
+        if (!candidate) {
+          showToast(unavailableReason || '该时段有课程冲突，不能放到这里', 'warning');
+          return;
+        }
+        const result = teacherId
+          ? await api('/teacher-timetable/adjust', {
+            method: 'POST',
+            body: JSON.stringify({
+              teacher_id: teacherId,
+              task_id: taskId,
+              from_slot: fromSlot,
+              to_slot: toSlot,
+              action: candidate.action,
+            }),
+          })
+          : await api('/class-timetable/adjust', {
+            method: 'POST',
+            body: JSON.stringify({
+              class_id: classId,
+              task_id: taskId || undefined,
+              section_id: sectionId || undefined,
+              from_slot: fromSlot,
+              to_slot: toSlot,
+              action: candidate.action,
+            }),
+          });
+        showToast(result.message, 'success');
+        await refreshCurrentTimetable();
+        return;
+      }
+      if (!canDropOnTimetableSlot(slotCell)) return;
+      const result = await api('/swap', {
         method: 'POST',
         body: JSON.stringify({
           task_id: taskId,
@@ -8484,10 +8629,7 @@ function initDragAndDrop() {
           to_slot: toSlot
         }),
       });
-
       showToast(result.message, 'success');
-
-      // 刷新当前课表视图
       await refreshCurrentTimetable();
     } catch (error) {
       // 错误已由 api 函数处理
@@ -8502,7 +8644,7 @@ function initDragAndDrop() {
   });
   document.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
-    const interactive = event.target.closest('#view-schedule-editor .slot-cell[data-slot-id], #view-schedule-editor .schedule-editor-tool[data-schedule-template]');
+    const interactive = event.target.closest('#view-schedule-editor .slot-cell[data-slot-id], #view-schedule-editor .split-course-drag, #view-schedule-editor .schedule-editor-tool[data-schedule-template]');
     if (!interactive) return;
     event.preventDefault();
     interactive.click();

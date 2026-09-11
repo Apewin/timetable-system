@@ -43,15 +43,15 @@ test('manual placement, native drag, solving, timetable adjustment and overlays 
   const source = page.locator('.slot-cell.has-class[data-slot-id="D2P1"]');
   const target = page.locator('.slot-cell[data-slot-id="D3P1"]');
   const dragResponse = page.waitForResponse(response =>
-    response.url().endsWith('/api/swap') && response.request().method() === 'POST');
+    response.url().endsWith('/class-timetable/adjust') && response.request().method() === 'POST');
   await source.dragTo(target);
   expect((await dragResponse).ok()).toBe(true);
   await expect(target).toContainText('数学');
 
   const clickMoveResponse = page.waitForResponse(response =>
-    response.url().endsWith('/api/swap') && response.request().method() === 'POST');
+    response.url().endsWith('/class-timetable/adjust') && response.request().method() === 'POST');
   await target.click();
-  await expect(page.locator('#schedule-editor-status')).toContainText('现在点击一个目标空格');
+  await expect(page.locator('#schedule-editor-status')).toContainText('绿色格可放入');
   await page.locator('.slot-cell[data-slot-id="D2P1"]').click();
   expect((await clickMoveResponse).ok()).toBe(true);
   await expect(page.locator('.slot-cell[data-slot-id="D2P1"]')).toContainText('数学');

@@ -81,6 +81,14 @@ export const OPERATIONS = [
     name: 'schedule.teacher.adjust', category: 'schedule', method: 'POST', path: '/teacher-timetable/adjust', mutates: true,
     body: { required: ['teacher_id', 'task_id', 'from_slot', 'to_slot'], optional: ['action'] },
   },
+  {
+    name: 'schedule.class.drag-candidates', category: 'schedule', method: 'POST', path: '/class-timetable/drag-candidates', mutates: false,
+    body: { required: ['class_id', 'from_slot'], optional: ['task_id', 'section_id'] },
+  },
+  {
+    name: 'schedule.class.adjust', category: 'schedule', method: 'POST', path: '/class-timetable/adjust', mutates: true,
+    body: { required: ['class_id', 'from_slot', 'to_slot'], optional: ['task_id', 'section_id', 'action'] },
+  },
   { name: 'schedule.editor.get', category: 'schedule', method: 'GET', path: '/schedule-editor', mutates: false },
   {
     name: 'schedule.overlay.add', category: 'schedule', method: 'POST', path: '/schedule-editor/overlays', mutates: true,

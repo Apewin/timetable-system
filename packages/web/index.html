@@ -742,7 +742,7 @@
           <div class="schedule-editor-header">
             <div>
               <h2>🛠️ 改课表</h2>
-              <p>拖动单门正式课程到空格可调课，系统会立即校验所有硬约束。右侧的“自习”和“特殊事件”只能拖入该教学班全体学生都空闲的时段。</p>
+              <p>拖动课程时，绿色格可以放入，蓝色格可以互换，红色格会显示学生或教师冲突原因。不必先腾出空格；冲突格不会提交。右侧的“自习”和“特殊事件”只能放进该班全体学生都空闲的时段。</p>
             </div>
           </div>
           <div class="schedule-editor-controls">
@@ -756,7 +756,7 @@
             </section>
             <aside class="schedule-editor-toolbox" aria-label="课表编辑工具">
               <h3>编辑工具</h3>
-              <p class="schedule-editor-tool-hint">可以拖动卡片，也可以先点击卡片再点击目标空格。特殊事件长度表示同一天连续占用的节数。</p>
+              <p class="schedule-editor-tool-hint">可以拖动卡片，也可以先点击卡片再点击绿色或蓝色目标格。红色格表示当前课程放不进去。特殊事件长度表示同一天连续占用的节数。</p>
               <div class="schedule-editor-tool self-study" role="button" tabindex="0" aria-pressed="false" draggable="true" data-schedule-template="self_study">
                 <strong>自习</strong>
                 <span>拖入一个空白格</span>
