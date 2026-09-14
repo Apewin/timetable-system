@@ -13,7 +13,6 @@ import {
   shouldCollapseAdminSections,
 } from './manual-course-scope.mjs';
 import { escapeHtml, safeDataAttribute } from './dom-safety.mjs';
-import { shouldAutoCollapseAiAssistant } from './responsive-shell.mjs';
 import { manualSolvedCellsBySlot } from './manual-solved-timetable.mjs';
 import { qualityMetricSummary } from './quality-analysis-view.mjs';
 import { overviewCardSummary } from './overview-timetable-view.mjs';
@@ -147,6 +146,23 @@ function showToast(message, type = 'success') {
   }, 3000);
 }
 
+let computationProgressHideTimer = null;
+const COMPUTATION_PROGRESS_SUCCESS_HIDE_MS = 4000;
+const COMPUTATION_PROGRESS_ERROR_HIDE_MS = 8000;
+
+function hideComputationProgress() {
+  clearTimeout(computationProgressHideTimer);
+  computationProgressHideTimer = null;
+  document.getElementById('computation-progress')?.classList.add('hidden');
+}
+
+function scheduleComputationProgressAutoHide(delayMs) {
+  clearTimeout(computationProgressHideTimer);
+  computationProgressHideTimer = setTimeout(() => {
+    hideComputationProgress();
+  }, delayMs);
+}
+
 function renderComputationJob(job) {
   if (!job) return;
   const panel = document.getElementById('computation-progress');
@@ -176,6 +192,16 @@ function renderComputationJob(job) {
   result.classList.toggle('hidden', !presentation.terminal || !job.result_location?.view);
   result.dataset.view = job.result_location?.view || '';
   dismiss.classList.toggle('hidden', !presentation.terminal);
+  if (presentation.terminal) {
+    scheduleComputationProgressAutoHide(
+      presentation.state === 'error'
+        ? COMPUTATION_PROGRESS_ERROR_HIDE_MS
+        : COMPUTATION_PROGRESS_SUCCESS_HIDE_MS,
+    );
+  } else {
+    clearTimeout(computationProgressHideTimer);
+    computationProgressHideTimer = null;
+  }
 }
 
 function computationJobError(job) {
@@ -214,9 +240,7 @@ async function restoreComputationJobCenter() {
       || jobs.find(job => ['queued', 'running'].includes(job.status));
     if (running) {
       await waitForComputationJob(running, { detached: true });
-      return;
     }
-    if (jobs[0]) renderComputationJob(jobs[0]);
   } catch {
     // The job center is auxiliary; ordinary pages remain usable if its
     // history cannot be read during startup.
@@ -235,10 +259,11 @@ function initComputationJobCenter() {
   });
   document.getElementById('computation-progress-result')?.addEventListener('click', event => {
     const view = event.currentTarget.dataset.view;
+    hideComputationProgress();
     if (view) switchView(view);
   });
   document.getElementById('computation-progress-dismiss')?.addEventListener('click', () => {
-    document.getElementById('computation-progress')?.classList.add('hidden');
+    hideComputationProgress();
   });
 }
 
@@ -1732,7 +1757,7 @@ function setManualCoursePanelExpanded(expanded, { persist = true } = {}) {
   view?.classList.toggle('course-panel-collapsed', !resolvedExpanded);
   button?.setAttribute('aria-expanded', resolvedExpanded ? 'true' : 'false');
   const label = button?.querySelector('span:last-child');
-  if (label) label.textContent = resolvedExpanded ? '隐藏锁课池' : '显示锁课池';
+  if (label) label.textContent = resolvedExpanded ? '隐藏课程池' : '显示课程池';
   if (persist) localStorage.setItem(MANUAL_COURSE_PANEL_STORAGE_KEY, String(resolvedExpanded));
 }
 
@@ -1755,13 +1780,13 @@ function setOverviewFocusMode(enabled) {
   if (button) button.textContent = resolvedEnabled ? '退出专注' : '专注查看';
 }
 
-function setOverviewSingleColumn(enabled) {
+function setOverviewCompactGrid(enabled) {
   const view = document.getElementById('view-overview-timetable');
   const button = document.getElementById('overview-layout-toggle');
   const resolvedEnabled = Boolean(enabled);
-  view?.classList.toggle('overview-single-column', resolvedEnabled);
+  view?.classList.toggle('overview-compact-grid', resolvedEnabled);
   button?.setAttribute('aria-pressed', resolvedEnabled ? 'true' : 'false');
-  if (button) button.textContent = resolvedEnabled ? '自动排列' : '单列查看';
+  if (button) button.textContent = resolvedEnabled ? '按班分行' : '紧凑多列';
 }
 
 function manualPlanIsConfirmed() {
@@ -2952,6 +2977,12 @@ async function loadManualTimetable() {
   window._manualRoomSaveError = '';
   window._manualScheduleAvailable = status.solve_status === 'valid';
   window._manualHasSchedule = Number(status.counts?.assignments || 0) > 0;
+  // Clearing everything also removes manual locks and drafts, so it stays
+  // available whenever any of those exist, even before a full solve.
+  window._manualHasClearableSchedule = window._manualHasSchedule
+    || Number(status.counts?.meetings || 0) > 0
+    || (manualPlan.placements || []).length > 0
+    || (manualPlan.locks || []).length > 0;
   window._manualGeneratedTimetables = new Map();
   window._manualGeneratedTimetableRequests = new Map();
   manualDraftUndoStack = [];
@@ -2959,8 +2990,7 @@ async function loadManualTimetable() {
   renderManualActionFeedback('');
   setManualFocusMode(false);
   setManualCoursePanelExpanded(
-    status.solve_status !== 'valid'
-      && localStorage.getItem(MANUAL_COURSE_PANEL_STORAGE_KEY) !== 'false',
+    localStorage.getItem(MANUAL_COURSE_PANEL_STORAGE_KEY) !== 'false',
     { persist: false },
   );
   const poolContext = document.getElementById('manual-course-pool-context');
@@ -2975,6 +3005,8 @@ async function loadManualTimetable() {
   renderManualRoomManager();
   const clearUnlockedButton = document.getElementById('manual-clear-unlocked-schedule');
   if (clearUnlockedButton) clearUnlockedButton.disabled = !window._manualHasSchedule;
+  const clearAllButton = document.getElementById('manual-clear-all-schedule');
+  if (clearAllButton) clearAllButton.disabled = !window._manualHasClearableSchedule;
   const selector = document.getElementById('manual-class-select');
   const selectableClasses = teachingClasses
     .map(item => ({ ...item, class_type: 'teaching', label: `教学班 · ${item.name}` }))
@@ -3112,6 +3144,9 @@ async function loadManualTimetable() {
       window._manualGeneratedTimetableRequests = new Map();
       const clearUnlockedButton = document.getElementById('manual-clear-unlocked-schedule');
       if (clearUnlockedButton) clearUnlockedButton.disabled = false;
+      window._manualHasClearableSchedule = true;
+      const clearAllButton = document.getElementById('manual-clear-all-schedule');
+      if (clearAllButton) clearAllButton.disabled = false;
       applyScheduleArchiveStatus({
         solve_status: 'valid',
         review_required: result.publication_status === 'review_required',
@@ -3383,6 +3418,24 @@ function updateScheduleEditorSpecialTemplate() {
     : '填写名称后拖入起始空格';
 }
 
+function renderScheduleEditorBuffer(items = []) {
+  const buffer = document.getElementById('schedule-editor-buffer');
+  if (!buffer) return;
+  if (!items.length) {
+    buffer.innerHTML = '<p class="schedule-editor-buffer-empty">缓冲区是空的。把课拖到这里，或先点课程再点这里。</p>';
+    return;
+  }
+  buffer.innerHTML = items.map(item => `
+    <div class="schedule-editor-buffer-card" role="button" tabindex="0" draggable="true"
+         data-buffer-id="${safeDataAttribute(item.id)}"
+         data-section-id="${safeDataAttribute(item.section_id || '')}"
+         data-slot-id="__buffer__">
+      <strong>${escapeHtml(item.title || '课程')}</strong>
+      <span>${escapeHtml(item.subtitle || '')}</span>
+    </div>
+  `).join('');
+}
+
 async function renderScheduleEditorTimetable() {
   const classId = scheduleEditorSelectedClassId();
   const grid = document.getElementById('schedule-editor-grid');
@@ -3396,7 +3449,7 @@ async function renderScheduleEditorTimetable() {
       'schedule-editor-grid',
       data,
       `${teachingClass.name} · 改课表`,
-      '拖动单门课程：绿色格可放入，蓝色格可互换；分流课请点选其中一门。',
+      '拖动单门课程：绿色格可放入，蓝色格可互换；可先停进右侧缓冲区再轮换。',
       { editorMode: true, compact: true, classDrag: data.stale !== true, classId },
     );
     grid.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
@@ -3421,7 +3474,11 @@ async function renderScheduleEditorTimetable() {
         }
       });
     });
-    status.textContent = `当前正在编辑：${teachingClass.name}。已显示 ${data.overlays?.length || 0} 个自习/特殊事件标注。`;
+    renderScheduleEditorBuffer(data.adjustment_buffer || []);
+    const bufferCount = (data.adjustment_buffer || []).length;
+    status.textContent = bufferCount
+      ? `当前正在编辑：${teachingClass.name}。缓冲区还有 ${bufferCount} 门课未放回，不能作为正式课表。`
+      : `当前正在编辑：${teachingClass.name}。已显示 ${data.overlays?.length || 0} 个自习/特殊事件标注。`;
   } catch {
     status.textContent = '课表读取失败，请检查后端状态后重试。';
   }
@@ -3517,6 +3574,71 @@ async function clearManualUnlockedSchedule() {
   } finally {
     window._manualClearUnlockedRunning = false;
     button.disabled = window._manualHasSchedule === false;
+  }
+}
+
+function resetManualDraftStorage() {
+  writeManualDrafts({});
+  manualDraftUndoStack = [];
+  renderManualActionFeedback('', { canUndo: false });
+}
+
+async function clearManualAllSchedule() {
+  const button = document.getElementById('manual-clear-all-schedule');
+  if (!button || window._manualClearAllRunning === true) return;
+  window._manualClearAllRunning = true;
+  button.disabled = true;
+  renderManualPlanControls('正在核对当前课表中将要删除的课时…');
+  try {
+    const preview = await api('/schedule/clear-all/preview');
+    if (!preview.total_meetings && !preview.parked_meetings && !preview.lock_count && !preview.manual_placements) {
+      const message = '当前课表已经是空的，无需清空。';
+      renderManualPlanControls(message);
+      showToast(message, 'info');
+      return;
+    }
+    const firstConfirmed = confirm(
+      `将清空当前全部课表，包括锁定课程。\n\n`
+      + `锁定课时：${preview.locked_meetings} 节\n`
+      + `未锁定课时：${preview.unlocked_meetings} 节`
+      + (preview.parked_meetings ? `\n改课表缓冲区：${preview.parked_meetings} 门` : '')
+      + (preview.manual_placements ? `\n手动锁定草稿：${preview.manual_placements} 条` : '')
+      + '\n\n课程、教师、学生和分班数据不会改变。此操作无法从当前课表撤销，需要时请先保存为过往课表。\n\n确定继续吗？',
+    );
+    if (!firstConfirmed) {
+      renderManualPlanControls('已取消清空；当前课表没有变化。');
+      return;
+    }
+    const secondConfirmed = confirm(
+      '第二次确认：真的要清空全部课表吗？\n\n锁定课程、自动排入课程和手动草稿都会删除，且无法撤销。',
+    );
+    if (!secondConfirmed) {
+      renderManualPlanControls('已取消清空；当前课表没有变化。');
+      return;
+    }
+    const result = await api('/schedule/clear-all', {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_revision: preview.revision,
+        confirmation: '清空全部课表',
+        confirmed_by: '教务用户',
+      }),
+    });
+    window._manualScheduleAvailable = false;
+    window._manualHasSchedule = false;
+    window._manualHasClearableSchedule = false;
+    window._manualGeneratedTimetables = new Map();
+    window._manualGeneratedTimetableRequests = new Map();
+    resetManualDraftStorage();
+    await loadManualTimetable();
+    renderManualPlanControls(result.message);
+    showToast(result.message, 'success');
+  } catch (error) {
+    renderManualPlanControls(`清空失败：${error.message}`);
+    showToast(`清空失败：${error.message}`, 'error');
+  } finally {
+    window._manualClearAllRunning = false;
+    button.disabled = window._manualHasClearableSchedule === false;
   }
 }
 
@@ -7248,6 +7370,11 @@ async function loadOverviewTimetable() {
       if (grade !== 'all') {
         items = items.filter(c => c.grade === parseInt(grade));
       }
+      items = [...items].sort((a, b) => {
+        const gradeDiff = Number(a.grade || 0) - Number(b.grade || 0);
+        if (gradeDiff !== 0) return gradeDiff;
+        return String(a.name || a.id).localeCompare(String(b.name || b.id), 'zh');
+      });
     } else {
       items = await api('/teachers');
     }
@@ -8241,6 +8368,7 @@ let draggedScheduleTemplate = null;
 let draggedTeacherId = null;
 let draggedClassId = null;
 let draggedSectionId = null;
+let draggedBufferId = null;
 let draggedTeacherContainer = null;
 let teacherDropCandidates = new Map();
 let dropUnavailable = new Map();
@@ -8249,6 +8377,7 @@ let teacherCandidateRequestId = 0;
 let selectedScheduleEditorTask = null;
 let selectedScheduleEditorFromSlot = null;
 let selectedScheduleEditorSectionId = null;
+let selectedScheduleEditorBufferId = null;
 let selectedScheduleEditorTemplate = null;
 
 function clearScheduleEditorClickState() {
@@ -8273,6 +8402,7 @@ function clearScheduleEditorClickState() {
   selectedScheduleEditorTask = null;
   selectedScheduleEditorFromSlot = null;
   selectedScheduleEditorSectionId = null;
+  selectedScheduleEditorBufferId = null;
   selectedScheduleEditorTemplate = null;
 }
 
@@ -8282,31 +8412,38 @@ function setScheduleEditorSelectionStatus(message) {
 }
 
 function applyDropCandidateHighlights(container, fromSlot, candidates, unavailable) {
-  if (!container) return;
-  container.querySelectorAll('.slot-cell[data-slot-id]').forEach(cell => {
-    if (cell.dataset.slotId !== fromSlot) cell.classList.add('teacher-invalid-candidate');
-    const reason = unavailable.get(cell.dataset.slotId);
-    if (reason) cell.title = reason;
-  });
+  const roots = [...new Set([container, document.getElementById('schedule-editor-buffer')].filter(Boolean))];
+  for (const root of roots) {
+    root.querySelectorAll('.slot-cell[data-slot-id], [data-adjustment-buffer][data-slot-id]').forEach(cell => {
+      if (cell.dataset.slotId !== fromSlot) cell.classList.add('teacher-invalid-candidate');
+      const reason = unavailable.get(cell.dataset.slotId);
+      if (reason) cell.title = reason;
+    });
+    if (root.matches?.('[data-adjustment-buffer][data-slot-id]') && root.dataset.slotId !== fromSlot) {
+      root.classList.add('teacher-invalid-candidate');
+      const reason = unavailable.get(root.dataset.slotId);
+      if (reason) root.title = reason;
+    }
+  }
   for (const [slotId, candidate] of candidates) {
-    const cell = container.querySelector(`.slot-cell[data-slot-id="${slotId}"]`);
+    const cell = document.querySelector(`.slot-cell[data-slot-id="${slotId}"], [data-adjustment-buffer][data-slot-id="${slotId}"]`);
     if (!cell) continue;
     cell.classList.remove('teacher-invalid-candidate');
     cell.classList.add(candidate.action === 'swap' ? 'teacher-swap-candidate' : 'teacher-move-candidate');
     cell.dataset.teacherDropAction = candidate.action;
-    cell.title = candidate.action === 'swap' ? '可安全互换' : '可直接放入';
+    cell.title = candidate.action === 'park' ? '放入拖拽缓冲区' : candidate.action === 'swap' ? '可安全互换' : '可直接放入';
   }
 }
 
-async function loadDropCandidates({ teacherId, classId, taskId, sectionId, fromSlot, container }) {
+async function loadDropCandidates({ teacherId, classId, taskId, sectionId, fromSlot, bufferId, container }) {
   const requestId = ++teacherCandidateRequestId;
   teacherDropCandidates = new Map();
   dropUnavailable = new Map();
-  if (!container || !fromSlot || (!teacherId && !classId) || !(taskId || sectionId)) return null;
+  if (!container || !fromSlot || (!teacherId && !classId) || !(taskId || sectionId || bufferId)) return null;
   container.classList.add('teacher-drag-active', 'teacher-drag-loading');
   const payload = teacherId
-    ? { teacher_id: teacherId, task_id: taskId, from_slot: fromSlot }
-    : { class_id: classId, task_id: taskId || undefined, section_id: sectionId || undefined, from_slot: fromSlot };
+    ? { teacher_id: teacherId, task_id: taskId, section_id: sectionId || undefined, from_slot: fromSlot, buffer_id: bufferId || undefined }
+    : { class_id: classId, task_id: taskId || undefined, section_id: sectionId || undefined, from_slot: fromSlot, buffer_id: bufferId || undefined };
   const promise = api(teacherId ? '/teacher-timetable/drag-candidates' : '/class-timetable/drag-candidates', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -8330,7 +8467,7 @@ async function loadDropCandidates({ teacherId, classId, taskId, sectionId, fromS
   }
 }
 
-async function commitClassTimetableAdjustment({ taskId, sectionId, fromSlot, toSlot, action }) {
+async function commitClassTimetableAdjustment({ taskId, sectionId, fromSlot, toSlot, action, bufferId }) {
   const classId = scheduleEditorSelectedClassId();
   const result = await api('/class-timetable/adjust', {
     method: 'POST',
@@ -8341,6 +8478,7 @@ async function commitClassTimetableAdjustment({ taskId, sectionId, fromSlot, toS
       from_slot: fromSlot,
       to_slot: toSlot,
       action,
+      buffer_id: bufferId || undefined,
     }),
   });
   clearScheduleEditorClickState();
@@ -8366,6 +8504,7 @@ async function placeSelectedScheduleEditorCourse(slotCell) {
     fromSlot: selectedScheduleEditorFromSlot,
     toSlot,
     action: candidate.action,
+    bufferId: selectedScheduleEditorBufferId,
   });
   return true;
 }
@@ -8396,7 +8535,32 @@ async function handleScheduleEditorClick(target) {
 
   const splitChip = target.closest('.split-course-drag');
   const slotCell = target.closest('.slot-cell[data-slot-id]');
-  if (await placeSelectedScheduleEditorCourse(slotCell)) return;
+  const bufferCard = target.closest('[data-buffer-id]');
+  const bufferZone = !bufferCard && target.closest('[data-adjustment-buffer][data-slot-id]');
+  if (await placeSelectedScheduleEditorCourse(slotCell || bufferZone)) return;
+  if (bufferCard) {
+    const alreadySelected = bufferCard.classList.contains('is-click-selected');
+    clearScheduleEditorClickState();
+    if (alreadySelected) {
+      setScheduleEditorSelectionStatus('已取消缓冲区课程选择；可以重新选择课程或工具。');
+      return;
+    }
+    selectedScheduleEditorTask = '';
+    selectedScheduleEditorSectionId = bufferCard.dataset.sectionId || '';
+    selectedScheduleEditorFromSlot = bufferCard.dataset.slotId || '__buffer__';
+    selectedScheduleEditorBufferId = bufferCard.dataset.bufferId;
+    bufferCard.classList.add('is-click-selected');
+    const label = bufferCard.querySelector('strong')?.textContent.trim() || '缓冲区课程';
+    setScheduleEditorSelectionStatus(`已选择缓冲区中的“${label}”；绿色格可放回，蓝色格可与课表上的课互换。`);
+    void loadDropCandidates({
+      classId: scheduleEditorSelectedClassId(),
+      sectionId: selectedScheduleEditorSectionId,
+      fromSlot: selectedScheduleEditorFromSlot,
+      bufferId: selectedScheduleEditorBufferId,
+      container: document.getElementById('schedule-editor-grid'),
+    });
+    return;
+  }
   if (splitChip || (slotCell && slotCell.classList.contains('has-class'))) {
     const source = splitChip || slotCell;
     if (!source.dataset.taskId && !source.dataset.sectionId) {
@@ -8412,9 +8576,10 @@ async function handleScheduleEditorClick(target) {
     selectedScheduleEditorTask = source.dataset.taskId || '';
     selectedScheduleEditorSectionId = source.dataset.sectionId || '';
     selectedScheduleEditorFromSlot = source.dataset.slotId;
+    selectedScheduleEditorBufferId = '';
     source.classList.add('is-click-selected');
     const label = source.textContent.trim() || '课程';
-    setScheduleEditorSelectionStatus(`已选择“${label}”；绿色格可放入，蓝色格可互换，红色格会说明冲突。`);
+    setScheduleEditorSelectionStatus(`已选择“${label}”；绿色格可放入，蓝色格可互换，缓冲区可临时停课，红色格会说明冲突。`);
     void loadDropCandidates({
       classId: scheduleEditorSelectedClassId(),
       taskId: selectedScheduleEditorTask,
@@ -8435,10 +8600,10 @@ async function handleScheduleEditorClick(target) {
 }
 
 function clearTimetableDragState() {
-  document.querySelectorAll('.slot-cell.dragging, .schedule-editor-tool.dragging, .split-course-drag.dragging').forEach(element => {
+  document.querySelectorAll('.slot-cell.dragging, .schedule-editor-tool.dragging, .split-course-drag.dragging, .schedule-editor-buffer-card.dragging').forEach(element => {
     element.classList.remove('dragging');
   });
-  document.querySelectorAll('.slot-cell.drag-over, .slot-cell.teacher-move-candidate, .slot-cell.teacher-swap-candidate, .slot-cell.teacher-invalid-candidate').forEach(element => {
+  document.querySelectorAll('.slot-cell.drag-over, .slot-cell.teacher-move-candidate, .slot-cell.teacher-swap-candidate, .slot-cell.teacher-invalid-candidate, [data-adjustment-buffer].drag-over, [data-adjustment-buffer].teacher-move-candidate, [data-adjustment-buffer].teacher-swap-candidate, [data-adjustment-buffer].teacher-invalid-candidate').forEach(element => {
     element.classList.remove('drag-over', 'teacher-move-candidate', 'teacher-swap-candidate', 'teacher-invalid-candidate');
     delete element.dataset.teacherDropAction;
     element.removeAttribute('title');
@@ -8453,6 +8618,7 @@ function clearTimetableDragState() {
   draggedTeacherId = null;
   draggedClassId = null;
   draggedSectionId = null;
+  draggedBufferId = null;
   draggedTeacherContainer = null;
   teacherDropCandidates = new Map();
   dropUnavailable = new Map();
@@ -8466,6 +8632,7 @@ async function loadTeacherDropCandidates() {
     taskId: draggedTask,
     sectionId: draggedSectionId,
     fromSlot: draggedFromSlot,
+    bufferId: draggedBufferId,
     container: draggedTeacherContainer,
   });
 }
@@ -8484,9 +8651,17 @@ function scheduleEditorTemplateFromCard(card) {
   return { kind, title, duration, color };
 }
 
+function timetableDropTarget(target) {
+  const bufferCard = target?.closest?.('[data-buffer-id]');
+  const bufferZone = target?.closest?.('[data-adjustment-buffer][data-slot-id]');
+  if (bufferCard && bufferZone && draggedFromSlot && draggedFromSlot !== '__buffer__') return bufferZone;
+  if (bufferCard) return null;
+  return target?.closest?.('.slot-cell[data-slot-id], [data-adjustment-buffer][data-slot-id]') || null;
+}
+
 function canDropOnTimetableSlot(slotCell) {
   if (!slotCell) return false;
-  if (draggedScheduleTemplate) return Boolean(slotCell.closest('#view-schedule-editor'));
+  if (draggedScheduleTemplate) return Boolean(slotCell.closest('#view-schedule-editor') && slotCell.matches('.slot-cell'));
   if (draggedTeacherId || draggedClassId) {
     if (dropCandidatePromise && teacherDropCandidates.size === 0 && dropUnavailable.size === 0) return true;
     return teacherDropCandidates.has(slotCell.dataset.slotId);
@@ -8515,6 +8690,7 @@ function initDragAndDrop() {
       draggedTeacherId = null;
       draggedClassId = null;
       draggedSectionId = null;
+      draggedBufferId = null;
       draggedTeacherContainer = null;
       teacherDropCandidates = new Map();
       dropUnavailable = new Map();
@@ -8523,12 +8699,32 @@ function initDragAndDrop() {
       e.dataTransfer.setData('application/x-schedule-editor-template', JSON.stringify(draggedScheduleTemplate));
       return;
     }
+    const bufferCard = e.target.closest('[data-buffer-id]');
+    if (bufferCard) {
+      draggedTask = '';
+      draggedSectionId = bufferCard.dataset.sectionId || '';
+      draggedBufferId = bufferCard.dataset.bufferId;
+      draggedFromSlot = bufferCard.dataset.slotId || '__buffer__';
+      draggedScheduleTemplate = null;
+      const grid = document.getElementById('schedule-editor-grid');
+      draggedTeacherId = null;
+      draggedClassId = grid?.dataset.classId || scheduleEditorSelectedClassId();
+      draggedTeacherContainer = grid;
+      teacherDropCandidates = new Map();
+      dropUnavailable = new Map();
+      bufferCard.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', draggedBufferId);
+      if (draggedClassId) void loadTeacherDropCandidates();
+      return;
+    }
     const splitChip = e.target.closest('.split-course-drag');
     const slotCell = splitChip || e.target.closest('.slot-cell.has-class');
     if (!slotCell || (!slotCell.dataset.taskId && !slotCell.dataset.sectionId)) return;
 
     draggedTask = slotCell.dataset.taskId || '';
     draggedSectionId = slotCell.dataset.sectionId || '';
+    draggedBufferId = null;
     draggedFromSlot = slotCell.dataset.slotId;
     draggedScheduleTemplate = null;
     const grid = slotCell.closest('[data-teacher-drag-enabled="true"], [data-class-drag-enabled="true"]');
@@ -8545,7 +8741,7 @@ function initDragAndDrop() {
   });
 
   document.addEventListener('dragover', (e) => {
-    const slotCell = e.target.closest('.slot-cell');
+    const slotCell = timetableDropTarget(e.target);
     if (canDropOnTimetableSlot(slotCell)) {
       e.preventDefault();
       slotCell.classList.add('drag-over');
@@ -8553,7 +8749,7 @@ function initDragAndDrop() {
   });
 
   document.addEventListener('dragleave', (e) => {
-    const slotCell = e.target.closest('.slot-cell');
+    const slotCell = timetableDropTarget(e.target);
     if (slotCell) {
       slotCell.classList.remove('drag-over');
     }
@@ -8561,7 +8757,7 @@ function initDragAndDrop() {
 
   document.addEventListener('drop', async (e) => {
     e.preventDefault();
-    const slotCell = e.target.closest('.slot-cell');
+    const slotCell = timetableDropTarget(e.target);
     if (!slotCell) return;
 
     slotCell.classList.remove('drag-over');
@@ -8571,6 +8767,7 @@ function initDragAndDrop() {
     const fromSlot = draggedFromSlot;
     const teacherId = draggedTeacherId;
     const classId = draggedClassId;
+    const bufferId = draggedBufferId;
     const template = draggedScheduleTemplate;
     const pendingCandidates = dropCandidatePromise;
     let candidate = teacherDropCandidates.get(toSlot) || null;
@@ -8582,7 +8779,7 @@ function initDragAndDrop() {
         await addScheduleEditorOverlay(template, toSlot);
         return;
       }
-      if (!toSlot || (!taskId && !sectionId) || !fromSlot || toSlot === fromSlot) return;
+      if (!toSlot || (!taskId && !sectionId && !bufferId) || !fromSlot || toSlot === fromSlot) return;
       if ((teacherId || classId) && pendingCandidates && !candidate) {
         const result = await pendingCandidates.catch(() => null);
         candidate = (result?.candidates || []).find(item => item.slot_id === toSlot) || null;
@@ -8613,6 +8810,7 @@ function initDragAndDrop() {
               from_slot: fromSlot,
               to_slot: toSlot,
               action: candidate.action,
+              buffer_id: bufferId || undefined,
             }),
           });
         showToast(result.message, 'success');
@@ -8643,7 +8841,7 @@ function initDragAndDrop() {
   });
   document.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
-    const interactive = event.target.closest('#view-schedule-editor .slot-cell[data-slot-id], #view-schedule-editor .split-course-drag, #view-schedule-editor .schedule-editor-tool[data-schedule-template]');
+    const interactive = event.target.closest('#view-schedule-editor .slot-cell[data-slot-id], #view-schedule-editor .split-course-drag, #view-schedule-editor .schedule-editor-tool[data-schedule-template], #view-schedule-editor [data-buffer-id], #view-schedule-editor [data-adjustment-buffer]');
     if (!interactive) return;
     event.preventDefault();
     interactive.click();
@@ -9378,7 +9576,7 @@ function initAiAssistant() {
   });
   toggle.addEventListener('click', () => setAiAssistantCollapsed(true));
   open.addEventListener('click', () => setAiAssistantCollapsed(false));
-  setAiAssistantCollapsed(shouldAutoCollapseAiAssistant(window.innerWidth));
+  setAiAssistantCollapsed(true);
 }
 
 // 初始化应用
@@ -9503,13 +9701,14 @@ function init() {
     setOverviewFocusMode(event.currentTarget.getAttribute('aria-pressed') !== 'true');
   });
   document.getElementById('overview-layout-toggle').addEventListener('click', event => {
-    setOverviewSingleColumn(event.currentTarget.getAttribute('aria-pressed') !== 'true');
+    setOverviewCompactGrid(event.currentTarget.getAttribute('aria-pressed') !== 'true');
   });
   document.getElementById('overview-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
   document.getElementById('overview-open-archives').addEventListener('click', () => switchView('past-timetables'));
   document.getElementById('manual-save-schedule').addEventListener('click', saveCurrentScheduleArchive);
   document.getElementById('manual-open-archives').addEventListener('click', () => switchView('past-timetables'));
   document.getElementById('manual-clear-unlocked-schedule').addEventListener('click', clearManualUnlockedSchedule);
+  document.getElementById('manual-clear-all-schedule').addEventListener('click', clearManualAllSchedule);
 
   // 校验按钮
   document.getElementById('btn-validate-input').addEventListener('click', async () => {

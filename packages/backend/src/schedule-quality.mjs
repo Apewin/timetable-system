@@ -185,13 +185,22 @@ export function withScheduleQualityStatus(schedule, validation, options = {}) {
   });
   const retainedReviewItems = (schedule.review_items || [])
     .filter(item => !QUALITY_REVIEW_CODES.has(item.code));
+  const bufferCount = (schedule.adjustment_buffer || []).length;
+  const bufferBlocked = bufferCount > 0;
   return {
     ...schedule,
     validation,
     quality_gate: qualityGate,
-    publication_status: publicationStatus,
+    publication_status: bufferBlocked ? 'not_ready' : publicationStatus,
     policy_relaxed: policyRelaxed,
-    review_required: publicationStatus === 'review_required',
-    review_items: [...retainedReviewItems, ...qualityGate.issues],
+    review_required: bufferBlocked || publicationStatus === 'review_required',
+    review_items: [
+      ...retainedReviewItems,
+      ...qualityGate.issues,
+      ...(bufferBlocked ? [{
+        code: 'ADJUSTMENT_BUFFER_OCCUPIED',
+        message: `改课表缓冲区还有 ${bufferCount} 门课未放回`,
+      }] : []),
+    ],
   };
 }

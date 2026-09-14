@@ -8,7 +8,12 @@ const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
 
 test('schedule editor supports click and keyboard placement alongside drag and drop', () => {
   assert.match(html, /先点击卡片再点击绿色或蓝色目标格/);
-  assert.match(html, /role="button" tabindex="0" aria-pressed="false" draggable="true" data-schedule-template="self_study"/);
+  assert.match(html, /拖拽缓冲区/);
+  assert.match(html, /data-adjustment-buffer="true"/);
+  assert.match(html, /data-slot-id="__buffer__"/);
+  assert.match(appSource, /action === 'park'/);
+  assert.match(appSource, /buffer_id: bufferId \|\| undefined/);
+  assert.match(appSource, /function renderScheduleEditorBuffer/);
   assert.match(appSource, /async function handleScheduleEditorClick/);
   assert.match(appSource, /请先选择一门课程、自习或特殊事件，再点击绿色或蓝色目标格/);
   assert.match(appSource, /await commitClassTimetableAdjustment/);
@@ -33,5 +38,5 @@ test('schedule editor click and drag use validated class-grid move or swap candi
   assert.match(appSource, /split-course-drag/);
   const clickStart = appSource.indexOf('async function handleScheduleEditorClick');
   const clickSource = appSource.slice(clickStart, appSource.indexOf('\nfunction clearTimetableDragState', clickStart));
-  assert.match(clickSource, /if \(await placeSelectedScheduleEditorCourse\(slotCell\)\) return;/);
+  assert.match(clickSource, /if \(await placeSelectedScheduleEditorCourse\(slotCell \|\| bufferZone\)\) return;/);
 });

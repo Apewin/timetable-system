@@ -11,7 +11,8 @@ test('first paint uses skeleton values and keeps the assistant from flashing ope
   for (const id of ['dashboard-students', 'dashboard-teachers', 'dashboard-courses', 'dashboard-constraints']) {
     assert.match(html, new RegExp(`id="${id}" class="skeleton-value"`));
   }
-  assert.match(appSource, /setAiAssistantCollapsed\(shouldAutoCollapseAiAssistant\(window\.innerWidth\)\)/);
+  assert.match(html, /id="btn-ai-assistant-open" class="ai-assistant-open"/);
+  assert.match(appSource, /setAiAssistantCollapsed\(true\)/);
   assert.match(styles, /\.skeleton-value::after/);
 });
 

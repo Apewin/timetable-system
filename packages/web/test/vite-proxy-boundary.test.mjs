@@ -16,4 +16,6 @@ test('the development proxy handles API routes without intercepting frontend mod
   assert.equal(proxyMatches('/api/status'), true);
   assert.equal(proxyMatches('/timetable/api/status'), true);
   assert.equal(proxyMatches('/api-state-revision.mjs'), false);
+  assert.equal(config.server.proxy['^/timetable/api(?:/|$)'].changeOrigin, false);
+  assert.equal(config.server.proxy['^/api(?:/|$)'].changeOrigin, false);
 });

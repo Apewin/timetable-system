@@ -57,6 +57,23 @@ test('manual placement, native drag, solving, timetable adjustment and overlays 
   await expect(page.locator('.slot-cell[data-slot-id="D2P1"]')).toContainText('数学');
   await expect(page.locator('#schedule-editor-status')).toContainText('可以继续选择课程或编辑工具');
 
+  await page.locator('.slot-cell[data-slot-id="D2P1"]').click();
+  await expect(page.locator('#schedule-editor-status')).toContainText('缓冲区可临时停课');
+  const parkResponse = page.waitForResponse(response =>
+    response.url().endsWith('/class-timetable/adjust') && response.request().method() === 'POST');
+  await page.locator('#schedule-editor-buffer').click();
+  expect((await parkResponse).ok()).toBe(true);
+  await expect(page.locator('#schedule-editor-buffer .schedule-editor-buffer-card')).toHaveCount(1);
+  await expect(page.locator('.slot-cell[data-slot-id="D2P1"]')).not.toContainText('数学');
+
+  const restoreResponse = page.waitForResponse(response =>
+    response.url().endsWith('/class-timetable/adjust') && response.request().method() === 'POST');
+  await page.locator('#schedule-editor-buffer .schedule-editor-buffer-card').click();
+  await page.locator('.slot-cell[data-slot-id="D2P1"]').click();
+  expect((await restoreResponse).ok()).toBe(true);
+  await expect(page.locator('.slot-cell[data-slot-id="D2P1"]')).toContainText('数学');
+  await expect(page.locator('#schedule-editor-buffer .schedule-editor-buffer-card')).toHaveCount(0);
+
   await page.locator('[data-schedule-template="self_study"]').click();
   await expect(page.locator('#schedule-editor-status')).toContainText('已选择“自习”');
   await page.locator('.slot-cell[data-slot-id="D3P2"]').click();

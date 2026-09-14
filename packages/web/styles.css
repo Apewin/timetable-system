@@ -1159,9 +1159,53 @@ tr:hover {
 }
 
 .schedule-editor-toolbox h3,
-.schedule-editor-tool-hint { grid-column: 1 / -1; }
+.schedule-editor-tool-hint,
+.schedule-editor-buffer { grid-column: 1 / -1; }
 
 .schedule-editor-toolbox h3 { margin: 0; }
+
+.schedule-editor-buffer {
+  min-height: 96px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 2px dashed var(--gray-300);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.schedule-editor-buffer.teacher-move-candidate,
+.schedule-editor-buffer.drag-over {
+  border-color: #2e7d32;
+  background: #e8f5e9;
+}
+
+.schedule-editor-buffer-empty {
+  margin: 0;
+  color: var(--gray-500);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.schedule-editor-buffer-card {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid #1565c0;
+  border-left: 5px solid #1565c0;
+  border-radius: 6px;
+  background: #e3f2fd;
+  cursor: grab;
+  user-select: none;
+}
+
+.schedule-editor-buffer-card.dragging { opacity: .5; }
+.schedule-editor-buffer-card.is-click-selected {
+  outline: 3px solid color-mix(in srgb, var(--primary) 42%, transparent);
+  outline-offset: 2px;
+}
+.schedule-editor-buffer-card strong { font-size: 14px; }
+.schedule-editor-buffer-card span { color: var(--gray-600); font-size: 12px; }
 
 .schedule-editor-tool-hint {
   margin: 0;
@@ -5131,8 +5175,48 @@ tr:hover {
   overflow: visible;
 }
 
-#view-overview-timetable.overview-single-column .overview-grid { grid-template-columns: minmax(0, 1fr); }
+#view-overview-timetable .overview-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+
+#view-overview-timetable .overview-card-body {
+  max-height: none;
+  overflow: visible;
+}
+
+#view-overview-timetable.overview-compact-grid .overview-grid {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+#view-overview-timetable .overview-mini-timetable {
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+#view-overview-timetable .overview-mini-timetable th,
+#view-overview-timetable .overview-mini-timetable td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+#view-overview-timetable .overview-mini-timetable th:first-child,
+#view-overview-timetable .overview-mini-timetable td:first-child {
+  width: 52px;
+  text-align: center;
+  white-space: nowrap;
+}
+
 #view-overview-timetable .overview-mini-timetable thead th { position: sticky; top: 0; z-index: 1; }
+
+#view-overview-timetable.overview-compact-grid .overview-mini-timetable { font-size: 11px; }
+#view-overview-timetable.overview-compact-grid .overview-mini-timetable th,
+#view-overview-timetable.overview-compact-grid .overview-mini-timetable td {
+  padding: 6px 4px;
+  text-align: center;
+}
 
 @media (max-width: 1100px) {
   #view-overview-timetable .overview-grid { grid-template-columns: 1fr; }

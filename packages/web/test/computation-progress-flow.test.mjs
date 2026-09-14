@@ -35,6 +35,17 @@ test('finished jobs shrink to a non-blocking corner card', () => {
   assert.match(styleSource, /\.computation-progress-actions\s*\{[^}]*pointer-events:\s*auto/);
 });
 
+test('finished jobs do not resurrect on reload and auto-hide after a short notice', () => {
+  const restoreStart = appSource.indexOf('async function restoreComputationJobCenter');
+  const restoreEnd = appSource.indexOf('function initComputationJobCenter', restoreStart);
+  const restoreSource = appSource.slice(restoreStart, restoreEnd);
+  assert.match(restoreSource, /waitForComputationJob\(running, \{ detached: true \}\)/);
+  assert.doesNotMatch(restoreSource, /if \(jobs\[0\]\) renderComputationJob/);
+  assert.match(appSource, /COMPUTATION_PROGRESS_SUCCESS_HIDE_MS = 4000/);
+  assert.match(appSource, /function scheduleComputationProgressAutoHide/);
+  assert.match(appSource, /hideComputationProgress\(\)/);
+});
+
 test('the multiple-solution screen reads the already-unwrapped API result', () => {
   const start = appSource.indexOf('window.generateMultipleSolutions = async function()');
   const end = appSource.indexOf('// 选择方案', start);

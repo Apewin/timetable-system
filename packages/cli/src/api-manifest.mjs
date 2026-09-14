@@ -60,6 +60,10 @@ export const OPERATIONS = [
     name: 'schedule.clear-unlocked', category: 'schedule', method: 'POST', path: '/schedule/clear-unlocked', mutates: true,
     body: { required: ['expected_revision'], optional: ['confirmed_by'] },
   },
+  {
+    name: 'schedule.clear-all', category: 'schedule', method: 'POST', path: '/schedule/clear-all', mutates: true,
+    body: { required: ['expected_revision', 'confirmation'], optional: ['confirmed_by'] },
+  },
   { name: 'schedule.timetable', category: 'schedule', method: 'GET', path: '/timetable/:by/:id', mutates: false },
   {
     name: 'schedule.lock', category: 'schedule', method: 'POST', path: '/lock', mutates: true,
@@ -75,19 +79,19 @@ export const OPERATIONS = [
   },
   {
     name: 'schedule.teacher.drag-candidates', category: 'schedule', method: 'POST', path: '/teacher-timetable/drag-candidates', mutates: false,
-    body: { required: ['teacher_id', 'task_id', 'from_slot'], optional: [] },
+    body: { required: ['teacher_id', 'from_slot'], optional: ['task_id', 'section_id', 'buffer_id'] },
   },
   {
     name: 'schedule.teacher.adjust', category: 'schedule', method: 'POST', path: '/teacher-timetable/adjust', mutates: true,
-    body: { required: ['teacher_id', 'task_id', 'from_slot', 'to_slot'], optional: ['action'] },
+    body: { required: ['teacher_id', 'from_slot', 'to_slot'], optional: ['task_id', 'section_id', 'action', 'buffer_id'] },
   },
   {
     name: 'schedule.class.drag-candidates', category: 'schedule', method: 'POST', path: '/class-timetable/drag-candidates', mutates: false,
-    body: { required: ['class_id', 'from_slot'], optional: ['task_id', 'section_id'] },
+    body: { required: ['class_id', 'from_slot'], optional: ['task_id', 'section_id', 'buffer_id'] },
   },
   {
     name: 'schedule.class.adjust', category: 'schedule', method: 'POST', path: '/class-timetable/adjust', mutates: true,
-    body: { required: ['class_id', 'from_slot', 'to_slot'], optional: ['task_id', 'section_id', 'action'] },
+    body: { required: ['class_id', 'from_slot', 'to_slot'], optional: ['task_id', 'section_id', 'action', 'buffer_id'] },
   },
   { name: 'schedule.editor.get', category: 'schedule', method: 'GET', path: '/schedule-editor', mutates: false },
   {

@@ -130,3 +130,13 @@ test('refreshes stored quality status after a timetable edit without losing poli
     item.code === 'AP_MORNING_EMPTY_STUDENT_PERIODS_EXCEEDED').length, 1);
   assert.equal(schedule.review_items.some(item => item.rule_id === 'student-prefix'), true);
 });
+
+test('keeps a timetable unpublished while the adjustment buffer still holds courses', () => {
+  const schedule = withScheduleQualityStatus({
+    adjustment_buffer: [{ id: 'BUF_1', meetings: [{ section_id: 'A', slot_id: 'D1P1' }] }],
+  }, { ok: true, soft_score: 0, soft_violations: [], hard_violations: [] });
+
+  assert.equal(schedule.publication_status, 'not_ready');
+  assert.equal(schedule.review_required, true);
+  assert.equal(schedule.review_items.some(item => item.code === 'ADJUSTMENT_BUFFER_OCCUPIED'), true);
+});

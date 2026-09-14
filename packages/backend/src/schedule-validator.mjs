@@ -330,7 +330,9 @@ function ruleViolations(rule, sections, meetings, studentEvents) {
  * or a weighted soft score.  This makes a solver result auditable even after
  * a future algorithm replacement.
  */
-export function validateSchedule(problem, solution) {
+export function validateSchedule(problem, solution, options = {}) {
+  const parkedMeetings = options.parkedMeetings || [];
+  const allowIncomplete = options.allowIncomplete === true || parkedMeetings.length > 0;
   const sections = selectedSectionMap(problem, solution);
   const validSlots = new Set(problem.slots.map(slot => slot.id));
   const hard = [];
@@ -345,8 +347,13 @@ export function validateSchedule(problem, solution) {
     seenMeetings.add(key);
     meetings.push({ ...meeting, room_id: null });
   }
+  const parkedBySection = new Map();
+  for (const meeting of parkedMeetings) {
+    parkedBySection.set(meeting.section_id, (parkedBySection.get(meeting.section_id) || 0) + 1);
+  }
   for (const section of sections.values()) {
-    const count = meetings.filter(meeting => meeting.section_id === section.id).length;
+    const count = meetings.filter(meeting => meeting.section_id === section.id).length
+      + (parkedBySection.get(section.id) || 0);
     if (count !== section.weekly_hours) hard.push(violation('kernel.weekly_hours', `section ${section.id} 需要 ${section.weekly_hours} 节，实际 ${count} 节`, { section_id: section.id, expected: section.weekly_hours, actual: count }));
   }
   for (const lock of solution.locks || []) {
@@ -409,15 +416,17 @@ export function validateSchedule(problem, solution) {
   }
 
   const soft = [];
-  for (const rule of problem.rules || []) {
-    if (rule.scope === 'room') continue;
-    if (rule.unmatched) {
-      const item = violation(rule.id, '规则未匹配到任何目标');
-      if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: item.penalty ?? rule.weight });
-      continue;
-    }
-    for (const item of ruleViolations(rule, sections, meetings, studentEvents)) {
-      if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: item.penalty ?? rule.weight });
+  if (!allowIncomplete) {
+    for (const rule of problem.rules || []) {
+      if (rule.scope === 'room') continue;
+      if (rule.unmatched) {
+        const item = violation(rule.id, '规则未匹配到任何目标');
+        if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: item.penalty ?? rule.weight });
+        continue;
+      }
+      for (const item of ruleViolations(rule, sections, meetings, studentEvents)) {
+        if (rule.hard) hard.push(item); else soft.push({ ...item, penalty: item.penalty ?? rule.weight });
+      }
     }
   }
   return {

@@ -145,6 +145,98 @@ function overlayImpact(state, sectionsById, moves) {
   return { blocked: false, displacedSelfStudyIds: [...displacedSelfStudyIds] };
 }
 
+export const ADJUSTMENT_BUFFER_SLOT = '__buffer__';
+
+function bufferItems(schedule) {
+  return [...(schedule?.adjustment_buffer || [])];
+}
+
+function nextBufferId(items) {
+  const ids = new Set(items.map(item => item.id));
+  let suffix = 1;
+  let id = `BUF_${suffix}`;
+  while (ids.has(id)) id = `BUF_${++suffix}`;
+  return id;
+}
+
+function parkedMeetingsFrom(schedule) {
+  return bufferItems(schedule).flatMap(item => item.meetings || []);
+}
+
+function assertScheduleAdjustable(state) {
+  if (!state.schedule) throw new Error('当前课表不是有效版本，请先完成排课再调整');
+  if (state.solve_status === 'valid') return;
+  if (state.solve_status === 'editing' && bufferItems(state.schedule).length) return;
+  throw new Error('当前课表不是有效版本，请先完成排课再调整');
+}
+
+function validateAdjustedSchedule(problem, candidateSchedule) {
+  const parkedMeetings = parkedMeetingsFrom(candidateSchedule);
+  return validateSchedule(problem, candidateSchedule, {
+    parkedMeetings,
+    allowIncomplete: parkedMeetings.length > 0,
+  });
+}
+
+function withBufferValidation(schedule, validation) {
+  const count = bufferItems(schedule).length;
+  if (!count) return { ...schedule, validation };
+  return {
+    ...schedule,
+    validation: {
+      ...validation,
+      ok: false,
+      hard_violations: [
+        ...(validation.hard_violations || []),
+        { rule_id: 'kernel.adjustment_buffer', message: `改课表缓冲区还有 ${count} 门课未放回` },
+      ],
+    },
+  };
+}
+
+function parkBundle(schedule, bundle, fromSlot) {
+  const parkedKeys = new Set(bundle.meetings.map(meeting => `${meeting.section_id}@${meeting.slot_id}`));
+  const meetings = (schedule.meetings || []).filter(meeting =>
+    !parkedKeys.has(`${meeting.section_id}@${meeting.slot_id}`));
+  const buffer = bufferItems(schedule);
+  return {
+    ...schedule,
+    meetings,
+    assignments: expandScheduleAssignments(schedule.sections || [], meetings),
+    adjustment_buffer: [...buffer, {
+      id: nextBufferId(buffer),
+      from_slot: fromSlot,
+      meetings: bundle.meetings.map(meeting => ({ ...meeting })),
+    }],
+  };
+}
+
+function placeFromBuffer(schedule, bufferItem, toSlot, targetBundle, displacedSelfStudyIds = []) {
+  const remaining = bufferItems(schedule).filter(item => item.id !== bufferItem.id);
+  const targetKeys = new Set((targetBundle?.meetings || []).map(meeting => `${meeting.section_id}@${meeting.slot_id}`));
+  let meetings = (schedule.meetings || []).filter(meeting =>
+    !targetKeys.has(`${meeting.section_id}@${meeting.slot_id}`));
+  if (targetBundle) {
+    remaining.push({
+      id: nextBufferId(remaining),
+      from_slot: toSlot,
+      meetings: targetBundle.meetings.map(meeting => ({ ...meeting })),
+    });
+  }
+  meetings = [
+    ...meetings,
+    ...bufferItem.meetings.map(meeting => ({ ...meeting, slot_id: toSlot, room_id: null })),
+  ];
+  const displaced = new Set(displacedSelfStudyIds);
+  return {
+    ...schedule,
+    meetings,
+    assignments: expandScheduleAssignments(schedule.sections || [], meetings),
+    overlays: (schedule.overlays || []).filter(overlay => !displaced.has(overlay.id)),
+    adjustment_buffer: remaining,
+  };
+}
+
 function scheduleAfterMoves(schedule, moves, displacedSelfStudyIds) {
   const replacements = new Map();
   for (const move of moves) for (const sectionId of move.sectionIds) {
@@ -160,7 +252,31 @@ function scheduleAfterMoves(schedule, moves, displacedSelfStudyIds) {
     meetings,
     assignments: expandScheduleAssignments(schedule.sections || [], meetings),
     overlays: (schedule.overlays || []).filter(overlay => !displaced.has(overlay.id)),
+    adjustment_buffer: bufferItems(schedule),
   };
+}
+
+export function publicAdjustmentBuffer(state) {
+  const sectionsById = indexById(state.schedule?.sections || []);
+  const coursesById = indexById(state.courses || []);
+  const teachersById = indexById(state.teachers || []);
+  return bufferItems(state.schedule).map(item => {
+    const primary = item.meetings?.[0] || {};
+    const section = sectionsById.get(primary.section_id) || {};
+    const course = coursesById.get(section.course_id);
+    const teacher = teachersById.get(section.teacher_id);
+    return {
+      id: item.id,
+      from_slot: item.from_slot,
+      section_id: primary.section_id || null,
+      linked_section_count: (item.meetings || []).length,
+      title: course?.name || section.course_id || primary.section_id || '课程',
+      subtitle: [teacher?.name || section.teacher_id, item.from_slot ? `原 ${item.from_slot}` : '']
+        .filter(Boolean)
+        .join(' · '),
+      class_id: section.class_id || null,
+    };
+  });
 }
 
 function publicCandidate(candidate) {
@@ -183,43 +299,89 @@ function publicCandidate(candidate) {
  * required course onto another becomes a swap instead of a colliding move.
  */
 export function evaluateTimetableAdjustments(state, problem, input = {}) {
+  assertScheduleAdjustable(state);
   const schedule = state.schedule;
-  if (!schedule || state.solve_status !== 'valid') {
-    throw new Error('当前课表不是有效版本，请先完成排课再调整');
-  }
   const teacherId = input.teacher_id || null;
   const classId = input.class_id || null;
   const fromSlot = input.from_slot;
   const scope = classId ? 'class' : 'teacher';
-  if (scope === 'teacher' && (!teacherId || !(input.task_id || input.section_id) || !fromSlot)) {
+  if (scope === 'teacher' && (!teacherId || !(input.task_id || input.section_id || input.buffer_id) || !fromSlot)) {
     throw new Error('拖动课程缺少教师、课程或原时段');
   }
-  if (scope === 'class' && (!classId || !(input.task_id || input.section_id) || !fromSlot)) {
+  if (scope === 'class' && (!classId || !(input.task_id || input.section_id || input.buffer_id) || !fromSlot)) {
     throw new Error('拖动课程缺少班级、课程或原时段');
   }
 
-  const sourceAssignment = sourceAssignmentFromInput(schedule, {
-    teacherId,
-    taskId: input.task_id,
-    sectionId: input.section_id,
-    fromSlot,
-  });
-  const memberIds = scope === 'class' ? classMemberIds(state, classId) : [];
-  if (scope === 'class' && !memberIds.includes(sourceAssignment.student_id)) {
-    throw new Error('该课程不属于当前班级课表');
-  }
-
   const sectionsById = indexById(schedule.sections || []);
-  const sourceBundle = meetingBundle(problem, schedule, sourceAssignment.section_id, fromSlot);
-  if (lockedMeeting(schedule, sourceBundle, fromSlot)) {
+  const fromBuffer = fromSlot === ADJUSTMENT_BUFFER_SLOT || Boolean(input.buffer_id);
+  let sourceAssignment;
+  let sourceBundle;
+  if (fromBuffer) {
+    const item = bufferItems(schedule).find(entry => entry.id === input.buffer_id)
+      || bufferItems(schedule).find(entry =>
+        (entry.meetings || []).some(meeting => meeting.section_id === input.section_id));
+    if (!item) throw new Error('缓冲区里找不到这门课');
+    const primary = item.meetings?.[0];
+    const section = sectionsById.get(primary?.section_id);
+    if (!section) throw new Error('缓冲区课程数据不完整');
+    sourceAssignment = {
+      section_id: section.id,
+      student_id: section.student_ids?.[0],
+      teacher_id: section.teacher_id,
+      slot_id: ADJUSTMENT_BUFFER_SLOT,
+    };
+    sourceBundle = {
+      sectionIds: new Set((item.meetings || []).map(meeting => meeting.section_id)),
+      meetings: item.meetings || [],
+      bufferItem: item,
+    };
+  } else {
+    sourceAssignment = sourceAssignmentFromInput(schedule, {
+      teacherId,
+      taskId: input.task_id,
+      sectionId: input.section_id,
+      fromSlot,
+    });
+    sourceBundle = meetingBundle(problem, schedule, sourceAssignment.section_id, fromSlot);
+  }
+  const memberIds = scope === 'class' ? classMemberIds(state, classId) : [];
+  if (scope === 'class') {
+    const students = sectionsById.get(sourceAssignment.section_id)?.student_ids || [];
+    if (!students.some(studentId => memberIds.includes(studentId))) {
+      throw new Error('该课程不属于当前班级课表');
+    }
+  }
+  if (!fromBuffer && lockedMeeting(schedule, sourceBundle, fromSlot)) {
     throw new Error('该课程或其同步 Block 已锁定为必要条件，不能拖动');
   }
 
   const candidates = [];
   const unavailable = [];
-  for (const slot of problem.slots || []) {
-    const toSlot = slot.id;
+  const considerPark = !fromBuffer;
+  const destinations = [
+    ...(problem.slots || []).map(slot => slot.id),
+    ...(considerPark ? [ADJUSTMENT_BUFFER_SLOT] : []),
+  ];
+  for (const toSlot of destinations) {
     if (toSlot === fromSlot) continue;
+    if (toSlot === ADJUSTMENT_BUFFER_SLOT) {
+      const parkedSchedule = parkBundle(schedule, sourceBundle, fromSlot);
+      const validation = validateAdjustedSchedule(problem, parkedSchedule);
+      if (!validation.ok) {
+        unavailable.push({ slot_id: toSlot, reason: firstViolationMessage(validation) });
+        continue;
+      }
+      candidates.push({
+        slot_id: toSlot,
+        action: 'park',
+        target_section_id: null,
+        linked_section_count: sourceBundle.sectionIds.size,
+        displaced_self_study_ids: [],
+        schedule: withBufferValidation(parkedSchedule, validation),
+      });
+      continue;
+    }
+
     const counterparts = counterpartMeetings(schedule, sectionsById, {
       scope,
       teacherId,
@@ -234,7 +396,9 @@ export function evaluateTimetableAdjustments(state, problem, input = {}) {
 
     let action = 'move';
     let targetBundle = null;
-    const moves = [{ sectionIds: sourceBundle.sectionIds, fromSlot, toSlot }];
+    const moves = fromBuffer
+      ? []
+      : [{ sectionIds: sourceBundle.sectionIds, fromSlot, toSlot }];
     if (counterparts.length > 0) {
       try {
         targetBundle = meetingBundle(problem, schedule, counterparts[0].section_id, toSlot);
@@ -255,16 +419,22 @@ export function evaluateTimetableAdjustments(state, problem, input = {}) {
         continue;
       }
       action = 'swap';
-      moves.push({ sectionIds: targetBundle.sectionIds, fromSlot: toSlot, toSlot: fromSlot });
+      if (!fromBuffer) {
+        moves.push({ sectionIds: targetBundle.sectionIds, fromSlot: toSlot, toSlot: fromSlot });
+      }
     }
 
-    const impact = overlayImpact(state, sectionsById, moves);
+    const impact = overlayImpact(state, sectionsById, fromBuffer
+      ? [{ sectionIds: sourceBundle.sectionIds, fromSlot: toSlot, toSlot }]
+      : moves);
     if (impact.blocked) {
       unavailable.push({ slot_id: toSlot, reason: '该时段已有特殊事件标注，不能覆盖' });
       continue;
     }
-    const candidateSchedule = scheduleAfterMoves(schedule, moves, impact.displacedSelfStudyIds);
-    const validation = validateSchedule(problem, candidateSchedule);
+    const candidateSchedule = fromBuffer
+      ? placeFromBuffer(schedule, sourceBundle.bufferItem, toSlot, targetBundle, impact.displacedSelfStudyIds)
+      : scheduleAfterMoves(schedule, moves, impact.displacedSelfStudyIds);
+    const validation = validateAdjustedSchedule(problem, candidateSchedule);
     if (!validation.ok) {
       unavailable.push({ slot_id: toSlot, reason: firstViolationMessage(validation) });
       continue;
@@ -275,7 +445,7 @@ export function evaluateTimetableAdjustments(state, problem, input = {}) {
       target_section_id: counterparts[0]?.section_id || null,
       linked_section_count: sourceBundle.sectionIds.size + (targetBundle?.sectionIds.size || 0),
       displaced_self_study_ids: impact.displacedSelfStudyIds,
-      schedule: { ...candidateSchedule, validation },
+      schedule: withBufferValidation(candidateSchedule, validation),
     });
   }
 
@@ -284,6 +454,7 @@ export function evaluateTimetableAdjustments(state, problem, input = {}) {
       section_id: sourceAssignment.section_id,
       slot_id: fromSlot,
       linked_section_count: sourceBundle.sectionIds.size,
+      buffer_id: sourceBundle.bufferItem?.id || null,
     },
     candidates,
     public_candidates: candidates.map(publicCandidate),

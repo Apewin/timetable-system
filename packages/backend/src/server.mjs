@@ -7,6 +7,7 @@ import * as XLSX from 'xlsx';
 import { StateRepository } from './state-repository.mjs';
 import { expandScheduleAssignments as expandedAssignments } from './schedule-projection.mjs';
 import { clearUnlockedSchedule, previewClearUnlockedSchedule } from './schedule-clear-unlocked.mjs';
+import { CLEAR_ALL_SCHEDULE_CONFIRMATION, clearAllSchedule, previewClearAllSchedule } from './schedule-clear-all.mjs';
 import { apGroupDetail, listApGroups } from './ap-group-projection.mjs';
 import { normalizeSchedulingPolicy, schedulingPolicyForState } from './scheduling-policy.mjs';
 import { validateRules } from './rule-schema.mjs';
@@ -87,6 +88,7 @@ import {
   applyTeacherTimetableAdjustment,
   evaluateClassTimetableAdjustments,
   evaluateTeacherTimetableAdjustments,
+  publicAdjustmentBuffer,
 } from './teacher-timetable-adjustment.mjs';
 import {
   GRADUATION_CONFIRMATION,
@@ -486,7 +488,8 @@ function timetableGrid(state, by, id) {
   return {
     title: id === 'all' || by === 'all' ? '全部课表' : `${labels[by]} ${id} 的课表`,
     view_type: by, rows, assignments: selected, overlays,
-    stale: state.solve_status !== 'valid',
+    stale: state.solve_status !== 'valid' && state.solve_status !== 'editing',
+    adjustment_buffer: publicAdjustmentBuffer(state),
   };
 }
 
@@ -1077,7 +1080,7 @@ app.get('/api/status', (_req, res) => reply(res, () => {
     release_commit: releaseCommit,
     school: state.meta?.school,
     revision: repository.revision(state),
-    last_stage: state.solve_status === 'stale' ? 'needs_resolve' : state.solve_status === 'valid' ? 'timetable' : state.section_plan ? 'sections' : 'not_run',
+    last_stage: state.solve_status === 'stale' ? 'needs_resolve' : (state.solve_status === 'valid' || state.solve_status === 'editing') ? 'timetable' : state.section_plan ? 'sections' : 'not_run',
     counts: Object.fromEntries(['teachers', 'rooms', 'courses', 'students', 'admin_classes', 'teaching_classes', 'selection_blocks', 'constraints']
       .map(key => [key, state[key]?.length || 0]).concat([
         ['assignments', state.schedule?.assignments?.length || state.assignments?.length || 0],
@@ -1832,6 +1835,47 @@ app.post('/api/schedule/clear-unlocked', (req, res) => reply(res, () => {
   };
 }));
 
+app.get('/api/schedule/clear-all/preview', (_req, res) => reply(res, () => {
+  const state = repository.read();
+  return {
+    ...previewClearAllSchedule(state),
+    revision: repository.revision(state),
+  };
+}));
+
+app.post('/api/schedule/clear-all', (req, res) => reply(res, () => {
+  if (importText(req.body?.confirmation) !== CLEAR_ALL_SCHEDULE_CONFIRMATION) {
+    throw new Error('清空全部课表必须二次确认，请再次确认后再执行');
+  }
+  const expectedRevision = Number(req.body?.expected_revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('清空全部课表必须携带待确认操作的数据版本');
+  }
+  const state = repository.read();
+  if (expectedRevision !== repository.revision(state)) {
+    throw new Error('系统数据已变化，请刷新排课表后重新确认清空');
+  }
+  const result = clearAllSchedule(state, {
+    confirmedBy: importText(req.body?.confirmed_by) || '教务用户',
+  });
+  if (!result.changed) return {
+    message: '当前课表已经是空的，无需清空。',
+    ...result.preview,
+    revision: repository.revision(state),
+    solve_status: state.solve_status,
+  };
+  const saved = repository.write(result.state, { expectedRevision });
+  return {
+    message: `已清空全部课表：删除 ${result.preview.total_meetings} 节课`
+      + `（含 ${result.preview.locked_meetings} 节锁定课）`
+      + (result.preview.parked_meetings ? `，以及缓冲区 ${result.preview.parked_meetings} 门课` : '')
+      + '。课程、教师、学生数据没有改变。',
+    ...result.preview,
+    revision: repository.revision(saved),
+    solve_status: saved.solve_status,
+  };
+}));
+
 function manualEditingProblem(state) {
   try {
     return {
@@ -2079,7 +2123,7 @@ app.post('/api/teacher-timetable/drag-candidates', (req, res) => reply(res, () =
     source: result.source,
     candidates: result.public_candidates,
     unavailable: result.unavailable || [],
-    legend: { move: '可直接移动', swap: '可安全互换' },
+    legend: { move: '可直接放入', swap: '可安全互换', park: '放入拖拽缓冲区' },
   };
 }));
 
@@ -2092,9 +2136,11 @@ app.post('/api/teacher-timetable/adjust', (req, res) => reply(res, () => {
     ...state,
     assignments: schedule.assignments,
     schedule,
-    solve_status: 'valid',
+    solve_status: (schedule.adjustment_buffer || []).length ? 'editing' : 'valid',
   });
-  const verb = result.action === 'swap' ? '已安全互换两节课程' : '已移动课程';
+  const verb = result.action === 'park'
+    ? '已将课程放入拖拽缓冲区'
+    : result.action === 'swap' ? '已安全互换两节课程' : '已移动课程';
   const selfStudyNote = result.displaced_self_study_count
     ? `，并替换 ${result.displaced_self_study_count} 个自习标注`
     : '';
@@ -2116,7 +2162,7 @@ app.post('/api/class-timetable/drag-candidates', (req, res) => reply(res, () => 
     source: result.source,
     candidates: result.public_candidates,
     unavailable: result.unavailable || [],
-    legend: { move: '可直接移动', swap: '可安全互换' },
+    legend: { move: '可直接放入', swap: '可安全互换', park: '放入拖拽缓冲区' },
   };
 }));
 
@@ -2129,9 +2175,11 @@ app.post('/api/class-timetable/adjust', (req, res) => reply(res, () => {
     ...state,
     assignments: schedule.assignments,
     schedule,
-    solve_status: 'valid',
+    solve_status: (schedule.adjustment_buffer || []).length ? 'editing' : 'valid',
   });
-  const verb = result.action === 'swap' ? '已安全互换两节课程' : '已移动课程';
+  const verb = result.action === 'park'
+    ? '已将课程放入拖拽缓冲区'
+    : result.action === 'swap' ? '已安全互换两节课程' : '已移动课程';
   const selfStudyNote = result.displaced_self_study_count
     ? `，并替换 ${result.displaced_self_study_count} 个自习标注`
     : '';
@@ -2167,15 +2215,16 @@ app.post('/api/swap', (req, res) => reply(res, () => {
 app.get('/api/schedule-editor', (_req, res) => reply(res, () => {
   const state = repository.read();
   return {
-    available: Boolean(state.schedule && state.solve_status === 'valid'),
+    available: Boolean(state.schedule && (state.solve_status === 'valid' || state.solve_status === 'editing')),
     classes: (state.teaching_classes || []).map(item => ({ id: item.id, name: item.name, grade: item.grade })),
     overlays: state.schedule?.overlays || [],
+    adjustment_buffer: publicAdjustmentBuffer(state),
   };
 }));
 
 app.post('/api/schedule-editor/overlays', (req, res) => reply(res, () => {
   const state = repository.read();
-  if (!state.schedule || state.solve_status !== 'valid') {
+  if (!state.schedule || (state.solve_status !== 'valid' && state.solve_status !== 'editing')) {
     throw new Error('当前课表不是有效版本，请先完成排课再添加自习或特殊事件');
   }
   const classId = importText(req.body?.class_id);
@@ -2197,7 +2246,7 @@ app.post('/api/schedule-editor/overlays', (req, res) => reply(res, () => {
 
 app.delete('/api/schedule-editor/overlays/:overlayId', (req, res) => reply(res, () => {
   const state = repository.read();
-  if (!state.schedule || state.solve_status !== 'valid') {
+  if (!state.schedule || (state.solve_status !== 'valid' && state.solve_status !== 'editing')) {
     throw new Error('当前课表不是有效版本，请先完成排课后再修改');
   }
   const overlays = state.schedule.overlays || [];

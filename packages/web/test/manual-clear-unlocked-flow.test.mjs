@@ -21,12 +21,17 @@ test('manual timetable exposes a lock-preserving clear action', () => {
   assert.match(manualView, /id="manual-clear-unlocked-schedule"/);
   assert.match(manualView, /清除未锁定课程/);
   assert.match(manualView, /保留金框/);
+  assert.match(manualView, /id="manual-clear-all-schedule"[^>]*>课表全部清空<\/button>/);
 });
 
 test('manual timetable actions are connected when the page starts', () => {
   assert.match(
     appSource,
     /getElementById\('manual-clear-unlocked-schedule'\)\.addEventListener\('click', clearManualUnlockedSchedule\)/,
+  );
+  assert.match(
+    appSource,
+    /getElementById\('manual-clear-all-schedule'\)\.addEventListener\('click', clearManualAllSchedule\)/,
   );
   assert.match(
     appSource,

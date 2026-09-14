@@ -19,11 +19,13 @@ export default defineConfig({
       // backend SPA fallback to return HTML where the browser expects JS.
       '^/timetable/api(?:/|$)': {
         target: 'http://localhost:3001',
-        changeOrigin: true,
+        // Keep the browser Host. changeOrigin rewrites it to localhost:3001,
+        // which fails the backend Origin===Host check on POST (clear, save, solve).
+        changeOrigin: false,
       },
       '^/api(?:/|$)': {
         target: 'http://localhost:3001',
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },

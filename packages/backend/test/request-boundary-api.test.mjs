@@ -72,6 +72,38 @@ test('rejects a forged Host even when Origin is forged to match it', async t => 
   assert.equal(result.payload.errors[0].code, 'HOST_REJECTED');
 });
 
+test('rejects a write whose Origin host does not match Host', async t => {
+  const base = await startBoundaryServer(t);
+  const target = new URL(`${base}/api/teachers`);
+  const body = JSON.stringify({ id: 'T1', can_teach: [], available_slots: [] });
+  const result = await new Promise((resolve, reject) => {
+    const outgoing = request({
+      hostname: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      method: 'POST',
+      headers: {
+        host: target.host,
+        origin: 'http://127.0.0.1:3000',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        'if-match': '"1"',
+      },
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        payload: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
+    });
+    outgoing.on('error', reject);
+    outgoing.end(body);
+  });
+  assert.equal(result.status, 403);
+  assert.equal(result.payload.errors[0].code, 'ORIGIN_REJECTED');
+});
+
 test('returns JSON for malformed and oversized JSON requests', async t => {
   const base = await startBoundaryServer(t);
   const malformed = await fetch(`${base}/api/teachers`, {

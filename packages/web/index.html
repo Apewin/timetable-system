@@ -576,6 +576,7 @@
                   <button id="manual-unlock-plan" class="btn btn-secondary hidden" type="button">解除课程锁定</button>
                   <button id="manual-clear-class" class="btn btn-secondary" type="button">清空当前班草稿</button>
                   <button id="manual-clear-unlocked-schedule" class="btn btn-danger" type="button" disabled>清除未锁定课程</button>
+                  <button id="manual-clear-all-schedule" class="btn btn-danger" type="button" disabled>课表全部清空</button>
                 </div>
               </details>
             </div>
@@ -742,7 +743,7 @@
           <div class="schedule-editor-header">
             <div>
               <h2>🛠️ 改课表</h2>
-              <p>拖动课程时，绿色格可以放入，蓝色格可以互换，红色格会显示学生或教师冲突原因。不必先腾出空格；冲突格不会提交。右侧的“自习”和“特殊事件”只能放进该班全体学生都空闲的时段。</p>
+              <p>拖动课程时，绿色格可以放入，蓝色格可以互换，红色格会显示冲突原因。右侧缓冲区可以把课先停住、腾出格子再排；缓冲区有课的课表不能作为正式课表。</p>
             </div>
           </div>
           <div class="schedule-editor-controls">
@@ -755,6 +756,11 @@
               <div id="schedule-editor-grid"></div>
             </section>
             <aside class="schedule-editor-toolbox" aria-label="课表编辑工具">
+              <h3>拖拽缓冲区</h3>
+              <p class="schedule-editor-tool-hint">把课先停在这里，原格子会空出来，方便三门课轮换。点选或拖回绿色格即可放回。缓冲区清空后才会恢复完整硬校验。</p>
+              <div id="schedule-editor-buffer" class="schedule-editor-buffer" data-adjustment-buffer="true" data-slot-id="__buffer__" role="region" aria-label="课程停放区">
+                <p class="schedule-editor-buffer-empty">缓冲区是空的。把课拖到这里，或先点课程再点这里。</p>
+              </div>
               <h3>编辑工具</h3>
               <p class="schedule-editor-tool-hint">可以拖动卡片，也可以先点击卡片再点击绿色或蓝色目标格。红色格表示当前课程放不进去。特殊事件长度表示同一天连续占用的节数。</p>
               <div class="schedule-editor-tool self-study" role="button" tabindex="0" aria-pressed="false" draggable="true" data-schedule-template="self_study">
@@ -995,7 +1001,7 @@
             </div>
             <div class="overview-timetable-actions">
             <div class="overview-timetable-buttons">
-                <button id="overview-layout-toggle" class="btn btn-secondary" type="button" aria-pressed="false">单列查看</button>
+                <button id="overview-layout-toggle" class="btn btn-secondary" type="button" aria-pressed="false">紧凑多列</button>
                 <button id="overview-focus-mode" class="btn btn-secondary" type="button" aria-pressed="false">专注查看</button>
                 <button id="overview-open-archives" class="btn btn-secondary" type="button">查看过往课表</button>
                 <button id="overview-save-schedule" class="btn btn-success" type="button" disabled>💾 保存为过往课表</button>
@@ -1657,7 +1663,7 @@
             <h2>🤖 AI 助手</h2>
             <p id="ai-assistant-context-label">当前页面：首页</p>
           </div>
-          <button id="btn-ai-assistant-toggle" class="btn-icon" type="button" aria-expanded="true" aria-label="收起 AI 助手">›</button>
+          <button id="btn-ai-assistant-toggle" class="btn-icon" type="button" aria-expanded="false" aria-label="展开 AI 助手">‹</button>
         </div>
         <p class="ai-assistant-note">可解释、排查并提出操作；涉及数据变更时会显示影响和确认按钮，确认后才执行。</p>
         <div id="ai-assistant-messages" class="ai-assistant-messages" aria-live="polite" aria-label="AI 对话记录"></div>
@@ -1674,7 +1680,7 @@
           </div>
         </div>
       </aside>
-      <button id="btn-ai-assistant-open" class="ai-assistant-open hidden" type="button" aria-label="打开 AI 助手">🤖 AI</button>
+      <button id="btn-ai-assistant-open" class="ai-assistant-open" type="button" aria-label="打开 AI 助手">🤖 AI</button>
     </div>
 
     <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-labelledby="command-palette-title">

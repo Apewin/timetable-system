@@ -101,7 +101,5 @@ test('a user completes the four-stage exam workflow in real Chrome and recovers 
   await page.reload();
   await expect(page.getByRole('heading', { name: '排考试与考场' })).toBeVisible();
   await expect(page.locator('[data-exam-workflow-stage="staffing"]')).toHaveAttribute('aria-current', 'step');
-  await expect(page.locator('#computation-progress')).toBeVisible();
-  await expect(page.locator('#computation-progress-result')).toBeVisible();
-  await expect(page.locator('#computation-progress-note')).toContainText('结果位置：排考试 → 安排结果');
+  await expect(page.locator('#computation-progress')).toBeHidden();
 });

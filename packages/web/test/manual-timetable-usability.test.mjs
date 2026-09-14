@@ -26,7 +26,8 @@ test('the course pool supports human-readable search and filters', () => {
   assert.match(appSource, /statusFilter === 'unassigned' && item\.teacher_unassigned/);
   assert.match(appSource, /manual-course-progress-track/);
   assert.match(appSource, /完整课表已生成。这里的数字只统计“手动锁课草稿”/);
-  assert.match(appSource, /status\.solve_status !== 'valid'/);
+  assert.match(appSource, /localStorage.getItem\(MANUAL_COURSE_PANEL_STORAGE_KEY\) !== 'false'/);
+  assert.doesNotMatch(appSource, /setManualCoursePanelExpanded\(\s*status\.solve_status !== 'valid'/);
   assert.match(appSource, /手动锁定草稿：\$\{scheduled\} \/ \$\{total\} 节/);
 });
 

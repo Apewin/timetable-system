@@ -145,6 +145,50 @@ test('class grid swaps two whole-class courses instead of colliding a one-way mo
   assert.equal(swapped.schedule.validation.ok, true);
 });
 
+test('parking a course frees its slot so another course can rotate through it', () => {
+  const { state, problem } = fixture();
+  const evaluated = evaluateClassTimetableAdjustments(state, problem, {
+    class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1',
+  });
+  assert.equal(evaluated.public_candidates.find(item => item.slot_id === '__buffer__')?.action, 'park');
+
+  const parked = applyClassTimetableAdjustment(state, problem, {
+    class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1', to_slot: '__buffer__', action: 'park',
+  });
+  assert.equal(parked.action, 'park');
+  assert.equal(parked.schedule.adjustment_buffer.length, 1);
+  assert.equal(parked.schedule.meetings.some(item => item.section_id === 'A' && item.slot_id === 'D1P1'), false);
+  assert.equal(parked.schedule.validation.ok, false);
+
+  const editing = { ...state, solve_status: 'editing', schedule: parked.schedule };
+  const moved = applyClassTimetableAdjustment(editing, problem, {
+    class_id: 'TC1', task_id: 'C:S1:D1P3', from_slot: 'D1P3', to_slot: 'D1P1', action: 'move',
+  });
+  assert.ok(moved.schedule.meetings.some(item => item.section_id === 'C' && item.slot_id === 'D1P1'));
+
+  const restored = applyClassTimetableAdjustment({ ...state, solve_status: 'editing', schedule: moved.schedule }, problem, {
+    class_id: 'TC1',
+    section_id: 'A',
+    from_slot: '__buffer__',
+    to_slot: 'D1P3',
+    action: 'move',
+    buffer_id: moved.schedule.adjustment_buffer[0].id,
+  });
+  assert.equal((restored.schedule.adjustment_buffer || []).length, 0);
+  assert.equal(restored.schedule.validation.ok, true);
+  assert.ok(restored.schedule.meetings.some(item => item.section_id === 'A' && item.slot_id === 'D1P3'));
+});
+
+test('a locked course cannot be parked in the adjustment buffer', () => {
+  const { state, problem } = fixture({ locks: [{ section_id: 'A', slot_id: 'D1P1' }] });
+  assert.throws(
+    () => applyClassTimetableAdjustment(state, problem, {
+      class_id: 'TC1', task_id: 'A:S1:D1P1', from_slot: 'D1P1', to_slot: '__buffer__', action: 'park',
+    }),
+    /锁定/,
+  );
+});
+
 test('class grid explains why a conflicting drop is rejected', () => {
   const { state, problem } = fixture();
   const result = evaluateClassTimetableAdjustments(state, problem, {
