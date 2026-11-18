@@ -2,7 +2,7 @@
   "name": "@timetable/cli",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "description": "当前排课后端的机器可读命令行适配器",
   "type": "module",
   "bin": {

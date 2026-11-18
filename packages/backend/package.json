@@ -2,7 +2,7 @@
   "name": "@timetable/backend",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.mjs",
